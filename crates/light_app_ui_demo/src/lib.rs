@@ -33,7 +33,7 @@ use light_ui::lui::code;
 use light_ui::{Fonts, Lui, LuiChild, Style, SwipeDir, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
-pub use light_input::cst816t::Event as TouchSample;
+pub use light_input::drivers::cst816t::Event as TouchSample;
 pub use light_ui::{scroll, Desc, Page, Shade};
 
 /// Widget arena size: the deepest page is the list (a window and nine rows).

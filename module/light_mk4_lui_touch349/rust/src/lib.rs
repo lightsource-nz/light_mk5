@@ -16,7 +16,7 @@ use light_display::axs15231b::Axs15231b;
 use light_display::{Display, FrameLayer};
 use light_draw::PixelFormat;
 use light_font::Font;
-use light_input::axs15231b::{self as axs, Axs15231bTouch};
+use light_input::drivers::axs15231b::{self as axs, Axs15231bTouch};
 use light_rp2::gpio::Input;
 use light_rp2::i2c::I2c0;
 use light_rp2::pwm::PwmOutput;

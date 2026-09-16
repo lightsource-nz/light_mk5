@@ -38,7 +38,7 @@ use light_input::touch::Gesture;
 use light_ui::{Fonts, IndicatorShape, Lui, LuiChild, Style, SwipeDir, TextSlot, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
-pub use light_input::cst816t::Event as TouchSample;
+pub use light_input::drivers::cst816t::Event as TouchSample;
 pub use light_ui::{file_list, scroll, Axis, Desc, Descent, Page};
 pub use light_ui_components::{DirEntry, FilePicker, Order};
 

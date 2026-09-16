@@ -11,7 +11,7 @@
 
 use light_core::atomic::{AtomicBool, Ordering};
 use light_core::hal::Clock;
-use light_input::gt911::CoordMap;
+use light_input::drivers::gt911::CoordMap;
 use light_input::imu::{self, AxisMap};
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;

@@ -12,9 +12,9 @@
 use core::cell::RefCell;
 use light_dictaphone_core as dict;
 use dict::{dictaphone_commands, keep_recording, AudioSlots, AudioStatus, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, UiSource};
-use light_input::axs15231b::Axs15231bTouch;
+use light_input::drivers::axs15231b::Axs15231bTouch;
 use light_input::imu::{Imu, Orientation};
-use light_input::qmi8658::Qmi8658;
+use light_input::drivers::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
 use light_ui::{Fonts, Lui, Style, Theme, Ui};

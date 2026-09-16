@@ -6,9 +6,9 @@
 use core::cell::RefCell;
 
 use light_core::{debug, info, warn, Bus, Module, Poll, Subscription};
-use light_input::axs15231b::{self as axs, Axs15231bTouch};
+use light_input::drivers::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::Imu;
-use light_input::qmi8658::Qmi8658;
+use light_input::drivers::qmi8658::Qmi8658;
 use light_input::{BoardEvent, Tracker};
 use light_rp2::gpio::Input;
 use light_rp2::i2c::{I2c0, I2c1};

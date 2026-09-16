@@ -9,7 +9,7 @@
 //! hi-bank support.
 
 use light_core::atomic::{AtomicBool, Ordering};
-use light_input::axs15231b::CoordMap;
+use light_input::drivers::axs15231b::CoordMap;
 use light_input::imu::{self, AxisMap};
 use light_rp2::adc::Adc;
 use light_rp2::gpio::{Input, Output};
