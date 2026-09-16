@@ -201,6 +201,7 @@ differing sizes, an OLED-panel rig, and the crossfire USB-MIDI host.
 | [08-assets-and-tooling.md](08-assets-and-tooling.md) | `crush`/`crush-core`, the LGF/LTH/LUI blob formats and their versioning, the design `extends` mechanism, `light-host-gui`, `light-ui-editor`. |
 | [09-application-model.md](09-application-model.md) | The application model: portable app crates, board-support crates, per-board instantiation crates, the design-as-data workflow, the worked examples. |
 | [10-build-and-release.md](10-build-and-release.md) | The build system: CMake + Corrosion, the presets, the `light-*.ps1` script layer, flashing, host tests, versioning and releases. |
+| [mk5-proposals.md](mk5-proposals.md) | The working backlog of candidate mk5 design changes extracted from mk4; each item's design moves into its subsystem document as it is decided. |
 
 Each subsystem document states, for its crates: the responsibility, the public surface (the types
 and traits that define its contract), the behaviour and the invariants, and the notable design
