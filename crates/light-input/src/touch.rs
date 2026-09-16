@@ -37,6 +37,29 @@ pub trait HardwareGestures {
         fn read_gesture(&mut self) -> Option<Swipe>;
 }
 
+/// A touch driver's read-failure breakdown, for a `stats` diagnostic.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TouchDiagnostics {
+        pub failures: u32,
+        pub nacks: u32,
+        pub timeouts: u32,
+        pub bus_errors: u32,
+}
+
+/// A touch controller, behind one interface so the runtime touch module is generic over the
+/// hardware rather than a specific part. Each driver implements this in its own module; a
+/// consumer's own controller implements the same trait and drops into the touch module. A
+/// controller with its own gesture engine answers through the [`HardwareGestures`] supertrait; one
+/// without returns `None` there and the software [`Tracker`] classifies from coordinates.
+pub trait TouchController: HardwareGestures {
+        /// Confirm the controller is present and answering; called once at module load.
+        fn probe(&mut self) -> Result<(), light_core::hal::I2cError>;
+        /// Read the next sample on the driver's own timed cadence, or `None` when nothing is due.
+        fn poll(&mut self, now_ms: u32) -> Option<Event>;
+        /// The read-failure counters, for a `stats` diagnostic.
+        fn diagnostics(&self) -> TouchDiagnostics;
+}
+
 pub struct Tracker {
         swipe_min_distance: u16,
         tracking: bool,

@@ -14,7 +14,7 @@ pub mod imu;
 pub mod qmi8658;
 pub mod touch;
 
-pub use touch::{Gesture, Swipe, Tracker};
+pub use touch::{Gesture, Swipe, TouchController, TouchDiagnostics, Tracker};
 
 /// One raw touch sample from any controller: the shared shape every touch driver produces (each
 /// re-exports it), so gesture tracking and the [`BoardEvent`] contract are controller-independent.

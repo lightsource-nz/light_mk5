@@ -63,6 +63,18 @@ pub struct Axs15231bTouch<B: I2cBus, I: InputPin> {
         pub bus_errors: u32,
 }
 
+impl<B: I2cBus, I: InputPin> crate::touch::TouchController for Axs15231bTouch<B, I> {
+        fn probe(&mut self) -> Result<(), light_core::hal::I2cError> {
+                self.probe().map(|_| ())
+        }
+        fn poll(&mut self, now_ms: u32) -> Option<Event> {
+                self.poll(now_ms)
+        }
+        fn diagnostics(&self) -> crate::touch::TouchDiagnostics {
+                crate::touch::TouchDiagnostics { failures: self.failures, nacks: self.nacks, timeouts: self.timeouts, bus_errors: self.bus_errors }
+        }
+}
+
 impl<B: I2cBus, I: InputPin> crate::touch::HardwareGestures for Axs15231bTouch<B, I> {
         fn read_gesture(&mut self) -> Option<crate::touch::Swipe> {
                 // no gesture engine surfaced by this protocol: the tracker classifies

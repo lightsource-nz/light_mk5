@@ -89,6 +89,18 @@ const GESTURE_SWIPE_DOWN: u8 = 0x02;
 const GESTURE_SWIPE_LEFT: u8 = 0x03;
 const GESTURE_SWIPE_RIGHT: u8 = 0x04;
 
+impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::TouchController for Cst816t<B, I, R> {
+        fn probe(&mut self) -> Result<(), light_core::hal::I2cError> {
+                self.probe().map(|_| ())
+        }
+        fn poll(&mut self, now_ms: u32) -> Option<Event> {
+                self.poll(now_ms)
+        }
+        fn diagnostics(&self) -> crate::touch::TouchDiagnostics {
+                crate::touch::TouchDiagnostics { failures: self.failures, nacks: self.nacks, timeouts: self.timeouts, bus_errors: self.bus_errors }
+        }
+}
+
 impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::HardwareGestures for Cst816t<B, I, R> {
         fn read_gesture(&mut self) -> Option<crate::touch::Swipe> {
                 use crate::touch::Swipe;

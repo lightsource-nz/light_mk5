@@ -77,6 +77,18 @@ pub struct Cst328<B: I2cBus, I: InputPin, R: OutputPin> {
         pub recoveries: u32,
 }
 
+impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::TouchController for Cst328<B, I, R> {
+        fn probe(&mut self) -> Result<(), light_core::hal::I2cError> {
+                self.probe().map(|_| ())
+        }
+        fn poll(&mut self, now_ms: u32) -> Option<Event> {
+                self.poll(now_ms)
+        }
+        fn diagnostics(&self) -> crate::touch::TouchDiagnostics {
+                crate::touch::TouchDiagnostics { failures: self.failures, nacks: self.nacks, timeouts: self.timeouts, bus_errors: self.bus_errors }
+        }
+}
+
 impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::HardwareGestures for Cst328<B, I, R> {
         fn read_gesture(&mut self) -> Option<crate::touch::Swipe> {
                 // no gesture engine on this part: decline unconditionally and the tracker
