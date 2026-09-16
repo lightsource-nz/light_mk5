@@ -70,7 +70,13 @@ instantiate against, so they come first.
   structural refactor with no behaviour change, making each part independently testable.
 - **Touches.** [02-graphics-and-ui.md](02-graphics-and-ui.md).
 
-## D. One UI construction path: data only — *proposed*
+## D. One UI construction path: data only — *decided*
+
+> **Decided (mk5), design recorded** in [09](09-application-model.md#) — the LUI blob is the one
+> app-facing path; `UiSource` collapses to the blob and the const-tree public API (`Page`/`Desc`,
+> `navigate(&Page)`/`build(&Desc)`) is retired app-facing, with the low-level widget creators kept
+> for the LUI builder and the toolkit's tests. Grounded in the finding that no app uses `Const` today.
+> **Not yet applied to code.**
 
 - **Status quo (mk4).** A UI can be built two ways — a hand-written `const` page tree, or a compiled
   LUI blob (the `UiSource` `Const` | `Blob` dual path).

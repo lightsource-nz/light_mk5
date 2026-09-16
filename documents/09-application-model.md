@@ -138,6 +138,18 @@ An app maps a design's event ids to its own events with a small `ui_event`/`map_
 navigation (`goto`/`back`) and the transition (`descent`) come from the blob. The design's event ids
 and widget tags are the contract between the JSON and the firmware.
 
+### mk5 decision — one UI construction path: data only
+
+*Decided for mk5 (proposal D).* mk4's `UiSource` offers two construction paths — a hand-written
+`const` page tree (`Const`) and a compiled LUI blob (`Blob`) — that must be kept behaviorally
+identical. In practice no application uses `Const`; every board builds from a blob, and the const
+`Desc`/`Page` trees survive only as the toolkit's own test fixtures. mk5 makes **the LUI blob the one
+app-facing path**: `UiSource` collapses to the blob, and the const-tree public API (`navigate(&Page)`
+/ `build(&Desc)` and the `Page`/`Desc` descriptor types) is retired as an app-facing construction
+path. The low-level widget creators (`create_window`/`create_button`/`create_label`) stay — the LUI
+builder is written on them — and the toolkit keeps a minimal way to build a tree directly for its own
+tests. Every interface is authored as data.
+
 ## The board-generic modules seam
 
 Runtime modules that read board hardware but produce app-generic events — the touch and IMU modules —
