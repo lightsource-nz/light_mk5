@@ -116,6 +116,14 @@ BCLK/LRCLK as a slave data-out.
 
 ### Two output paths, and why the IRQ path exists
 
+> **mk5 decision (proposal E) — one output path: the prefetch ring.** The `AudioStream` contract is
+> already ring-only (`stream_push`/`stream_free`/`stream_pending`/`stream_clear`/`set_active`); the
+> polled `start_stream`/`refill` below are unused inherent methods that no application calls. mk5
+> **removes the polled path** — the IRQ prefetch ring is the single model, which also retires the
+> polled path's correctness wrinkle (an idle ring draining to silence was miscounted as starvation).
+> The rationale for the ring is kept below. A board too RAM-tight for the ring is a port concern
+> addressed by proposal G, not a second contract path.
+
 `PioI2sOut` offers two ways to keep the DAC fed, both over the same two ping-pong DMA buffers
 (~85 ms each, `STREAM_WORDS = 2048` frames at 24 kHz, sized against a *measured* worst-case
 64.8 ms poll-to-poll gap from an SD card's internal read stall):
