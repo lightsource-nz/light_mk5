@@ -47,6 +47,7 @@ pub mod pwm_audio;
 pub mod qspi;
 #[cfg(feature = "rp2350")]
 pub mod rgb;
+pub mod shell;
 pub mod spi;
 pub mod spi_bus;
 #[cfg(feature = "usb-host")]
