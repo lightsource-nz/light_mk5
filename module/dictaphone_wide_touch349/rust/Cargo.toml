@@ -1,0 +1,15 @@
+[package]
+name = "dictaphone_wide_touch349_app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the landscape dictaphone executable on the Waveshare RP2350-Touch-LCD-3.49: the embedded blobs and orientation config over the shared light_dictaphone_touch349 board wiring"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+light_dictaphone_touch349 = { path = "../../../crates/light_dictaphone_touch349" }
+light-board-touch349 = { path = "../../../crates/light-board-touch349" }
+light-draw = { path = "../../../crates/light-draw" }
+light-input = { path = "../../../crates/light-input" }

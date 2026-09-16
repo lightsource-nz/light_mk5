@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+        "crates/light-core",
+        "crates/light-font",
+        "crates/light-draw",
+        "crates/light-display",
+        "crates/light-input",
+        "crates/light-ui",
+        "crates/light_ui_components",
+        "crates/light-midi",
+        "crates/light-audio",
+        "crates/light-power",
+        "crates/light-rtc",
+        "crates/light-sd",
+        "crates/light-fs",
+        "crates/light-rp2",
+        "crates/light-power-manager",
+        "crates/light-board-touch349",
+        "crates/light-stm32h7",
+        "crates/light-stm32f4",
+        #   hardware-independent applications: the logic of an app as a portable crate,
+        # instantiated by a hardware-bound module/ crate per tangible board. The
+        # dictaphone splits once more -- an engine crate, and one interface crate per
+        # orientation over it
+        "crates/light_app_crossfire",
+        "crates/light_dictaphone_core",
+        "crates/light_dictaphone_touch349",
+        "crates/light_app_dictaphone",
+        "crates/light_app_dictaphone_wide",
+        "crates/light_app_ui_demo",
+        "crates/light_app_ui_demo_touch349",
+        "tools/crush-core",
+        "tools/crush",
+        "tools/light-host-gui",
+        "tools/light-ui-editor",
+        "crates/light_app_ui_demo_touch169",
+        "crates/light_app_ui_demo_touch28",
+        "module/dictaphone_touch349/rust",
+        "module/dictaphone_wide_touch349/rust",
+        "module/light_mk4_lui_touch349/rust",
+        "crates/light_app_ui_demo_touch4",
+        "module/light_mk4_pico2/rust",
+        "module/crossfire_pico/rust",
+        "module/crossfire_pico2/rust",
+        "module/light_mk4_h7/rust",
+        "module/light_mk4_f411/rust",
+]
+
+#   freetype-sys 0.23's bundled build compiles libpng with `-I libz-sys/src/zlib`, a path that
+# exists in its git checkout (a submodule) but not in the crates.io package -- so on a machine
+# with no system zlib the build stops at "Cannot open include file: 'zlib.h'". The vendored copy
+# is byte-identical except that build.rs takes the include directory libz-sys exports
+# (DEP_Z_INCLUDE) instead
+[patch.crates-io]
+freetype-sys = { path = "tools/vendor/freetype-sys" }
+
+#   one version for every crate in the workspace: they are released together, and the git tag
+# light-release.ps1 mints is the version of record. This literal has to agree with it --
+# cargo cannot read a tag -- so a release bumps it in the same commit
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+#   the firmware is linked by pico-sdk's CMake, which owns panic handling -- Rust panics are
+# handed to the C shell (see apps/touch169/rust), so unwinding tables are dead weight
+[profile.dev]
+panic = "abort"
+#   -O0 Rust is far larger and slower than pico-sdk's -Og C; opt-level 1 keeps debug builds
+# debuggable without making the firmware unrepresentative
+opt-level = 1
+debug = true
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+debug = true
+lto = "fat"
+codegen-units = 1

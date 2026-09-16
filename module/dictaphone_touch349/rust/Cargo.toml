@@ -1,0 +1,18 @@
+[package]
+#   _app suffix: the plain name is the CMake EXECUTABLE (which must match the module
+# directory -- light-flash.ps1 finds module/<target>/<target>.uf2), and CMake target
+# names are one namespace with Corrosion's crate targets
+name = "dictaphone_touch349_app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the portrait dictaphone executable on the Waveshare RP2350-Touch-LCD-3.49: the embedded blobs and orientation config over the shared light_dictaphone_touch349 board wiring"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+light_dictaphone_touch349 = { path = "../../../crates/light_dictaphone_touch349" }
+light-board-touch349 = { path = "../../../crates/light-board-touch349" }
+light-draw = { path = "../../../crates/light-draw" }
+light-input = { path = "../../../crates/light-input" }

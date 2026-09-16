@@ -1,0 +1,37 @@
+{
+        "device": { "width": 240, "height": 400, "corner_radius": 0 },
+        "root": 0,
+        "pages": [
+                {
+                        "title": "Dictaphone",
+                        "layout": "stack",
+                        "gap": 6,
+                        "children": [
+                                { "button": "Record" },
+                                { "button": "Play" },
+                                { "button": "Files >", "goto": 1 }
+                        ]
+                },
+                {
+                        "title": "Files",
+                        "layout": "stack",
+                        "gap": 6,
+                        "children": [
+                                { "button": "REC_0001" },
+                                { "button": "REC_0002" },
+                                {
+                                        "layout": "row",
+                                        "gap": 6,
+                                        "scroll": "horizontal",
+                                        "grow": true,
+                                        "children": [
+                                                { "button": "Tag A" },
+                                                { "button": "Tag B" },
+                                                { "button": "Tag C" }
+                                        ]
+                                },
+                                { "button": "< Back", "back": true }
+                        ]
+                }
+        ]
+}

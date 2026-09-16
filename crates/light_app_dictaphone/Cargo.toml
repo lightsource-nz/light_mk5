@@ -1,0 +1,9 @@
+[package]
+name = "light_app_dictaphone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the dictaphone with its portrait interface: a stacked page of status line, big record button, play-last and recordings list, over the light_dictaphone_core engine"
+
+[dependencies]
+light_dictaphone_core = { path = "../light_dictaphone_core" }
