@@ -13,7 +13,7 @@
 
 use light_core::hal::{I2cBus, I2cError, InputPin};
 
-pub use crate::cst816t::Event;
+pub use crate::TouchSample as Event;
 
 pub const I2C_ADDR: u8 = 0x5D;
 

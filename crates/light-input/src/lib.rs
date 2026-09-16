@@ -16,11 +16,7 @@ pub mod qmi8658;
 pub mod touch;
 
 pub use module::{ImuMod, TouchMod};
-pub use touch::{Gesture, Swipe, TouchController, TouchDiagnostics, Tracker};
-
-/// One raw touch sample from any controller: the shared shape every touch driver produces (each
-/// re-exports it), so gesture tracking and the [`BoardEvent`] contract are controller-independent.
-pub use cst816t::Event as TouchSample;
+pub use touch::{Gesture, Swipe, TouchController, TouchDiagnostics, TouchSample, Tracker};
 
 /// The contract a board's input modules need from an application's bus-event type: how to raise the
 /// events a touch panel and IMU produce, and how to recognise the requests those modules react to.

@@ -43,14 +43,9 @@ const RECOVER_COOLDOWN_MS: u32 = 1000;
 const RESET_HOLD_MS: u32 = 10;
 const RESET_BOOT_MS: u32 = 50;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Event {
-        Down { x: u16, y: u16 },
-        Move { x: u16, y: u16 },
-        Up,
-        /// The recovery reset fired. Reported so the caller can count it.
-        Reset,
-}
+/// The driver-agnostic touch sample this driver produces, defined in [`crate::touch`]; re-exported
+/// here for callers that name it through the driver.
+pub use crate::TouchSample as Event;
 
 pub struct Cst816t<B: I2cBus, I: InputPin, R: OutputPin> {
         bus: B,

@@ -19,8 +19,9 @@
 
 use light_core::hal::{Clock, I2cBus, InputPin, OutputPin};
 
-/// The one event type for touch controllers: the tracker and the applications match on it.
-pub use crate::cst816t::Event;
+/// The driver-agnostic touch sample, defined in [`crate::touch`]; re-exported here for callers that
+/// name it through the driver.
+pub use crate::TouchSample as Event;
 
 pub const I2C_ADDR: u8 = 0x1A;
 

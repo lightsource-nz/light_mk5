@@ -10,7 +10,18 @@
 //! Directions are in the device's own coordinate space -- the panel's physical orientation.
 //! An application drawing through a rotated canvas maps them itself.
 
-use crate::cst816t::Event;
+/// One raw touch sample: the driver-agnostic shape every touch controller produces. Coordinates
+/// are in the device's own coordinate space -- the panel's physical orientation -- and an
+/// application drawing through a rotated canvas maps them itself. The model is single-touch: one
+/// finger's life is a `Down`, then zero or more `Move`s, then `Up`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchSample {
+        Down { x: u16, y: u16 },
+        Move { x: u16, y: u16 },
+        Up,
+        /// A driver's recovery reset fired. Reported so the caller can count it.
+        Reset,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Swipe {
@@ -55,7 +66,7 @@ pub trait TouchController: HardwareGestures {
         /// Confirm the controller is present and answering; called once at module load.
         fn probe(&mut self) -> Result<(), light_core::hal::I2cError>;
         /// Read the next sample on the driver's own timed cadence, or `None` when nothing is due.
-        fn poll(&mut self, now_ms: u32) -> Option<Event>;
+        fn poll(&mut self, now_ms: u32) -> Option<crate::TouchSample>;
         /// The read-failure counters, for a `stats` diagnostic.
         fn diagnostics(&self) -> TouchDiagnostics;
 }
@@ -93,9 +104,9 @@ impl Tracker {
         }
 
         /// Feed one sample. Returns a gesture when this sample ended a touch that was one.
-        pub fn feed(&mut self, sample: Event, hardware: Option<&mut dyn HardwareGestures>) -> Option<Gesture> {
+        pub fn feed(&mut self, sample: TouchSample, hardware: Option<&mut dyn HardwareGestures>) -> Option<Gesture> {
                 match sample {
-                        Event::Down { x, y } => {
+                        TouchSample::Down { x, y } => {
                                 self.tracking = true;
                                 self.start = (x, y);
                                 self.last = (x, y);
@@ -103,13 +114,13 @@ impl Tracker {
                                 self.suppressed = false;
                                 None
                         }
-                        Event::Move { x, y } => {
+                        TouchSample::Move { x, y } => {
                                 if self.tracking {
                                         self.last = (x, y);
                                 }
                                 None
                         }
-                        Event::Up => {
+                        TouchSample::Up => {
                                 if !self.tracking {
                                         return None;
                                 }
@@ -127,7 +138,7 @@ impl Tracker {
                                 self.pending = Some(g);
                                 Some(g)
                         }
-                        Event::Reset => None,
+                        TouchSample::Reset => None,
                 }
         }
 
@@ -169,31 +180,31 @@ mod tests {
         #[test]
         fn a_drag_past_the_threshold_is_a_swipe_along_its_dominant_axis() {
                 let mut t = Tracker::new(240, 280); // threshold 30
-                assert_eq!(t.feed(Event::Down { x: 100, y: 100 }, None), None);
-                assert_eq!(t.feed(Event::Move { x: 120, y: 105 }, None), None);
-                assert_eq!(t.feed(Event::Move { x: 150, y: 110 }, None), None);
-                let g = t.feed(Event::Up, None).unwrap();
+                assert_eq!(t.feed(TouchSample::Down { x: 100, y: 100 }, None), None);
+                assert_eq!(t.feed(TouchSample::Move { x: 120, y: 105 }, None), None);
+                assert_eq!(t.feed(TouchSample::Move { x: 150, y: 110 }, None), None);
+                let g = t.feed(TouchSample::Up, None).unwrap();
                 assert_eq!(g.swipe, Swipe::Right);
                 assert_eq!((g.start, g.end), ((100, 100), (150, 110)));
                 assert!(!g.from_hardware);
                 assert_eq!(t.take(), Some(g));
                 assert_eq!(t.take(), None, "reported once");
                 //   a tap: no travel, no gesture
-                t.feed(Event::Down { x: 5, y: 5 }, None);
-                assert_eq!(t.feed(Event::Up, None), None);
+                t.feed(TouchSample::Down { x: 5, y: 5 }, None);
+                assert_eq!(t.feed(TouchSample::Up, None), None);
                 //   upward: toward y = 0
-                t.feed(Event::Down { x: 50, y: 200 }, None);
-                t.feed(Event::Move { x: 55, y: 100 }, None);
-                assert_eq!(t.feed(Event::Up, None).unwrap().swipe, Swipe::Up);
+                t.feed(TouchSample::Down { x: 50, y: 200 }, None);
+                t.feed(TouchSample::Move { x: 55, y: 100 }, None);
+                assert_eq!(t.feed(TouchSample::Up, None).unwrap().swipe, Swipe::Up);
         }
 
         #[test]
         fn hardware_classification_wins_but_endpoints_are_ours() {
                 let mut t = Tracker::new(240, 280);
                 let mut hw = Hw(Some(Swipe::Left));
-                t.feed(Event::Down { x: 10, y: 10 }, Some(&mut hw));
-                t.feed(Event::Move { x: 12, y: 11 }, Some(&mut hw));
-                let g = t.feed(Event::Up, Some(&mut hw)).unwrap();
+                t.feed(TouchSample::Down { x: 10, y: 10 }, Some(&mut hw));
+                t.feed(TouchSample::Move { x: 12, y: 11 }, Some(&mut hw));
+                let g = t.feed(TouchSample::Up, Some(&mut hw)).unwrap();
                 assert_eq!(g.swipe, Swipe::Left, "the engine's word, though we saw no travel");
                 assert!(g.from_hardware);
                 assert_eq!(g.end, (12, 11));
@@ -203,15 +214,15 @@ mod tests {
         fn a_suppressed_touch_ends_in_nothing_and_the_next_touch_is_fresh() {
                 let mut t = Tracker::new(240, 280);
                 t.suppress(); // no touch in progress: must not leak forward
-                t.feed(Event::Down { x: 0, y: 0 }, None);
-                t.feed(Event::Move { x: 200, y: 0 }, None);
-                assert_eq!(t.feed(Event::Up, None).unwrap().swipe, Swipe::Right, "a stray suppress did not eat it");
-                t.feed(Event::Down { x: 0, y: 0 }, None);
+                t.feed(TouchSample::Down { x: 0, y: 0 }, None);
+                t.feed(TouchSample::Move { x: 200, y: 0 }, None);
+                assert_eq!(t.feed(TouchSample::Up, None).unwrap().swipe, Swipe::Right, "a stray suppress did not eat it");
+                t.feed(TouchSample::Down { x: 0, y: 0 }, None);
                 t.suppress();
-                t.feed(Event::Move { x: 200, y: 0 }, None);
-                assert_eq!(t.feed(Event::Up, None), None, "claimed by the scroller");
-                t.feed(Event::Down { x: 0, y: 0 }, None);
-                t.feed(Event::Move { x: 200, y: 0 }, None);
-                assert!(t.feed(Event::Up, None).is_some(), "the one after is unclaimed");
+                t.feed(TouchSample::Move { x: 200, y: 0 }, None);
+                assert_eq!(t.feed(TouchSample::Up, None), None, "claimed by the scroller");
+                t.feed(TouchSample::Down { x: 0, y: 0 }, None);
+                t.feed(TouchSample::Move { x: 200, y: 0 }, None);
+                assert!(t.feed(TouchSample::Up, None).is_some(), "the one after is unclaimed");
         }
 }

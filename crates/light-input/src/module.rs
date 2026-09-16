@@ -10,9 +10,8 @@ use core::fmt::Debug;
 use light_core::hal::Clock;
 use light_core::{debug, info, warn, Bus, Module, Poll, Subscription};
 
-use crate::cst816t::Event;
 use crate::imu::{AxisMap, Imu, ImuDriver};
-use crate::{BoardEvent, TouchController, Tracker};
+use crate::{BoardEvent, TouchController, TouchSample, Tracker};
 
 /// Owns a touch controller: reads samples on the driver's cadence, publishes touch and gesture
 /// events, and reports the driver's diagnostics on `stats`. Generic over the controller `T`, the
@@ -90,17 +89,17 @@ where
                 let now_ms = (self.clock.now_us() / 1000) as u32;
                 let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
                 match ev {
-                        Event::Down { x, y } => {
+                        TouchSample::Down { x, y } => {
                                 self.moves = 0;
                                 self.last = (x, y);
                                 debug!("touch down at {x},{y}");
                         }
-                        Event::Move { x, y } => {
+                        TouchSample::Move { x, y } => {
                                 self.last = (x, y);
                                 self.moves += 1;
                         }
-                        Event::Up => debug!("touch up after {} moves at {},{}", self.moves, self.last.0, self.last.1),
-                        Event::Reset => {}
+                        TouchSample::Up => debug!("touch up after {} moves at {},{}", self.moves, self.last.0, self.last.1),
+                        TouchSample::Reset => {}
                 }
                 if let Err(e) = self.bus.publish(A::touch(ev)) {
                         warn!("event bus full; dropped {e:?}");
