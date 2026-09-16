@@ -56,7 +56,11 @@ instantiate against, so they come first.
   [06-power-and-time.md](06-power-and-time.md), [04-audio-and-midi.md](04-audio-and-midi.md),
   [01-core-runtime.md](01-core-runtime.md) (module model).
 
-## C. Decompose `light-ui` — *proposed*
+## C. Decompose `light-ui` — *decided*
+
+> **Decided (mk5), design recorded** in [02](02-graphics-and-ui.md#) — split the ~4.6k-line toolkit
+> into focused modules (model, desc, style, layout, scroll, input, nav, anim, render; lui/theme
+> already separate), mirroring `light-core`. Behaviour-preserving refactor. **Not yet applied to code.**
 
 - **Status quo (mk4).** The widget toolkit is a single ~4.6k-line source file (plus the LUI runtime
   and theme). By contrast `light-core` is cleanly split into focused ~100–400-line modules.

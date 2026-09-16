@@ -319,6 +319,30 @@ in flash, that lays itself out, paints itself, animates page transitions and rot
 touches into application events. Ported from the predecessor C framework, hardware-free (it knows
 nothing of touch controllers, buttons or IMUs), and exercisable entirely on the host.
 
+### mk5 decision — decompose the toolkit into modules
+
+*Decided for mk5 (proposal C).* mk4's toolkit is a single ~4.6k-line source file (with the LUI
+runtime and theme already split out), while `light-core` beside it is cleanly divided into focused
+modules. mk5 splits the toolkit the same way — a behaviour-preserving refactor that makes each part
+independently testable and stops the whole toolkit recompiling for a one-line change. The proposed
+modules (to be refined in the doing):
+
+- `model` — the widget types (`Widget`, `Kind`, `Window`, `Button`, `Label`, `WidgetId`, `Nav`,
+  `Layout`, `Axis`, `Descent`, `Shade`, `TextSlot`, `IndicatorShape`).
+- `desc` — the declarative descriptors (`Page`, `Desc`, the `file_list!` macro).
+- `style` — `Style`/`Fonts`/`FontRole` (the theme applied at paint; the LTH parser stays in `theme`).
+- `layout` — the stack/row/linear layouts, the axis, relayout, the shared `viewport`.
+- `scroll` — scrolling and the scroll clamp.
+- `input` — the tap-versus-drag state machine, swipe classification, focus, activate (the largest
+  single piece today, ~800 lines).
+- `nav` — navigation (`navigate`/`_returning`/`_back`) and the parent-based back model.
+- `anim` — the page-transition and rotation animations (extracting these from the render/navigate
+  paths is the subtle part).
+- `render` — `paint`/`render`/`commit` and dirty tracking.
+- `lui` and `theme` — already separate; unchanged.
+
+The `Ui<A, N>` context ties them together. No public behaviour changes.
+
 ### Public surface
 
 - **`Ui<A, const N: usize>`** — the context: a widget arena of at most `N`, focus and touch state,
