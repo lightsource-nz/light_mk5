@@ -127,7 +127,7 @@ lead that rides such gaps out. The interrupt handler is a pure RAM copy plus two
 it never touches the card or the filesystem — so it is safe at interrupt time.
 
 ```mermaid
-graph LR
+graph TD
     app["App audio module<br/>(poll loop, core 0)"]
     ring[["prefetch ring<br/>single-producer / single-consumer"]]
     irq["DMA-completion IRQ<br/>light_i2s_dma_irq"]
