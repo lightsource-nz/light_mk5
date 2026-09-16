@@ -310,6 +310,21 @@ timings, quirks — are facts about those parts, not the framework.
 
 ---
 
+### mk5 decision — region buffering to relieve the memory model
+
+*Decided for mk5 (proposal G, memory half).* On the largest panels a full second framebuffer is the
+dominant RAM user (a ~430 KB double buffer of ~520 KB total), yet double buffering is what the
+whole-page slide and rotation animations need — without a back buffer the toolkit degrades them to a
+snap. mk5 commits to **region (partial) buffering**: buffering a band rather than a full second frame,
+to free that RAM on the big panels so features are not gated by the memory model.
+
+The hard part, to be resolved in the design pass, is reconciling a partial buffer with the *whole-page*
+animations, which today `freeze` a full image and blit it. The direction is to express a transition as
+a moving region the band can carry (rendering the transition in strips, or compositing it into the
+scanout) rather than as a full-frame blit — so an animation costs a band, not a second frame. The
+existing buffering choices (full double-buffer, single-buffer snap, single-buffer scanout) remain the
+fallbacks a board selects; region buffering is the new option that lifts the RAM ceiling.
+
 ## The widget toolkit — `light-ui`
 
 ### Responsibility

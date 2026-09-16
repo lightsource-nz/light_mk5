@@ -123,7 +123,15 @@ instantiate against, so they come first.
 - **Touches.** [10-build-and-release.md](10-build-and-release.md),
   [07-ports-and-shell.md](07-ports-and-shell.md).
 
-## G. Static capacities and the memory model — *proposed*
+## G. Static capacities and the memory model — *decided*
+
+> **Decided (mk5), design recorded** in [01](01-core-runtime.md#) (capacities: defaults + type
+> aliases, derive the subscriber count from the module set so under-provisioning is a build/start
+> error not a runtime panic, one config point per board) and [02](02-graphics-and-ui.md#) (memory:
+> commit to region/partial buffering — a band, not a full second frame — to lift the RAM ceiling on
+> the largest panels; the hard part, deferred to the design pass, is expressing whole-page slide and
+> rotation animations as a moving region rather than a full-frame blit). **Not yet applied to code;
+> the region-buffering mechanism still needs a design pass.**
 
 - **Status quo (mk4).** Fixed-capacity generics (the event bus, the UI arena, the runtime) push
   sizing onto every board; the double framebuffer dominates RAM and left the largest board genuinely

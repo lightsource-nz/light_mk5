@@ -155,6 +155,21 @@ in `.bss` as statics taken once as `&'static mut`, never built on the small core
 recurring discipline across the firmware: a large value on the stack can overflow into the other
 core's stack region.
 
+### mk5 decision — capacities have defaults and derive where they can
+
+*Decided for mk5 (proposal G, capacities half).* mk4 makes every board hand-pick the fixed-capacity
+const generics — `EventBus<E, N, S>`, `Runtime<N>`, `Ui<A, N>` — and a wrong subscriber count `S`
+surfaces only as a runtime `expect("subscriber slot")` panic. mk5:
+
+- gives each capacity a **sensible default** (a default event-bus depth and subscriber count, a
+  default runtime capacity) behind type aliases, so a board specifies a capacity only when it differs
+  from the default;
+- **derives the subscriber count from the module set** where feasible (the runtime knows how many
+  modules were added), so an under-provisioned bus is a build-time or start-time error, not a
+  mid-run panic;
+- keeps the capacities a board *does* set in **one documented place** per board rather than scattered
+  across call sites.
+
 ## Behaviour and invariants
 
 - No portable crate reaches hardware except through a `hal` trait; a port supplies the impls and the
