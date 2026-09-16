@@ -61,6 +61,16 @@ pub trait ImuDriver {
         fn sample(&mut self) -> Result<Option<Sample>, I2cError>;
         /// How often the chip can produce a sample; the core polls no faster.
         fn sample_interval_ms(&self) -> u32;
+        /// Confirm the sensor is present, returning an optional chip id; called once at module
+        /// load. Defaults to "present, no id" for a driver with no identity register.
+        fn probe(&mut self) -> Result<Option<u8>, I2cError> {
+                Ok(None)
+        }
+        /// Program the sensor's ranges and rates before it produces samples; called once at load.
+        /// Defaults to a no-op for a driver that needs no configuration.
+        fn configure(&mut self) -> Result<(), I2cError> {
+                Ok(())
+        }
 }
 
 /// How long a new orientation must hold before adoption, and by how much its axis must beat

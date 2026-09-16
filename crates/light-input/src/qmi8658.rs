@@ -82,6 +82,12 @@ fn le16(p: &[u8]) -> i16 {
 }
 
 impl<B: I2cBus> ImuDriver for Qmi8658<B> {
+        fn probe(&mut self) -> Result<Option<u8>, I2cError> {
+                self.probe()
+        }
+        fn configure(&mut self) -> Result<(), I2cError> {
+                self.configure()
+        }
         fn sample(&mut self) -> Result<Option<Sample>, I2cError> {
                 let mut frame = [0u8; FRAME_LEN];
                 self.bus.read_register(I2C_ADDR, FRAME_BASE, &mut frame)?;

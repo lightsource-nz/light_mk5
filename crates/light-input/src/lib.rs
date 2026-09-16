@@ -11,9 +11,11 @@ pub mod cst328;
 pub mod cst816t;
 pub mod gt911;
 pub mod imu;
+pub mod module;
 pub mod qmi8658;
 pub mod touch;
 
+pub use module::{ImuMod, TouchMod};
 pub use touch::{Gesture, Swipe, TouchController, TouchDiagnostics, Tracker};
 
 /// One raw touch sample from any controller: the shared shape every touch driver produces (each
