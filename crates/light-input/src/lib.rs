@@ -1,18 +1,14 @@
-//! Input: what the predecessor C framework split across separate touch and IMU modules. Gesture tracking
-//! over a controller's samples (`touch`), the CST816T that produces them, the orientation model
-//! (`imu`) and the QMI8658 behind it. Everything reaches hardware through
-//! [`light_core::hal`]; the drivers' cadence rules were re-checked against mk4's loop rate
-//! rather than copied, which is where the CST816T's minimum read gap came from.
+//! Input: touch, gesture and orientation. The gesture tracker over a controller's samples
+//! (`touch`), the orientation model (`imu`), the runtime touch and IMU modules (`module`), and the
+//! [`BoardEvent`] contract that relates them to an application's bus. The reference hardware drivers
+//! live under `drivers`, each implementing an agnostic contract the core defines. Everything reaches
+//! hardware only through [`light_core::hal`], so the crate builds and tests on the host.
 
 #![no_std]
 
-pub mod axs15231b;
-pub mod cst328;
-pub mod cst816t;
-pub mod gt911;
+pub mod drivers;
 pub mod imu;
 pub mod module;
-pub mod qmi8658;
 pub mod touch;
 
 pub use module::{ImuMod, TouchMod};
