@@ -71,6 +71,31 @@ board-support crate and a port. Note that the board-support crate depends on the
 **not** on the application crate — that independence is what lets several apps share one board's
 wiring.*
 
+### mk5 decision — the board layering is required, and board-agnostic code is framework-level
+
+*Decided for mk5.* mk4 built this pattern for a single board and bundled board-*agnostic* code into
+that board's crate (the shell ABI glue, the generic input modules, a power-manager wrapper), so the
+crate could not be reused without duplicating its board-agnostic majority — which is why every other
+board re-implemented its own wiring. mk5 makes the split clean and the shape **required** for every
+board:
+
+- **A `light-board-<board>` crate per board holds only board-specific facts** — the pin and constant
+  set, the touch `CoordMap` and IMU `AxisMap`, backlight inversion, DMA-channel assignments, the
+  `Peripherals` struct and its taken-once `take()`, and the board's `PowerMechanism`. Nothing
+  board-agnostic lives here.
+- **Board-agnostic code moves to the framework.** The shell ABI glue (`ShellInfo`, the core-1
+  service pump, panic reporting, the stack watermark) becomes a `shell` module in the port (see
+  [07-ports-and-shell.md](07-ports-and-shell.md)); the generic runtime input modules
+  (`TouchMod`/`ImuMod`) move into `light-input`, generic over the driver, the clock, and the app
+  event (see [03-input.md](03-input.md)).
+- **The per-board instantiation crate stays thin** — construct peripherals via `board::take`, build
+  the drivers, wire the framework modules and the portable app, embed the assets, and provide the
+  three entry-point wrappers. Tens of lines, as the deduplicated executables already are.
+
+Adding a board is then a small board-specific crate plus a thin instantiation crate, with no
+board-agnostic code copied. (The app-coupled runtime modules — RTC, audio, power policy — move to the
+framework separately; see proposal B in [mk5-proposals.md](mk5-proposals.md).)
+
 ### The exe/crate naming constraint
 
 The CMake executable and a Corrosion-imported crate share one target namespace, so an executable and

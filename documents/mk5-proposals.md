@@ -13,7 +13,14 @@ instantiate against, so they come first.
 
 ---
 
-## A. Generalize the board-support layer to every board — *proposed*
+## A. Generalize the board-support layer to every board — *decided*
+
+> **Decided (mk5), design recorded** in [09](09-application-model.md#) (required board layering),
+> [07](07-ports-and-shell.md#) (shell glue as a `shell` module in the port), and
+> [03](03-input.md#) (generic input runtime modules + a `TouchController` trait). Per the A/B split
+> decision, A also folds in the generic input-module extraction, so board crates become
+> board-specific-only immediately; B covers the remaining app-coupled modules (RTC, audio, power).
+> **Not yet applied to code.**
 
 - **Status quo (mk4).** The app-agnostic board-support crate — pin map and peripheral hand-over,
   shell ABI glue, and board-generic input modules — exists for a *single* board. Every other board

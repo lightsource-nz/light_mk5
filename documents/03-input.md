@@ -331,3 +331,23 @@ live in the board-support crates — publish through it, so `light-input` suppli
 drivers and the model while the application supplies only its own event type. It is the point at
 which the tracker's `suppress` (via `drag_consumed`) and the drivers' `stats` diagnostics (via
 `is_stats`) are wired to application intent without either side depending on the other.
+
+## mk5 decision — generic input runtime modules, and a `TouchController` trait
+
+*Decided for mk5.* The touch and IMU **runtime modules** (`TouchMod`/`ImuMod` — the `Module`
+implementations that poll the hardware each pass and publish `BoardEvent`s on the app's bus) become
+part of `light-input`, so a board wires *drivers*, not *modules*. In mk4 they lived in a
+board-support crate and, though generic over the app event, hardcoded the concrete drivers, the
+port's clock, and the board's axis map. mk5 makes them generic over:
+
+- the **touch controller**, through a new **`TouchController` trait** — `poll(now_ms) -> Option<TouchSample>`,
+  `probe`, the diagnostic failure counters, and `HardwareGestures` — which the four reference touch
+  drivers implement (mirroring the existing `ImuDriver` on the IMU side); a consumer's own controller
+  implements the same trait and drops straight into `TouchMod`;
+- the **IMU driver**, through the existing `ImuDriver` (`ImuMod<A, D: ImuDriver>`);
+- the **clock**, through `light_core::hal::Clock` rather than a port's free function;
+- the **app event**, through `BoardEvent`, as before.
+
+The board supplies the constructed driver, the axis map, and the clock; the module names no board and
+no port. This is what lets `light-input` own the modules while every board reuses them unchanged (see
+[09-application-model.md](09-application-model.md)).

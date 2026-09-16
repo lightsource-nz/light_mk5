@@ -310,6 +310,17 @@ shell does that work itself on core 1; either left on would have the SDK do it f
 
 ---
 
+### mk5 decision — the Rust-side shell glue is a `shell` module in the port
+
+*Decided for mk5.* The ABI above is the C↔Rust contract; the small **Rust** helpers layered on it —
+a `ShellInfo` accessor, the `service_core1` pump (log drain plus console pump), `panic_report`, and
+the core-0 stack watermark — are identical for every board on a given shell. In mk4 one board's
+support crate carried them, so any other board would have to copy them. In mk5 they live in a `shell`
+module in the port crate (`light-rp2` for the RP2 shell; each STM32 port for its single-core
+analogue, which has no `service_core1`), shared by every board and app on that port. A board's
+instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry points that call
+in. See [09-application-model.md](09-application-model.md).
+
 ## The bare-CMSIS shell (`light_mk4_shell_cmsis`)
 
 ### Responsibility
