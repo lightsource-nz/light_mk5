@@ -7,8 +7,7 @@
 
 #![no_std]
 
-use light_board_touch349::{panic_report, service_core1, ShellInfo};
-use light_dictaphone_touch349::{push_console_byte, run, Descent, RunConfig};
+use light_dictaphone_touch349::{panic_report, push_console_byte, run, service_core1, Descent, RunConfig, ShellInfo};
 use light_draw::Rotation;
 use light_input::imu::Orientation;
 

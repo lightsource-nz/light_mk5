@@ -30,10 +30,12 @@ use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a};
 use light_fs::{Fat, File as FsFile, FsError};
 use light_sd::{SdError, SpiSd};
-use light_board_touch349::{board, panic_report, service_core1, ImuMod, PowerManager, ShellInfo, TouchMod};
+use light_board_touch349::{board, PowerManager};
+use light_input::{ImuMod, TouchMod};
+use light_rp2::shell::{panic_report, service_core1, ShellInfo};
 use board::*;
-use light_rp2::gpio::Output;
-use light_rp2::i2c::I2c1;
+use light_rp2::gpio::{Input, Output};
+use light_rp2::i2c::{I2c0, I2c1};
 use light_rp2::i2s::PioI2sOut;
 use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::qspi::PioQspiDisplayBus;
@@ -1243,7 +1245,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 sd,
                 events: EVENTS.subscribe().expect("subscriber slot"),
         };
-        let mut imu_mod = ImuMod::new(imu, &EVENTS);
+        let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut rtc_mod = RtcMod { rtc: Pcf85063a::new(imu_i2c), events: EVENTS.subscribe().expect("subscriber slot") };
         let mut audio_mod = AudioMod {
                 codec: Es8311::new(imu_i2c),
@@ -1310,8 +1312,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 },
                 Hook,
         ));
-        static TOUCH_MOD: StaticCell<TouchMod<AppEvent>> = StaticCell::new();
-        let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, demo::touch_reads_held));
+        static TOUCH_MOD: StaticCell<TouchMod<AppEvent, Axs15231bTouch<I2c0, Input>, SysClock>> = StaticCell::new();
+        let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<7> = Runtime::new();

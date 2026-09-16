@@ -10,7 +10,7 @@
 
 
 use light_board_touch349::board::{self, DISPLAY_HEIGHT, DISPLAY_WIDTH, TOUCH_MAP};
-use light_board_touch349::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{panic_report, service_core1, ShellInfo};
 use light_core::{info, log, warn, ConstStaticCell, Module, Poll, Runtime};
 use light_display::axs15231b::Axs15231b;
 use light_display::{Display, FrameLayer};

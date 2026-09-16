@@ -19,7 +19,7 @@ use crate::{BoardEvent, TouchController, TouchSample, Tracker};
 pub struct TouchMod<A, T, C>
 where
         A: BoardEvent + Debug + Send + 'static,
-        T: TouchController + Send + 'static,
+        T: TouchController + 'static,
         C: Clock + 'static,
 {
         touch: T,
@@ -38,7 +38,7 @@ where
 impl<A, T, C> TouchMod<A, T, C>
 where
         A: BoardEvent + Debug + Send + 'static,
-        T: TouchController + Send + 'static,
+        T: TouchController + 'static,
         C: Clock + 'static,
 {
         /// Wire a controller to an app's `bus`. `reads_held` is the app's push/touch bisect gate.
@@ -51,7 +51,7 @@ where
 impl<A, T, C> Module for TouchMod<A, T, C>
 where
         A: BoardEvent + Debug + Send + 'static,
-        T: TouchController + Send + 'static,
+        T: TouchController + 'static,
         C: Clock + 'static,
 {
         fn name(&self) -> &'static str {
@@ -117,7 +117,7 @@ where
 pub struct ImuMod<A, D, C>
 where
         A: BoardEvent + Send + 'static,
-        D: ImuDriver + Send + 'static,
+        D: ImuDriver + 'static,
         C: Clock + 'static,
 {
         imu: Imu<D>,
@@ -130,7 +130,7 @@ where
 impl<A, D, C> ImuMod<A, D, C>
 where
         A: BoardEvent + Send + 'static,
-        D: ImuDriver + Send + 'static,
+        D: ImuDriver + 'static,
         C: Clock + 'static,
 {
         /// Wire an IMU to an app's `bus`. `axis_map` rotates the chip frame into the device frame.
@@ -143,7 +143,7 @@ where
 impl<A, D, C> Module for ImuMod<A, D, C>
 where
         A: BoardEvent + Send + 'static,
-        D: ImuDriver + Send + 'static,
+        D: ImuDriver + 'static,
         C: Clock + 'static,
 {
         fn name(&self) -> &'static str {
