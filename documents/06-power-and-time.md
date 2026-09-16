@@ -259,6 +259,19 @@ only behaviour gated on "on external power", the single yes/no question the boar
 
 ---
 
+### mk5 decision — the power lifecycle is a framework runtime module
+
+*Decided for mk5 (proposal B).* mk4 wrapped `PowerManager` in a per-app "board" module and copied it
+into every app (five near-identical copies), fused with unrelated storage and PSRAM diagnostic
+console commands. mk5 promotes the power lifecycle to a framework runtime module — a
+`PowerMod<M: PowerMechanism, C: Clock, …>` in `light-power-manager` that runs `on_load` / `tick` /
+`on_unload`, applies backlight commands, and reports battery and external-power stats — generic over
+the board's mechanism, a clock, and the app event through a small power-event trait (the
+backlight/stats recognisers), the same pattern [`BoardEvent`](03-input.md) established for input. The
+storage and PSRAM diagnostics that mk4 fused into that module are a separate concern and are
+**unfused** — they move to where storage lives, or remain app console commands. An app then adds the
+module, not a hand-written copy.
+
 ## `light-rtc` — real-time clock
 
 ### Responsibility
@@ -311,3 +324,12 @@ implemented so far as a reference driver: the NXP PCF85063A.
   `read_register` / `write_register_byte`; the coherent multi-field set uses `write_raw`. The driver
   uses exactly the framing each operation needs from the shared `I2cBus` trait, the same trait the
   power and audio drivers reach the world through.
+
+## mk5 decision — an RTC runtime module and an `Rtc` driver trait
+
+*Decided for mk5 (proposal B).* mk4 wrapped the concrete RTC driver in a per-app module and copied it
+into each app that has a clock (three near-identical copies). mk5 promotes it to a framework runtime
+module — an `RtcMod<R: Rtc, C, …>` in `light-rtc` — generic over the RTC driver, a clock, and the app
+event (a small rtc-event trait: show / set). This needs an **`Rtc` driver trait** (`init` / `now` /
+`set`), which the concrete driver implements, mirroring `ImuDriver` and the new `TouchController` (see
+[03-input.md](03-input.md)); a consumer's own RTC implements the same trait and drops into `RtcMod`.

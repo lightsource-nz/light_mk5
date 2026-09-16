@@ -148,6 +148,17 @@ the widget demo) use the same `TouchMod`/`ImuMod`. Modules that consume app-spec
 (the RTC, the audio, the power/board module) stay in the app or the shared app-board crate, since
 they are app-coupled.
 
+### mk5 decision — the reusable runtime modules are framework, not per-app
+
+*Decided for mk5 (proposal B, building on A).* mk4 kept the touch/IMU modules shareable but left the
+RTC, audio, and power modules app-coupled and duplicated across apps. mk5 promotes the reusable ones
+to framework crates — the power module to `light-power-manager`, the RTC module to `light-rtc`, an
+audio-player module to `light-audio` (see [06-power-and-time.md](06-power-and-time.md) and
+[04-audio-and-midi.md](04-audio-and-midi.md)) — each generic over its driver or mechanism, a clock,
+and the app event through a small per-subsystem event trait, the way `light_input::BoardEvent` already
+works for input. So an app wires *drivers and event-trait impls*, not hand-written modules; what
+stays app-side is genuinely app-shaped logic (a recorder, an app's own console commands).
+
 ## The worked examples
 
 - **Widget demo** (`light_app_ui_demo`) — three pages (toggles, a detail page, a scrolling list) on

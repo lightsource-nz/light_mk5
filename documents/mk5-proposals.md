@@ -36,7 +36,14 @@ instantiate against, so they come first.
 - **Touches.** [09-application-model.md](09-application-model.md), [00-overview.md](00-overview.md)
   (principles / conventions).
 
-## B. Promote board-generic runtime modules into the framework — *proposed*
+## B. Promote board-generic runtime modules into the framework — *decided*
+
+> **Decided (mk5), design recorded** in [06](06-power-and-time.md#) (power lifecycle → a `PowerMod`
+> in `light-power-manager`, storage/PSRAM diagnostics unfused; RTC → an `RtcMod` + a new `Rtc` driver
+> trait in `light-rtc`), [04](04-audio-and-midi.md#) (a framework audio-*player* primitive in
+> `light-audio`; the card recorder stays a reusable app-level engine), and [09](09-application-model.md#)
+> (the seam). Each module is generic over its driver/mechanism, a clock, and the app event via a small
+> per-subsystem event trait, extending the `BoardEvent` pattern. **Not yet applied to code.**
 
 - **Status quo (mk4).** The generic input modules are shared but live in one board crate; the
   RTC, audio, and power modules are app-coupled and re-implemented per application.

@@ -75,6 +75,17 @@ that is the same on every chip: register sequences and sample math.
   interpreted on the way to a PWM duty value; the `Encoding` enum is the seam a compressed format
   would slot into without changing the call signature.
 
+### mk5 decision — a framework audio-player module
+
+*Decided for mk5 (proposal B).* mk4 had two things called `AudioMod`: a small tone/PCM player (in the
+widget demo) and a full card recorder (in the dictaphone — already generic over `Store` / `I2cBus` /
+`AudioStream` / `OutputPin` / `Clock` / event, but app-shaped, carrying a recordings list and
+status). mk5 promotes only the **player primitive** to `light-audio`: an audio-player module over a
+codec (`I2cBus`) and the `AudioStream` transport, generic over the app event through a small
+audio-event trait, so any app gets tone/PCM playback without a hand-written copy. The **card recorder
+stays an app-level engine** — it is already generic, so it is reused as a crate rather than
+duplicated; a recorder is an application, not a framework primitive.
+
 ## The streaming contract — `AudioStream` and `PioI2sOut`
 
 `light_core::hal::AudioStream` is the transport contract that decouples an app's audio from the wire.
