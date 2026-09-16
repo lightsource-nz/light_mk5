@@ -387,7 +387,9 @@ Internal to the shell (not Rust-facing): `light_shell_clock_init` / `_status` an
 - **One critical-section per firmware.** `critical-section` allows a single global implementation, so
   each firmware links exactly one port. The RP2 port supplies a nesting-aware dual-core section; the
   STM32 ports use `cortex-m`'s single-core PRIMASK section. The two cannot coexist in one binary, and
-  that is by design — the port is a per-firmware choice.
+  that is by design — the port is a per-firmware choice. *(mk5 keeps this per-firmware property but
+  moves the ports into a separate firmware workspace so it never constrains the host-test build — see
+  proposal F in [mk5-proposals.md](mk5-proposals.md) and [10-build-and-release.md](10-build-and-release.md).)*
 - **The shell owns the runtime; Rust owns everything above it.** `crt0`, `boot2`/startup, the linker
   script, the clock tree, multicore launch, PIO assembly and the USB stack live in C. Rust is handed
   the measured clock rates and a tiny callback surface, and runs the application forever from

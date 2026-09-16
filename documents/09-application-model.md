@@ -103,6 +103,11 @@ a linked crate **cannot share a name**. Hence the `_app` suffix on some instanti
 executable `foo` alongside its linked crate `foo_app`), and the distinct names where a crate is
 linked by an executable of a related name.
 
+> **mk5 decision (proposal F).** The `_app` workaround is removed by a uniform naming convention: the
+> instantiation crate is always `light_app_<name>` and the executable is `<name>`, so the two never
+> share a stem and cannot collide (the pattern the ui_demo targets already use). See
+> [10-build-and-release.md](10-build-and-release.md).
+
 ## The runtime shape of an application
 
 At `light_app_main` the instantiation crate: paints the stack watermark, sets the log clock, takes

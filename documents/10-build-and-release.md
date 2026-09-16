@@ -30,6 +30,29 @@ projects.
   executable subdirectory to add. Each executable links its instantiation crate's staticlib plus the
   pico-sdk libraries it needs.
 
+## mk5 decision — two workspaces and uniform target naming (proposal F)
+
+*Decided for mk5.* mk4 keeps one cargo workspace, which forces two workarounds that mk5 removes.
+
+- **Two workspaces, one version.** The single-global `critical-section` (a property of that crate, not
+  a defect — see [07-ports-and-shell.md](07-ports-and-shell.md)) means the ports cannot build
+  together and none build on the host, so mk4's host test is `cargo test --workspace` with a
+  seventeen-entry `--exclude` list. mk5 splits the tree into a **portable workspace** (the framework
+  crates, the portable application crates, and the host tools) and a **firmware workspace** (the
+  ports, the board-support crates, the per-board instantiation crates, and the `module/*` executables,
+  each firmware selecting one port). The portable workspace then host-tests with a plain `cargo test`
+  — no excludes — and no build ever pulls two ports together. The firmware workspace depends on the
+  portable crates by path across the boundary; the shared version (see *Versioning*) is coordinated
+  across both by the release tooling.
+- **Uniform target naming.** mk4's `_app` suffix exists because a CMake `add_executable(<name>)`
+  target and a Corrosion-imported crate of the same name collide in one CMake namespace. mk5 adopts a
+  uniform convention where the instantiation crate and the executable never share a stem — the crate
+  is `light_app_<name>` and the executable is `<name>` (the pattern the ui_demo targets already use,
+  which need no suffix) — so the collision cannot arise and the `_app` workaround is dropped.
+
+The single-global critical-section itself stays a per-firmware property; F changes the build *around*
+it, not the choice.
+
 ## The asset pipeline in the build
 
 Three CMake helpers turn authored files into blobs and hand their paths to the linked crate as env

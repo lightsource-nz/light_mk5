@@ -48,8 +48,10 @@ how an application is built on it.
    a hardware-independent crate; a per-board crate supplies the wiring (pins, peripherals, the
    embedded blobs) and links it to a board-support crate. See [09-application-model.md](09-application-model.md).
 
-6. **One workspace, one version.** All crates share a single version, bumped in the commit a release
-   tags. MIT licensed throughout. See [10-build-and-release.md](10-build-and-release.md).
+6. **One version across the tree.** All crates share a single version, bumped in the commit a release
+   tags. MIT licensed throughout. *(mk4 kept every crate in one cargo workspace; mk5 splits the tree
+   into a portable workspace and a firmware workspace that share the one version — see proposal F in
+   [mk5-proposals.md](mk5-proposals.md).)* See [10-build-and-release.md](10-build-and-release.md).
 
 ## Conventions
 

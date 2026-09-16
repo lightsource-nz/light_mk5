@@ -102,7 +102,15 @@ instantiate against, so they come first.
 - **Touches.** [04-audio-and-midi.md](04-audio-and-midi.md),
   [01-core-runtime.md](01-core-runtime.md) (`AudioStream` hal).
 
-## F. Rework the build and port seams — *proposed*
+## F. Rework the build and port seams — *decided*
+
+> **Decided (mk5), design recorded** in [10](10-build-and-release.md#) (two workspaces — portable vs
+> firmware/ports — so host tests run with a plain `cargo test` and no `--exclude` list; uniform
+> `light_app_<name>` crate + `<name>` executable naming so the CMake/Corrosion collision that forced
+> `_app` cannot arise), with cross-refs in [09](09-application-model.md#) (naming), [07](07-ports-and-shell.md#)
+> (ports move to the firmware workspace), and [00](00-overview.md#) (principle 6 → two workspaces, one
+> version). The single-global critical-section stays a per-firmware property; F changes the build
+> around it. **Not yet applied to code.**
 
 - **Status quo (mk4).** The build system's executable/crate namespace collision forces an `_app`
   suffix on some crates; the single-global `critical-section` means the two flavours cannot coexist,
