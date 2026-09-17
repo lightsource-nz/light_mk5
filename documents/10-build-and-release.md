@@ -88,7 +88,10 @@ font, or a theme is data: an authored file and one call, no firmware source touc
   target it resets the running board into BOOTSEL over the console's 1200-baud touch and copies the
   UF2 to the mounted volume; a halted board that no longer serves the reset needs a manual BOOTSEL
   (hold BOOT, replug). `swd` targets flash over the debug probe.
-- `scripts/console.ps1` / `debug.ps1` — open the board's console / a debug session.
+- `scripts/console.ps1` / `debug.ps1` — open the board's console / a debug session. `console.ps1`
+  captures output for a window (`-Seconds`, `-Until`), or drives the CLI non-interactively with
+  `-Send "cmd"` (or a list) — sending each command and capturing its reply — so a script, CI, or an
+  agent can read `stats` and issue commands without a terminal.
 
 `cargo build --workspace --target thumbv8m…` does **not** work: `crush` is a `std` binary, and a
 workspace-wide cross build unifies features across the two `critical-section` flavours. Build the
