@@ -185,7 +185,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Cst328::new(i2c, p.touch_int, p.touch_reset, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
 
-        let mut power_mod = PowerMod::new(Touch28Power { backlight: p.backlight, bat_en: p.bat_en, key_bat: p.key_bat }, SysClock, &EVENTS, power_backlight, power_is_stats);
+        let mut power_mod = PowerMod::new(Touch28Power { backlight: p.backlight, bat_en: p.bat_en, key_bat: p.key_bat }, SysClock, &EVENTS, power_backlight, power_is_stats, |_| None);
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());

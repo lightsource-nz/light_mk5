@@ -15,6 +15,7 @@ light-ui = { path = "../light-ui" }
 light-audio = { path = "../light-audio" }
 light-rp2 = { path = "../light-rp2", features = ["rp2350"] }
 light-board-touch349 = { path = "../light-board-touch349" }
+light-power-manager = { path = "../light-power-manager" }
 light-rtc = { path = "../light-rtc" }
 light-sd = { path = "../light-sd" }
 light-fs = { path = "../light-fs" }

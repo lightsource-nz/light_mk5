@@ -13,4 +13,4 @@
 pub mod board;
 mod power;
 
-pub use power::PowerManager;
+pub use power::Touch349Power;

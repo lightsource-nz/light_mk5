@@ -24,7 +24,7 @@ use light_board_touch4::{board, Touch4Power};
 use board::*;
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
-use light_power_manager::PowerManager;
+use light_power_manager::PowerMod;
 use light_display::scanout::Scanout;
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
@@ -106,6 +106,17 @@ enum Ext {
 
 type AppEvent = DemoEvent<Ext>;
 
+//   the framework power module (light_power_manager::PowerMod) reads only the backlight command
+// here; this board's battery/charge/scanout stats are read by the board module below (the mechanism
+// has no gauge), so PowerMod is given no stats or busy recognizer.
+fn power_backlight(e: &AppEvent) -> Option<u16> {
+        if let DemoEvent::Command(Command::Backlight(level)) = e {
+                Some(*level)
+        } else {
+                None
+        }
+}
+
 //   the recognizers the framework RTC module (light_rtc::RtcMod) reads this app's events through:
 // report the clock on `stats` or an explicit `rtc show`, and set it on `rtc set`. The set/show
 // events live in this board's Ext, which the module cannot name, so they are passed as fns.
@@ -120,7 +131,7 @@ fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
         }
 }
 
-static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 16, 7> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -255,8 +266,10 @@ impl BoardHook<Scanout, Ext> for Hook {
 
 
 
+//   the battery-and-diagnostics module: battery/charge/scanout stats, the scan probe, and the PSRAM
+// memtest -- all board-specific and app-coupled. Power (backlight, the dim lifecycle) is the
+// framework PowerMod now (proposal B unfused the two).
 struct BoardMod {
-        power: PowerManager<Touch4Power, SysClock>,
         battery: Adc,
         charging: Input,
         charge_done: Input,
@@ -269,19 +282,10 @@ impl Module for BoardMod {
         fn name(&self) -> &'static str {
                 "board"
         }
-        fn load(&mut self) -> Result<(), ()> {
-                self.power.on_load();
-                Ok(())
-        }
         fn poll(&mut self) -> Poll {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                AppEvent::Command(Command::Backlight(level)) => {
-                                        busy = true;
-                                        self.power.set_backlight(level);
-                                        info!("backlight {level}");
-                                }
                                 AppEvent::Command(Command::Stats) => {
                                         let raw = u32::from(self.battery.read());
                                         let mv = raw * 3300 * BATTERY_DIVIDER / 4096;
@@ -334,15 +338,7 @@ impl Module for BoardMod {
                                 _ => {}
                         }
                 }
-                //   the shared power policy: dim on idle, wake on activity (touch/IMU via the
-                // beacon). This board has no latch, so it never truly powers off -- it dims only
-                if let Poll::Shutdown = self.power.tick() {
-                        return Poll::Shutdown;
-                }
                 if busy { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                self.power.on_unload();
         }
 }
 
@@ -435,8 +431,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Gt911::new(i2c1, p.touch_int, TOUCH_MAP, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c1));
 
-        let power = PowerManager::new(Touch4Power { backlight: p.backlight }, SysClock);
-        let mut board_mod = BoardMod { power, battery: p.battery, charging: p.charging, charge_done: p.charge_done, scanout: p.scanout, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut power_mod = PowerMod::new(Touch4Power { backlight: p.backlight }, SysClock, &EVENTS, power_backlight, |_| false, |_| None);
+        let mut board_mod = BoardMod { battery: p.battery, charging: p.charging, charge_done: p.charge_done, scanout: p.scanout, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut rtc_mod = RtcMod::new(Pcf85063a::new(i2c1), &EVENTS, rtc_is_report, rtc_get_set);
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565Le));
@@ -487,7 +483,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
-        let mut rt: Runtime<6> = Runtime::new();
+        let mut rt: Runtime<7> = Runtime::new();
+        rt.add(&mut power_mod).expect("capacity");
         rt.add(&mut board_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");

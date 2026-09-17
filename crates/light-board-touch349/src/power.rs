@@ -24,11 +24,10 @@
 //! (charging done so GPIO 47 high, no host) -- it reads as battery and parks after the idle, rare
 //! and harmless (external power holds the rails; it wakes on the button).
 
-use light_core::{InputPin, Poll};
+use light_core::InputPin;
 use light_rp2::adc::Adc;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::pwm::PwmOutput;
-use light_rp2::SysClock;
 use light_power_manager::PowerMechanism;
 
 use crate::board::{BACKLIGHT_INVERTED, BACKLIGHT_LEVEL_MAX, BATTERY_DIVIDER};
@@ -102,50 +101,5 @@ impl PowerMechanism for Touch349Power {
                 let raw = sum / BATTERY_SAMPLES;
                 //   12-bit read across 3.3 V behind the divider
                 Some(raw * 3300 * BATTERY_DIVIDER / 4096)
-        }
-}
-
-/// The board module's power handle: the portable policy over this board's mechanism and clock.
-/// A thin facade so the module keeps a board-shaped API (`new` from the four peripherals, a `u32`
-/// battery read) while the behaviour itself lives in [`light_power_manager`].
-pub struct PowerManager(light_power_manager::PowerManager<Touch349Power, SysClock>);
-
-impl PowerManager {
-        pub fn new(backlight: PwmOutput, sys_en: Output, button: Input, battery: Adc, charge_stat: Input) -> Self {
-                Self(light_power_manager::PowerManager::new(Touch349Power::new(backlight, sys_en, button, battery, charge_stat), SysClock))
-        }
-
-        pub fn on_load(&mut self) {
-                self.0.on_load();
-        }
-
-        pub fn on_unload(&mut self) {
-                self.0.on_unload();
-        }
-
-        pub fn note_activity(&mut self) {
-                self.0.note_activity();
-        }
-
-        pub fn set_backlight(&mut self, level: u16) {
-                self.0.set_backlight(level);
-        }
-
-        pub fn set_busy(&mut self, busy: bool) {
-                self.0.set_busy(busy);
-        }
-
-        /// VBAT in millivolts; this board always has a gauge, so the [`Option`] is always `Some`.
-        pub fn battery_mv(&mut self) -> u32 {
-                self.0.battery_mv().unwrap_or(0)
-        }
-
-        /// Whether the board reads as on external power (the charger-status pin), for `stats`.
-        pub fn on_external_power(&self) -> bool {
-                self.0.on_external_power()
-        }
-
-        pub fn tick(&mut self) -> Poll {
-                self.0.tick()
         }
 }

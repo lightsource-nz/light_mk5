@@ -19,14 +19,17 @@ pub struct PowerMod<M: PowerMechanism, C: Clock, A: Copy + 'static> {
         sub: Subscription,
         backlight_of: fn(&A) -> Option<u16>,
         is_stats: fn(&A) -> bool,
+        busy_of: fn(&A) -> Option<bool>,
 }
 
 impl<M: PowerMechanism, C: Clock, A: Copy + 'static> PowerMod<M, C, A> {
         /// Build a power module over the board's `mech` and `clock`. `backlight_of` yields a
-        /// per-mille level for a backlight command; `is_stats` recognises the report request.
-        pub fn new(mech: M, clock: C, bus: &'static dyn Bus<A>, backlight_of: fn(&A) -> Option<u16>, is_stats: fn(&A) -> bool) -> Self {
+        /// per-mille level for a backlight command; `is_stats` recognises the report request;
+        /// `busy_of` yields a busy flag for a request that defers the on-battery power-off (e.g.
+        /// audio in flight). A board with no busy-defer passes `|_| None`.
+        pub fn new(mech: M, clock: C, bus: &'static dyn Bus<A>, backlight_of: fn(&A) -> Option<u16>, is_stats: fn(&A) -> bool, busy_of: fn(&A) -> Option<bool>) -> Self {
                 let sub = bus.subscribe().expect("subscriber slot");
-                Self { power: PowerManager::new(mech, clock), bus, sub, backlight_of, is_stats }
+                Self { power: PowerManager::new(mech, clock), bus, sub, backlight_of, is_stats, busy_of }
         }
 }
 
@@ -49,6 +52,10 @@ impl<M: PowerMechanism, C: Clock, A: Copy + 'static> Module for PowerMod<M, C, A
                                 if let Some(mv) = self.power.battery_mv() {
                                         info!("battery: {} mV, {}", mv, if self.power.on_external_power() { "external power" } else { "on battery" });
                                 }
+                        } else if let Some(b) = (self.busy_of)(&ev) {
+                                //   busy (e.g. audio in flight) holds off the on-battery power-off so a
+                                // recording is never cut short; it never defers the dim
+                                self.power.set_busy(b);
                         }
                 }
                 //   the shared power policy: dim on idle, power off on battery after a longer idle,

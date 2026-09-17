@@ -30,7 +30,8 @@ use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a, RtcMod};
 use light_fs::{Fat, File as FsFile, FsError};
 use light_sd::{SdError, SpiSd};
-use light_board_touch349::{board, PowerManager};
+use light_board_touch349::{board, Touch349Power};
+use light_power_manager::PowerMod;
 use light_input::{ImuMod, TouchMod};
 use light_rp2::shell::{panic_report, service_core1, ShellInfo};
 use board::*;
@@ -310,6 +311,20 @@ enum Ext {
 
 type AppEvent = DemoEvent<Ext>;
 
+//   the recognizers the framework power module (light_power_manager::PowerMod) reads this app's
+// events through: a backlight command carries a level, and `stats` asks for the battery report
+// (this board has a gauge, so PowerMod prints it).
+fn power_backlight(e: &AppEvent) -> Option<u16> {
+        if let DemoEvent::Command(Command::Backlight(level)) = e {
+                Some(*level)
+        } else {
+                None
+        }
+}
+fn power_is_stats(e: &AppEvent) -> bool {
+        matches!(e, DemoEvent::Command(Command::Stats))
+}
+
 //   the recognizers the framework RTC module (light_rtc::RtcMod) reads this app's events through:
 // report the clock on `stats` or `rtc show`, and set it on `rtc set` (both in this board's Ext).
 fn rtc_is_report(e: &AppEvent) -> bool {
@@ -358,7 +373,7 @@ impl FsPath {
         }
 }
 
-static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 16, 8> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -949,10 +964,10 @@ impl Module for AudioMod {
         }
 }
 
+//   the storage-and-diagnostics module: the SD slot and the on-demand SD / filesystem / PSRAM
+// console commands. The power behaviour is the framework PowerMod now (proposal B unfused the two);
+// this module holds only what is board-specific and app-coupled.
 struct BoardMod {
-        /// The shared touch349 power behaviour: dim on idle, power off on battery. Owns the
-        /// backlight, the power latch, the side button and the battery ADC.
-        power: PowerManager,
         /// The TF slot; probed on demand (the `sd` command), not at boot -- an empty slot
         /// is this board's ordinary state. Shared with the recorder, per-operation.
         sd: &'static RefCell<SpiSd<Spi1Bus, Output>>,
@@ -963,22 +978,10 @@ impl Module for BoardMod {
         fn name(&self) -> &'static str {
                 "board"
         }
-        fn load(&mut self) -> Result<(), ()> {
-                self.power.on_load();
-                Ok(())
-        }
         fn poll(&mut self) -> Poll {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                AppEvent::Command(Command::Backlight(level)) => {
-                                        busy = true;
-                                        self.power.set_backlight(level);
-                                        info!("backlight {level}");
-                                }
-                                AppEvent::Command(Command::Stats) => {
-                                        info!("battery: {} mV, {}", self.power.battery_mv(), if self.power.on_external_power() { "external power" } else { "on battery" });
-                                }
                                 AppEvent::Ext(Ext::Psram) => {
                                         busy = true;
                                         let size = unsafe { light_board_psram_size() };
@@ -1016,16 +1019,7 @@ impl Module for BoardMod {
                                 _ => {}
                         }
                 }
-                //   the power manager runs the dim and power-off timers and the button-hold
-                // gesture; its shutdown flows through the runtime like the console's `quit`, so
-                // every module unloads before this module's unload releases the power latch
-                if let Poll::Shutdown = self.power.tick() {
-                        return Poll::Shutdown;
-                }
                 if busy { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                self.power.on_unload();
         }
 }
 
@@ -1197,11 +1191,15 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         // recorder both borrow it per operation
         static SD_CELL: StaticCell<RefCell<SpiSd<Spi1Bus, Output>>> = StaticCell::new();
         let sd: &'static RefCell<SpiSd<Spi1Bus, Output>> = SD_CELL.init(RefCell::new(SpiSd::new(p.sd_spi, p.sd_cs)));
-        let mut board_mod = BoardMod {
-                power: PowerManager::new(p.backlight, p.sys_en, p.power_button, p.battery, p.charge_stat),
-                sd,
-                events: EVENTS.subscribe().expect("subscriber slot"),
-        };
+        let mut power_mod = PowerMod::new(
+                Touch349Power::new(p.backlight, p.sys_en, p.power_button, p.battery, p.charge_stat),
+                SysClock,
+                &EVENTS,
+                power_backlight,
+                power_is_stats,
+                |_| None,
+        );
+        let mut board_mod = BoardMod { sd, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut rtc_mod = RtcMod::new(Pcf85063a::new(imu_i2c), &EVENTS, rtc_is_report, rtc_get_set);
         let mut audio_mod = AudioMod {
@@ -1273,7 +1271,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
-        let mut rt: Runtime<7> = Runtime::new();
+        let mut rt: Runtime<8> = Runtime::new();
+        rt.add(&mut power_mod).expect("capacity");
         rt.add(&mut board_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");

@@ -322,7 +322,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Cst816t::new(i2c, p.touch_int, p.touch_reset, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
 
-        let mut power_mod = PowerMod::new(Touch169Power { backlight: p.backlight }, SysClock, &EVENTS, power_backlight, power_is_stats);
+        let mut power_mod = PowerMod::new(Touch169Power { backlight: p.backlight }, SysClock, &EVENTS, power_backlight, power_is_stats, |_| None);
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut audio_mod = AudioMod {
                 buzzer: p.buzzer,
