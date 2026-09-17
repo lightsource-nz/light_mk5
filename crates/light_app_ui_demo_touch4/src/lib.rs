@@ -18,33 +18,31 @@
 #![no_std]
 
 use core::cell::RefCell;
-use core::fmt::Write;
 use light_app_ui_demo as demo;
 use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode, UiSource};
+use light_board_touch4::{board, Touch4Power};
+use board::*;
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
-use light_power_manager::{PowerManager, PowerMechanism};
+use light_power_manager::PowerManager;
 use light_display::scanout::Scanout;
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
-use light_input::drivers::gt911::{self, Gt911};
-use light_input::imu::{Imu, Orientation};
+use light_input::drivers::gt911::Gt911;
 use light_input::drivers::qmi8658::Qmi8658;
+use light_input::imu::{Imu, Orientation};
 use light_input::touch::Tracker;
+use light_input::{ImuMod, TouchMod};
 use light_rtc::{Datetime, Pcf85063a};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
-mod board;
-use board::*;
 use light_rp2::adc::Adc;
 use light_rp2::gpio::Input;
 use light_rp2::i2c::I2c1;
+use light_rp2::shell::{panic_report, service_core1, ShellInfo};
 use light_rp2::{Breathe, Clocks, SysClock};
 
 unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
         /// From this board's psram_info.c: what the SDK's runtime init detected on CS1.
         fn light_board_psram_size() -> u32;
 }
@@ -73,12 +71,6 @@ fn psram_test(size: u32) -> (u32, u32) {
                 }
         }
         (checked, bad)
-}
-
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
 }
 
 const FRAME_PIXELS: usize = DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize;
@@ -118,22 +110,9 @@ static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
-        log::drain(4, log_sink);
-        for _ in 0..32 {
-                let b = unsafe { light_shell_read_byte() };
-                if b < 0 {
-                        break;
-                }
-                demo::push_console_byte(b as u8);
-        }
+        service_core1(demo::push_console_byte);
 }
 
 // --- the interface, as data ---------------------------------------------------------------
@@ -260,96 +239,6 @@ impl BoardHook<Scanout, Ext> for Hook {
 
 // --- the board's own modules ---------------------------------------------------------------
 
-struct TouchMod {
-        touch: Gt911<&'static RefCell<I2c1>, Input>,
-        tracker: Tracker,
-        events: Subscription,
-        moves: u32,
-}
-
-impl Module for TouchMod {
-        fn name(&self) -> &'static str {
-                "touch"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.touch.probe() {
-                        Ok(Some(id)) => info!("gt911 answering on i2c1 (id {:?})", core::str::from_utf8(&id).unwrap_or("?")),
-                        Ok(None) => warn!("touch controller answered with an unexpected id"),
-                        Err(e) => warn!("gt911 did not answer the probe: {e:?}"),
-                }
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        match ev {
-                                AppEvent::Command(Command::Stats) => {
-                                        info!("touch: {} failed reads ({} nack, {} timeout, {} bus)", self.touch.failures, self.touch.nacks, self.touch.timeouts, self.touch.bus_errors);
-                                }
-                                AppEvent::Ui(demo::UiAction::DragConsumed) => self.tracker.suppress(),
-                                _ => {}
-                        }
-                }
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
-                match ev {
-                        gt911::Event::Down { x, y } => {
-                                self.moves = 0;
-                                debug!("touch down at {x},{y}");
-                        }
-                        gt911::Event::Up => debug!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
-                        gt911::Event::Move { .. } => self.moves += 1,
-                        gt911::Event::Reset => {}
-                }
-                if let Err(e) = EVENTS.publish(AppEvent::Touch(ev)) {
-                        warn!("event bus full; dropped {e:?}");
-                }
-                if let Some(g) = self.tracker.feed(ev, Some(&mut self.touch)) {
-                        let _ = EVENTS.publish(AppEvent::Gesture(g));
-                }
-                Poll::Busy
-        }
-}
-
-struct ImuMod {
-        imu: Imu<Qmi8658<&'static RefCell<I2c1>>>,
-        events: Subscription,
-}
-
-impl Module for ImuMod {
-        fn name(&self) -> &'static str {
-                "imu"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.imu.driver().probe() {
-                        Ok(Some(id)) => info!("qmi8658 chip id confirmed: 0x{id:02x}"),
-                        Ok(None) => warn!("qmi8658 answered with an unexpected chip id"),
-                        Err(e) => warn!("qmi8658 did not answer the chip id read: {e:?}"),
-                }
-                if let Err(e) = self.imu.driver().configure() {
-                        warn!("qmi8658 configuration failed: {e:?}");
-                }
-                self.imu.set_axis_map(IMU_AXIS_MAP);
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Command(Command::Stats) = ev {
-                                let a = self.imu.accel_mg;
-                                info!("imu: accel {} {} {} mg, {:?}, {} failed reads, {}.{} C", a[0], a[1], a[2], self.imu.orientation, self.imu.failures, self.imu.temperature_mc / 1000, (self.imu.temperature_mc % 1000).abs() / 100);
-                        }
-                }
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                if !self.imu.poll(now_ms) {
-                        return Poll::Idle;
-                }
-                if let Some(o) = self.imu.take_orientation() {
-                        info!("orientation: {o:?}");
-                        let _ = EVENTS.publish(AppEvent::Orientation(o));
-                }
-                Poll::Busy
-        }
-}
-
 struct RtcMod {
         rtc: Pcf85063a<&'static RefCell<I2c1>>,
         events: Subscription,
@@ -407,22 +296,6 @@ impl Module for RtcMod {
         }
 }
 
-/// This board's [`PowerMechanism`]: just the backlight (inverted, near-linear). The 4" has a
-/// battery and charge-status pins but NO power latch, so it cannot cut its own power; leaving
-/// `on_external_power` at its `true` default correctly keeps the policy from ever trying an
-/// unrecoverable shutdown, and the board just dims and wakes. Battery/charge stay in `BoardMod`
-/// for the `stats` readout. Touch (GT911) and IMU feed the activity beacon through their drivers.
-struct Touch4Power {
-        backlight: light_rp2::pwm::PwmOutput,
-}
-
-impl PowerMechanism for Touch4Power {
-        fn set_backlight(&mut self, level: u16) {
-                //   plain linear (no threshold band measured for this panel), inverted like the 3.49
-                let duty = if BACKLIGHT_INVERTED { BACKLIGHT_LEVEL_MAX - level.min(BACKLIGHT_LEVEL_MAX) } else { level };
-                self.backlight.set_duty(duty);
-        }
-}
 
 struct BoardMod {
         power: PowerManager<Touch4Power, SysClock>,
@@ -606,7 +479,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         let power = PowerManager::new(Touch4Power { backlight: p.backlight }, SysClock);
         let mut board_mod = BoardMod { power, battery: p.battery, charging: p.charging, charge_done: p.charge_done, scanout: p.scanout, events: EVENTS.subscribe().expect("subscriber slot") };
-        let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut rtc_mod = RtcMod { rtc: Pcf85063a::new(i2c1), events: EVENTS.subscribe().expect("subscriber slot") };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565Le));
         static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
@@ -652,8 +525,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 },
                 Hook { beam_waits: 0 },
         ));
-        static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
-        let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
+        static TOUCH_MOD: StaticCell<TouchMod<AppEvent, Gt911<&'static RefCell<I2c1>, Input>, SysClock>> = StaticCell::new();
+        let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<6> = Runtime::new();
@@ -676,30 +549,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         }
 }
 
-struct StackString<const N: usize> {
-        buf: [u8; N],
-        len: usize,
-}
-
-impl<const N: usize> StackString<N> {
-        const fn new() -> Self {
-                Self { buf: [0; N], len: 0 }
-        }
-}
-
-impl<const N: usize> Write for StackString<N> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let take = s.len().min(N - self.len);
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
-        }
-}
-
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
+        panic_report(info)
 }
