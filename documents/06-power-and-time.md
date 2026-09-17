@@ -327,9 +327,20 @@ implemented so far as a reference driver: the NXP PCF85063A.
 
 ## mk5 decision — an RTC runtime module and an `Rtc` driver trait
 
-*Decided for mk5 (proposal B).* mk4 wrapped the concrete RTC driver in a per-app module and copied it
-into each app that has a clock (three near-identical copies). mk5 promotes it to a framework runtime
-module — an `RtcMod<R: Rtc, C, …>` in `light-rtc` — generic over the RTC driver, a clock, and the app
-event (a small rtc-event trait: show / set). This needs an **`Rtc` driver trait** (`init` / `now` /
+*Decided for mk5 (proposal B); implemented and hardware-verified.* mk4 wrapped the concrete RTC
+driver in a per-app module and copied it into each app that has a clock (three near-identical
+copies). mk5 promotes it to a framework runtime module — an `RtcMod<R: Rtc, A>` in `light-rtc` —
+generic over the RTC driver and the app event. This needs an **`Rtc` driver trait** (`init` / `now` /
 `set`), which the concrete driver implements, mirroring `ImuDriver` and the new `TouchController` (see
 [03-input.md](03-input.md)); a consumer's own RTC implements the same trait and drops into `RtcMod`.
+
+**Implementation note — event recognition is by function pointer, not a trait.** The decision first
+proposed a small "rtc-event trait" mirroring `BoardEvent`, but that only works where the events are
+the *app event's own* variants (as touch/gesture/orientation are, so `BoardEvent` is implemented for
+`DemoEvent<X>` in the shared app crate). An app's RTC requests (show / set) live in its *board-specific
+extension* event `X`; the module cannot name `X`, and Rust's orphan rule forbids implementing a
+foreign trait (`RtcEvent`) on the foreign generic type (`DemoEvent<X>`) from the board crate. So
+`RtcMod` takes two **recognizer fns** — `is_report(&A) -> bool` and `get_set(&A) -> Option<Datetime>`
+— exactly as `TouchMod` takes its `reads_held: fn() -> bool` gate. The same rule decides the other
+promoted modules: an event that is the app event's own variant can use a trait; one that lives in the
+board extension is passed as a fn.

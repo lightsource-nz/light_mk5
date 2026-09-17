@@ -24,7 +24,7 @@ use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
-use light_rtc::{Datetime, Pcf85063a};
+use light_rtc::{Datetime, Pcf85063a, RtcMod};
 use light_sd::{SdError, SpiSd};
 use light_board_touch349::{board, PowerManager};
 use light_input::{ImuMod, TouchMod};
@@ -83,6 +83,19 @@ enum Ext {
 }
 
 type AppEvent = Event<Ext>;
+
+//   the recognizers the framework RTC module (light_rtc::RtcMod) reads this app's events through:
+// report the clock on `stats` or `rtc show`, and set it on `rtc set` (both in this board's Ext).
+fn rtc_is_report(e: &AppEvent) -> bool {
+        matches!(e, Event::Command(Command::Stats) | Event::Ext(Ext::RtcShow))
+}
+fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
+        if let Event::Ext(Ext::RtcSet(t)) = e {
+                Some(*t)
+        } else {
+                None
+        }
+}
 
 static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 
@@ -243,62 +256,6 @@ impl AudioStream for I2sStream {
 
 /// The PCF85063A on the shared i2c1, beside the IMU. Battery-backed: it keeps time across
 /// power-off, and says so -- the oscillator-stop flag marks a time nobody set.
-struct RtcMod {
-        rtc: Pcf85063a<&'static RefCell<I2c1>>,
-        events: Subscription,
-}
-
-impl RtcMod {
-        fn report(&mut self) {
-                match self.rtc.now() {
-                        Ok((t, kept)) => info!(
-                                "rtc: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (weekday {}){}",
-                                t.year,
-                                t.month,
-                                t.day,
-                                t.hour,
-                                t.minute,
-                                t.second,
-                                t.weekday,
-                                if kept { "" } else { " UNSET since power loss" }
-                        ),
-                        Err(e) => warn!("rtc read failed: {e:?}"),
-                }
-        }
-}
-
-impl Module for RtcMod {
-        fn name(&self) -> &'static str {
-                "rtc"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.rtc.init() {
-                        Ok(()) => self.report(),
-                        Err(e) => warn!("pcf85063a did not answer: {e:?}"),
-                }
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                let mut busy = false;
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        match ev {
-                                AppEvent::Command(Command::Stats) | AppEvent::Ext(Ext::RtcShow) => {
-                                        busy = true;
-                                        self.report();
-                                }
-                                AppEvent::Ext(Ext::RtcSet(t)) => {
-                                        busy = true;
-                                        match self.rtc.set(&t) {
-                                                Ok(()) => self.report(),
-                                                Err(e) => warn!("rtc set failed: {e:?}"),
-                                        }
-                                }
-                                _ => {}
-                        }
-                }
-                if busy { Poll::Busy } else { Poll::Idle }
-        }
-}
 
 struct BoardMod {
         /// The shared touch349 power behaviour: dim on idle, power off on battery. Owns the
@@ -464,7 +421,7 @@ pub fn run(info: &ShellInfo, cfg: RunConfig) -> ! {
                 events: EVENTS.subscribe().expect("subscriber slot"),
         };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
-        let mut rtc_mod = RtcMod { rtc: Pcf85063a::new(imu_i2c), events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut rtc_mod = RtcMod::new(Pcf85063a::new(imu_i2c), &EVENTS, rtc_is_report, rtc_get_set);
 
         //   the app's big audio state, in .bss slots this module owns -- the AudioMod
         // value itself lives on core 0's small stack (its &RefCell fields cannot ride a
