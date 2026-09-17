@@ -36,7 +36,17 @@ instantiate against, so they come first.
 - **Touches.** [09-application-model.md](09-application-model.md), [00-overview.md](00-overview.md)
   (principles / conventions).
 
-## B. Promote board-generic runtime modules into the framework — *decided*
+## B. Promote board-generic runtime modules into the framework — *implemented*
+
+> **Implemented (mk5).** RTC → `light_rtc::RtcMod` (over a new `Rtc` trait); power →
+> `light_power_manager::PowerMod` (349 facade removed, 349/4.0 diagnostics unfused, the dictaphone's
+> audio-busy defer preserved). Both roll out across the touch boards and build to `.uf2`; RTC is
+> hardware-verified on the 4.0. Event recognition is by function pointer, not a trait, wherever the
+> events live in the board's extension type (orphan rule). **Audio: resolved without an extraction** —
+> the reusable recorder is already the generic `light_dictaphone_core` crate and does not decompose
+> into a framework primitive (see [04](04-audio-and-midi.md#)); the real dedup wins are RTC + power.
+> Decision design below is superseded by these implementation notes.
+
 
 > **Decided (mk5), design recorded** in [06](06-power-and-time.md#) (power lifecycle → a `PowerMod`
 > in `light-power-manager`, storage/PSRAM diagnostics unfused; RTC → an `RtcMod` + a new `Rtc` driver

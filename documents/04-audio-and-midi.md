@@ -77,14 +77,27 @@ that is the same on every chip: register sequences and sample math.
 
 ### mk5 decision — a framework audio-player module
 
-*Decided for mk5 (proposal B).* mk4 had two things called `AudioMod`: a small tone/PCM player (in the
-widget demo) and a full card recorder (in the dictaphone — already generic over `Store` / `I2cBus` /
-`AudioStream` / `OutputPin` / `Clock` / event, but app-shaped, carrying a recordings list and
-status). mk5 promotes only the **player primitive** to `light-audio`: an audio-player module over a
-codec (`I2cBus`) and the `AudioStream` transport, generic over the app event through a small
-audio-event trait, so any app gets tone/PCM playback without a hand-written copy. The **card recorder
-stays an app-level engine** — it is already generic, so it is reused as a crate rather than
-duplicated; a recorder is an application, not a framework primitive.
+*Decided for mk5 (proposal B). Reassessed against the code and resolved without a new extraction.*
+mk4 had two things called `AudioMod`: a small tone/PCM player (in the widget demo, over the PWM piezo
+path — *not* a codec/`AudioStream`) and a full card recorder (in the dictaphone).
+
+The decision first proposed lifting a small codec-plus-`AudioStream` **player primitive** into
+`light-audio`. On inspection there is nothing clean to lift, and it would dedup nothing:
+
+- The only codec + `AudioStream` consumer is the 3.49 widget demo, and even there the `AudioMod` is a
+  player *and* recorder — the demo records too. The 1.69's audio is the PWM piezo, a different path.
+- The recorder is *already* a reusable generic crate: `light_dictaphone_core::AudioMod<S, B, A, P, C,
+  X>` is generic over the card (`Store`), codec bus (`I2cBus`), transport (`AudioStream`), amp pin,
+  clock, and board event. Any app can depend on it today.
+- That module is not decomposable into a framework primitive: it is coupled to a recorder's whole
+  command vocabulary (~twenty `Command`/`UiAction` handlers — record/play/tone/mic/files), and the
+  record/play machinery is methods *on* it. `Store`, `Recording<Dev>` and `Playback<Dev>` are
+  command-free but are trivial data holders with no logic to extract; the logic is the app's.
+
+**Resolution:** the audio subsystem's reusable unit is the whole `light_dictaphone_core` crate — a
+recorder is an application, not a framework primitive — so it is "promoted" by being a standalone
+generic crate any app links, which it already is. No `light-audio` player/recorder module is added.
+The genuine dedup wins of proposal B are the RTC and power modules; audio needs none.
 
 ## The streaming contract — `AudioStream` and `PioI2sOut`
 
