@@ -17,6 +17,7 @@ members = [
         "crates/light-rp2",
         "crates/light-power-manager",
         "crates/light-board-touch169",
+        "crates/light-board-touch28",
         "crates/light-board-touch349",
         "crates/light-stm32h7",
         "crates/light-stm32f4",

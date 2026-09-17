@@ -10,6 +10,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 light_app_ui_demo = { path = "../light_app_ui_demo" }
+light-board-touch28 = { path = "../light-board-touch28" }
 light-core = { path = "../light-core" }
 light-draw = { path = "../light-draw" }
 light-display = { path = "../light-display" }
