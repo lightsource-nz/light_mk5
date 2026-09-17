@@ -21,6 +21,9 @@
 use light_core::hal::Clock;
 use light_core::{info, Poll};
 
+pub mod module;
+pub use module::PowerMod;
+
 /// Full backlight, per-mille.
 const FULL_LEVEL: u16 = 1000;
 /// The backlight dims to this level after [`DIM_AFTER_US`] without activity.

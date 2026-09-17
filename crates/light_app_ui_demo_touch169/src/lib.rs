@@ -25,7 +25,7 @@ use light_display::{Display, FrameLayer};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
-use light_power_manager::PowerManager;
+use light_power_manager::PowerMod;
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 use light_audio::pwm::{pcm_to_duty, Encoding, VOLUME_MAX as AUDIO_VOLUME_MAX};
@@ -80,6 +80,20 @@ enum Ext {
 
 type AppEvent = DemoEvent<Ext>;
 
+//   the recognizers the framework power module (light_power_manager::PowerMod) reads this app's
+// events through: a backlight command carries a level, and `stats` asks for the battery report
+// (this board has no gauge, so PowerMod prints nothing for it -- kept for uniformity).
+fn power_backlight(e: &AppEvent) -> Option<u16> {
+        if let DemoEvent::Command(Command::Backlight(level)) = e {
+                Some(*level)
+        } else {
+                None
+        }
+}
+fn power_is_stats(e: &AppEvent) -> bool {
+        matches!(e, DemoEvent::Command(Command::Stats))
+}
+
 static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
@@ -133,39 +147,6 @@ impl BoardHook<St7789<Spi1Display>, Ext> for Hook {
 // --- the board's own modules ---------------------------------------------------------------
 
 
-struct BoardMod {
-        power: PowerManager<Touch169Power, SysClock>,
-        events: Subscription,
-}
-
-impl Module for BoardMod {
-        fn name(&self) -> &'static str {
-                "board"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                self.power.on_load();
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                let mut busy = false;
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Command(Command::Backlight(level)) = ev {
-                                busy = true;
-                                self.power.set_backlight(level);
-                                info!("backlight {level}");
-                        }
-                }
-                //   the shared power policy: dim on idle, wake on activity (touch/IMU via the
-                // beacon). No power-off here -- this board has no battery to save
-                if let Poll::Shutdown = self.power.tick() {
-                        return Poll::Shutdown;
-                }
-                if busy { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                self.power.on_unload();
-        }
-}
 
 /// One period of sine at 20000 amplitude, 32 steps -- plenty for a bring-up beeper.
 static SINE: [i16; 32] = [
@@ -341,8 +322,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Cst816t::new(i2c, p.touch_int, p.touch_reset, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
 
-        let power = PowerManager::new(Touch169Power { backlight: p.backlight }, SysClock);
-        let mut board_mod = BoardMod { power, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut power_mod = PowerMod::new(Touch169Power { backlight: p.backlight }, SysClock, &EVENTS, power_backlight, power_is_stats);
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut audio_mod = AudioMod {
                 buzzer: p.buzzer,
@@ -403,7 +383,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<6> = Runtime::new();
-        rt.add(&mut board_mod).expect("capacity");
+        rt.add(&mut power_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");
