@@ -58,8 +58,10 @@ where
                 "touch"
         }
         fn load(&mut self) -> Result<(), ()> {
-                //   after the display module's load has reset and initialised any shared chip; the
-                // touch read may be the only probe a protocol offers
+                //   reset first for a controller with its own reset line (it may auto-sleep); a
+                // no-op for one whose reset is the panel's. Then probe -- the touch read may be the
+                // only presence check a protocol offers.
+                self.touch.reset(&mut self.clock);
                 let mut result = self.touch.probe();
                 for _ in 0..2 {
                         if result.is_ok() {

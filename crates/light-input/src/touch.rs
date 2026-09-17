@@ -63,6 +63,10 @@ pub struct TouchDiagnostics {
 /// controller with its own gesture engine answers through the [`HardwareGestures`] supertrait; one
 /// without returns `None` there and the software [`Tracker`] classifies from coordinates.
 pub trait TouchController: HardwareGestures {
+        /// Reset the controller before the load-time probe, if it has its own reset line -- a part
+        /// that auto-sleeps needs this. The default is a no-op, for a controller whose reset is the
+        /// panel's (resetting it would blank the glass).
+        fn reset(&mut self, _clock: &mut dyn light_core::hal::Clock) {}
         /// Confirm the controller is present and answering; called once at module load.
         fn probe(&mut self) -> Result<(), light_core::hal::I2cError>;
         /// Read the next sample on the driver's own timed cadence, or `None` when nothing is due.

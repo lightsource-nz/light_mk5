@@ -85,6 +85,9 @@ const GESTURE_SWIPE_LEFT: u8 = 0x03;
 const GESTURE_SWIPE_RIGHT: u8 = 0x04;
 
 impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::TouchController for Cst816t<B, I, R> {
+        fn reset(&mut self, clock: &mut dyn light_core::hal::Clock) {
+                self.reset_blocking(clock);
+        }
         fn probe(&mut self) -> Result<(), light_core::hal::I2cError> {
                 self.probe().map(|_| ())
         }

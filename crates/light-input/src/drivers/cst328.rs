@@ -79,6 +79,9 @@ pub struct Cst328<B: I2cBus, I: InputPin, R: OutputPin> {
 }
 
 impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::TouchController for Cst328<B, I, R> {
+        fn reset(&mut self, clock: &mut dyn light_core::hal::Clock) {
+                self.reset_blocking(clock);
+        }
         fn probe(&mut self) -> Result<(), light_core::hal::I2cError> {
                 self.probe().map(|_| ())
         }

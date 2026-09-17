@@ -11,46 +11,30 @@
 #![no_std]
 
 use core::cell::RefCell;
-use core::fmt::Write;
 use light_app_ui_demo as demo;
 use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
-use light_input::drivers::cst816t::{self, Cst816t};
-use light_input::imu::{Imu, Orientation};
+use light_board_touch169::{board, Touch169Power};
+use board::*;
+use light_input::drivers::cst816t::Cst816t;
 use light_input::drivers::qmi8658::Qmi8658;
-use light_display::st7789::St7789;
+use light_input::imu::{Imu, Orientation};
 use light_input::touch::Tracker;
+use light_input::{ImuMod, TouchMod};
+use light_display::st7789::St7789;
+use light_display::{Display, FrameLayer};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
-use light_power_manager::{PowerManager, PowerMechanism};
-use light_display::{Display, FrameLayer};
+use light_power_manager::PowerManager;
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 use light_audio::pwm::{pcm_to_duty, Encoding, VOLUME_MAX as AUDIO_VOLUME_MAX};
-mod board;
-use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::pwm_audio::PwmAudio;
 use light_rp2::i2c::I2c1;
 use light_rp2::spi::Spi1Display;
+use light_rp2::shell::{panic_report, service_core1, ShellInfo};
 use light_rp2::{Breathe, Clocks, SysClock};
-
-unsafe extern "C" {
-        /// Hands a Rust panic to the shell, which prints it from the core that owns USB and
-        /// reboots into BOOTSEL. Never returns.
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        /// Prints one line on the shell's stdio. Core 1 only: the log sink, and nothing else's.
-        fn light_shell_log(msg: *const u8, len: usize);
-        /// One byte of console input, or -1. Core 1 only.
-        fn light_shell_read_byte() -> i32;
-}
-
-/// What the shell hands over: the clocks its runtime configured.
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
-}
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
@@ -100,22 +84,9 @@ static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
-        log::drain(4, log_sink);
-        for _ in 0..32 {
-                let b = unsafe { light_shell_read_byte() };
-                if b < 0 {
-                        break;
-                }
-                demo::push_console_byte(b as u8);
-        }
+        service_core1(demo::push_console_byte);
 }
 
 // --- the interface, as data ---------------------------------------------------------------
@@ -161,132 +132,6 @@ impl BoardHook<St7789<Spi1Display>, Ext> for Hook {
 
 // --- the board's own modules ---------------------------------------------------------------
 
-/// Owns the touch controller and publishes what it reports: samples, and the swipes the
-/// tracker makes of them.
-struct TouchMod {
-        touch: Cst816t<&'static RefCell<I2c1>, Input, Output>,
-        tracker: Tracker,
-        events: Subscription,
-        /// Move samples seen during the touch in progress, reported on its release: tells a
-        /// tap from a drag the controller chopped into pieces.
-        moves: u32,
-}
-
-impl Module for TouchMod {
-        fn name(&self) -> &'static str {
-                "touch"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                //   reset immediately before the probe: the controller auto-sleeps within about
-                // a second of being left alone
-                self.touch.reset_blocking(&mut SysClock);
-                match self.touch.probe() {
-                        Ok(Some(id)) => info!("cst816t chip id confirmed: 0x{id:02x}"),
-                        Ok(None) => warn!("cst816t answered with an unexpected chip id"),
-                        Err(e) => warn!("cst816t did not answer the chip id read: {e:?}"),
-                }
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        match ev {
-                                AppEvent::Command(Command::Stats) => {
-                                        info!(
-                                                "touch: {} failed reads ({} nack, {} timeout, {} bus), {} resets",
-                                                self.touch.failures,
-                                                self.touch.nacks,
-                                                self.touch.timeouts,
-                                                self.touch.bus_errors,
-                                                self.touch.recoveries
-                                        );
-                                }
-                                // the interface scrolled with this touch: its release is not a swipe
-                                AppEvent::Ui(demo::UiAction::DragConsumed) => self.tracker.suppress(),
-                                _ => {}
-                        }
-                }
-                if demo::touch_reads_held() {
-                        return Poll::Idle;
-                }
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
-                match ev {
-                        cst816t::Event::Down { x, y } => {
-                                self.moves = 0;
-                                debug!("touch down at {x},{y}");
-                        }
-                        cst816t::Event::Up => debug!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
-                        cst816t::Event::Reset => match self.touch.probe() {
-                                Ok(_) => info!("touch controller reset ({} so far); answering again", self.touch.recoveries),
-                                Err(e) => warn!("touch controller reset ({} so far); still not answering: {e:?}", self.touch.recoveries),
-                        },
-                        cst816t::Event::Move { .. } => self.moves += 1,
-                }
-                if let Err(e) = EVENTS.publish(AppEvent::Touch(ev)) {
-                        warn!("event bus full; dropped {e:?}");
-                }
-                if let Some(g) = self.tracker.feed(ev, Some(&mut self.touch)) {
-                        let _ = EVENTS.publish(AppEvent::Gesture(g));
-                }
-                Poll::Busy
-        }
-}
-
-/// Owns the IMU: publishes orientation changes, answers `stats` with the current vector.
-struct ImuMod {
-        imu: Imu<Qmi8658<&'static RefCell<I2c1>>>,
-        events: Subscription,
-}
-
-impl Module for ImuMod {
-        fn name(&self) -> &'static str {
-                "imu"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.imu.driver().probe() {
-                        Ok(Some(id)) => info!("qmi8658 chip id confirmed: 0x{id:02x}"),
-                        Ok(None) => warn!("qmi8658 answered with an unexpected chip id"),
-                        Err(e) => warn!("qmi8658 did not answer the chip id read: {e:?}"),
-                }
-                if let Err(e) = self.imu.driver().configure() {
-                        warn!("qmi8658 configuration failed: {e:?}");
-                }
-                self.imu.set_axis_map(IMU_AXIS_MAP);
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Command(Command::Stats) = ev {
-                                let a = self.imu.accel_mg;
-                                info!("imu: accel {} {} {} mg, {:?}, {} failed reads, {}.{} C", a[0], a[1], a[2], self.imu.orientation, self.imu.failures, self.imu.temperature_mc / 1000, (self.imu.temperature_mc % 1000).abs() / 100);
-                        }
-                }
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                if !self.imu.poll(now_ms) {
-                        return Poll::Idle;
-                }
-                if let Some(o) = self.imu.take_orientation() {
-                        info!("orientation: {o:?}");
-                        let _ = EVENTS.publish(AppEvent::Orientation(o));
-                }
-                Poll::Busy
-        }
-}
-
-/// This board's [`PowerMechanism`]: just the backlight (a non-inverted, near-linear PWM drive).
-/// The 1.69 has no battery, latch or power button, so the trait defaults do the rest -- most
-/// importantly `on_external_power` defaults to `true`, which correctly disables the on-battery
-/// power-off on a board that only ever runs from USB. Touch and IMU feed the activity beacon
-/// through their shared drivers, so the screen still dims on idle and wakes on use.
-struct Touch169Power {
-        backlight: light_rp2::pwm::PwmOutput,
-}
-
-impl PowerMechanism for Touch169Power {
-        fn set_backlight(&mut self, level: u16) {
-                self.backlight.set_duty(level.min(BACKLIGHT_LEVEL_MAX));
-        }
-}
 
 struct BoardMod {
         power: PowerManager<Touch169Power, SysClock>,
@@ -498,7 +343,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         let power = PowerManager::new(Touch169Power { backlight: p.backlight }, SysClock);
         let mut board_mod = BoardMod { power, events: EVENTS.subscribe().expect("subscriber slot") };
-        let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut audio_mod = AudioMod {
                 buzzer: p.buzzer,
                 events: EVENTS.subscribe().expect("subscriber slot"),
@@ -553,8 +398,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 },
                 Hook,
         ));
-        static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
-        let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
+        static TOUCH_MOD: StaticCell<TouchMod<AppEvent, Cst816t<&'static RefCell<I2c1>, Input, Output>, SysClock>> = StaticCell::new();
+        let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<6> = Runtime::new();
@@ -577,33 +422,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         }
 }
 
-/// A fixed-capacity string for formatting a line without an allocator.
-struct StackString<const N: usize> {
-        buf: [u8; N],
-        len: usize,
-}
-
-impl<const N: usize> StackString<N> {
-        const fn new() -> Self {
-                Self { buf: [0; N], len: 0 }
-        }
-}
-
-impl<const N: usize> Write for StackString<N> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                // truncating is the right failure for a line; report success so the formatter
-                // keeps going rather than abandoning the message at the first overflow
-                let take = s.len().min(N - self.len);
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
-        }
-}
-
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
+        panic_report(info)
 }

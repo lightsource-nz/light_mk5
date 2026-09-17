@@ -1,0 +1,12 @@
+[package]
+name = "light-board-touch169"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "board-support crate for the Waveshare RP2350-Touch-LCD-1.69: the pin wiring, the peripheral hand-over, and the board's backlight power mechanism"
+
+[dependencies]
+light-core = { path = "../light-core" }
+light-input = { path = "../light-input" }
+light-rp2 = { path = "../light-rp2", features = ["rp2350"] }
+light-power-manager = { path = "../light-power-manager" }
