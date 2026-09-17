@@ -34,7 +34,7 @@ use light_input::drivers::qmi8658::Qmi8658;
 use light_input::imu::{Imu, Orientation};
 use light_input::touch::Tracker;
 use light_input::{ImuMod, TouchMod};
-use light_rtc::{Datetime, Pcf85063a};
+use light_rtc::{Datetime, Pcf85063a, RtcMod};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_rp2::adc::Adc;
 use light_rp2::gpio::Input;
@@ -105,6 +105,20 @@ enum Ext {
 }
 
 type AppEvent = DemoEvent<Ext>;
+
+//   the recognizers the framework RTC module (light_rtc::RtcMod) reads this app's events through:
+// report the clock on `stats` or an explicit `rtc show`, and set it on `rtc set`. The set/show
+// events live in this board's Ext, which the module cannot name, so they are passed as fns.
+fn rtc_is_report(e: &AppEvent) -> bool {
+        matches!(e, DemoEvent::Command(Command::Stats) | DemoEvent::Ext(Ext::RtcShow))
+}
+fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
+        if let DemoEvent::Ext(Ext::RtcSet(t)) = e {
+                Some(*t)
+        } else {
+                None
+        }
+}
 
 static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
 
@@ -239,62 +253,6 @@ impl BoardHook<Scanout, Ext> for Hook {
 
 // --- the board's own modules ---------------------------------------------------------------
 
-struct RtcMod {
-        rtc: Pcf85063a<&'static RefCell<I2c1>>,
-        events: Subscription,
-}
-
-impl RtcMod {
-        fn report(&mut self) {
-                match self.rtc.now() {
-                        Ok((t, kept)) => info!(
-                                "rtc: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (weekday {}){}",
-                                t.year,
-                                t.month,
-                                t.day,
-                                t.hour,
-                                t.minute,
-                                t.second,
-                                t.weekday,
-                                if kept { "" } else { " UNSET since power loss" }
-                        ),
-                        Err(e) => warn!("rtc read failed: {e:?}"),
-                }
-        }
-}
-
-impl Module for RtcMod {
-        fn name(&self) -> &'static str {
-                "rtc"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.rtc.init() {
-                        Ok(()) => self.report(),
-                        Err(e) => warn!("pcf85063a did not answer: {e:?}"),
-                }
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                let mut busy = false;
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        match ev {
-                                AppEvent::Command(Command::Stats) | AppEvent::Ext(Ext::RtcShow) => {
-                                        busy = true;
-                                        self.report();
-                                }
-                                AppEvent::Ext(Ext::RtcSet(t)) => {
-                                        busy = true;
-                                        match self.rtc.set(&t) {
-                                                Ok(()) => self.report(),
-                                                Err(e) => warn!("rtc set failed: {e:?}"),
-                                        }
-                                }
-                                _ => {}
-                        }
-                }
-                if busy { Poll::Busy } else { Poll::Idle }
-        }
-}
 
 
 struct BoardMod {
@@ -480,7 +438,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let power = PowerManager::new(Touch4Power { backlight: p.backlight }, SysClock);
         let mut board_mod = BoardMod { power, battery: p.battery, charging: p.charging, charge_done: p.charge_done, scanout: p.scanout, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
-        let mut rtc_mod = RtcMod { rtc: Pcf85063a::new(i2c1), events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut rtc_mod = RtcMod::new(Pcf85063a::new(i2c1), &EVENTS, rtc_is_report, rtc_get_set);
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565Le));
         static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();

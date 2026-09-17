@@ -45,6 +45,18 @@ pub struct Pcf85063a<B: I2cBus> {
         bus: B,
 }
 
+impl<B: I2cBus> crate::Rtc for Pcf85063a<B> {
+        fn init(&mut self) -> Result<(), I2cError> {
+                self.init()
+        }
+        fn now(&mut self) -> Result<(Datetime, bool), I2cError> {
+                self.now()
+        }
+        fn set(&mut self, t: &Datetime) -> Result<(), I2cError> {
+                self.set(t)
+        }
+}
+
 impl<B: I2cBus> Pcf85063a<B> {
         pub fn new(bus: B) -> Self {
                 Self { bus }
