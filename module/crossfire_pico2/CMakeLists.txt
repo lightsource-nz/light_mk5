@@ -19,7 +19,7 @@ target_link_libraries(crossfire_pico2 PRIVATE
         pico_stdlib
         pico_multicore
         pico_bootrom
-        crossfire_pico2_app
+        light_app_crossfire_pico2
 )
 
 #   the status font: 16 px on the Pico-OLED-1.3's real geometry (64x128 over 17.2x32.3 mm)
@@ -28,7 +28,7 @@ light_mk4_add_font(crossfire_pico2_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY po13 WIDTH 64 HEIGHT 128 DIMENSION 17.2x32.3
         POINT_SIZE 12 PIXEL_SIZE 16
-        CRATE crossfire_pico2_app ENV LIGHT_FONT_LGF
+        CRATE light_app_crossfire_pico2 ENV LIGHT_FONT_LGF
 )
 
 light_mk4_shell_configure(crossfire_pico2 USB_HOST)

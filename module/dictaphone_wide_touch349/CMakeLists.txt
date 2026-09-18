@@ -13,7 +13,7 @@ target_link_libraries(dictaphone_wide_touch349 PRIVATE
         pico_stdlib
         pico_multicore
         pico_bootrom
-        dictaphone_wide_touch349_app
+        light_app_dictaphone_wide_touch349
 )
 
 #   the same font as the portrait app: rotation happens in the frame layer, so the glyphs
@@ -22,7 +22,7 @@ light_mk4_add_font(dictaphone_wide_touch349_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY ws_touch349 WIDTH 172 HEIGHT 640 DIMENSION 23.0x85.6
         POINT_SIZE 14 PIXEL_SIZE 16
-        CRATE dictaphone_wide_touch349_app ENV LIGHT_FONT_LGF
+        CRATE light_app_dictaphone_wide_touch349 ENV LIGHT_FONT_LGF
 )
 
 #   the framework's default look-and-feel for a color board (steel); a board override
@@ -34,11 +34,11 @@ set(dictaphone_wide_touch349_theme ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_
 if(EXISTS ${dictaphone_wide_touch349_theme})
         light_mk4_add_theme(dictaphone_wide_touch349_theme
                 THEME ${dictaphone_wide_touch349_theme}
-                CRATE dictaphone_wide_touch349_app ENV LIGHT_THEME_LTH
+                CRATE light_app_dictaphone_wide_touch349 ENV LIGHT_THEME_LTH
         )
 else()
         light_mk4_add_theme(dictaphone_wide_touch349_theme
-                CRATE dictaphone_wide_touch349_app ENV LIGHT_THEME_LTH
+                CRATE light_app_dictaphone_wide_touch349 ENV LIGHT_THEME_LTH
         )
 endif()
 
@@ -46,7 +46,7 @@ endif()
 # frame holds the scrolling recordings strip) compiled to an LUI blob
 light_mk4_add_ui(dictaphone_wide_touch349_ui
         UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_dictaphone_wide/design.json
-        CRATE dictaphone_wide_touch349_app ENV LIGHT_UI_LUI
+        CRATE light_app_dictaphone_wide_touch349 ENV LIGHT_UI_LUI
 )
 
 light_mk4_shell_configure(dictaphone_wide_touch349)

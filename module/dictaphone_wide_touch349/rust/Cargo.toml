@@ -1,5 +1,5 @@
 [package]
-name = "dictaphone_wide_touch349_app"
+name = "light_app_dictaphone_wide_touch349"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

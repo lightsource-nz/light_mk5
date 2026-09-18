@@ -2,7 +2,7 @@
 #   _app suffix: the plain name is the CMake EXECUTABLE (which must match the module
 # directory -- light-flash.ps1 finds module/<target>/<target>.uf2), and CMake target
 # names are one namespace with Corrosion's crate targets
-name = "crossfire_pico_app"
+name = "light_app_crossfire_pico"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
