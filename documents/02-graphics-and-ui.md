@@ -487,13 +487,16 @@ it means the same however the interface is rotated.*
   `commit`, then closes the frame. Widgets own their rects — a button and a label fill their
   interior with the surface/background — so a draw-over frame leaves nothing of the previous image.
   A refused frame leaves the dirty flag and regions standing for a later pass.
-- **Animations are mutually exclusive by construction.** A **page transition** slides the incoming
-  page over the outgoing one; with a back buffer the outgoing image is captured and slid off the
-  live tree (one buffer, not two), and without one (a single-buffered scanned panel) the roles swap
-  — the incoming tree draws over the old image at a shrinking offset. Direction comes from the
-  page's `Descent` (its own, then the tree default, then a layout-derived seed: a `Row`/horizontal
-  page rises from the bottom, everything else slides in from the right); a page's arrival and
-  departure always mirror. A **rotation** animation freezes the pre-rotation image into the back
+- **Animations are mutually exclusive by construction.** A **page transition** is a mirror: on OPEN
+  the outgoing page slides *off* to reveal the child (a reveal), on CLOSE it slides back *on* to hide
+  it (a cover) — the same page, the same edge, one motion reversed. With a back buffer the reveal
+  freezes the outgoing and slides it off the live incoming, and the cover renders the returning parent
+  into the back and slides it on over the static outgoing; on a single buffer the reveal scrolls the
+  outgoing off in place (region buffering, see the memory-model decision above) and the cover redraws
+  the incoming at a shrinking offset. Either way open and close mirror. Direction comes from the
+  page's `Descent` (its own, then the tree default, then a layout-derived seed: a `Row`/horizontal page
+  runs the vertical axis, everything else the horizontal one), and the sign is the descent axis's
+  alone — it does not turn on `back` — so the reveal leaves and the cover returns the same edge. A **rotation** animation freezes the pre-rotation image into the back
   buffer and `blit_rotated`s it turning (shrunk to stay inscribed) for `ROTATE_MS`, applying the
   real rotation once on the final step; it falls back to a correct snap when there is no back buffer
   or the format is not RGB565. `set_rotation` declines while a transition runs, deferring the target

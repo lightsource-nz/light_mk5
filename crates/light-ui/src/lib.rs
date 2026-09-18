@@ -1821,7 +1821,12 @@ mod tests {
         /// outgoing, which stays in the front. Mid-step, the covered region must be the incoming
         /// image displaced along the viewer's vertical, and the uncovered region the outgoing.
         #[test]
-        fn a_row_page_covers_by_sliding_the_incoming_up_over_the_static_outgoing() {
+        fn a_capture_transition_reveals_on_open_and_covers_on_close() {
+                //   the unified mirror on a double buffer: OPEN freezes the OUTGOING and slides it off
+                // (reveal); CLOSE renders the returning parent (the INCOMING) into the back and slides
+                // it on (cover). The captured back tells which: on open it is the page we LEFT, on
+                // close it is the page we RETURN to -- never the other one. A vertical (FromBottom)
+                // transition, so this also guards that the unification reaches the Row-page axis.
                 let blob = font_blob();
                 let font = Font::parse(&blob).unwrap();
                 let mut front = std::vec![0u8; 64 * 48 * 2];
@@ -1832,6 +1837,7 @@ mod tests {
                 let mut ui: Ui<Ev, 8> = Ui::new();
                 ui.set_style(&styled(&font));
                 ui.fit(&layer);
+                ui.set_default_descent(Some(Descent::FromBottom)); // a vertical transition
                 ui.navigate(&PAGE_MAIN).unwrap();
                 let mut t = 0u64;
                 let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, t: &mut u64| loop {
@@ -1842,53 +1848,38 @@ mod tests {
                                 break;
                         }
                 };
-                settle(&mut ui, &mut layer, &mut display, &mut t);
-                ui.set_rotation(&mut layer, Rotation::R270);
-                settle(&mut ui, &mut layer, &mut display, &mut t);
-                //   keep a copy of the outgoing (PAGE_MAIN) as it stands in the front before the
-                // transition -- the cover must preserve it in the uncovered region. Freeze to
-                // reach the front, copy it, thaw; the transition below freezes for itself.
-                let outgoing: StdVec<u8> = {
+                //   settled snapshots of the two pages to compare the captured back against
+                let snapshot = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, t: &mut u64| -> StdVec<u8> {
+                        settle(ui, layer, display, t);
                         assert!(display.freeze());
                         let (f, _) = display.frame_and_capture().unwrap();
                         let v = f.to_vec();
                         display.thaw();
                         v
                 };
-                ui.navigate(&PAGE_PINNED).unwrap();
-                // the first step freezes (render-mode) and renders the incoming into the back
-                let t0 = t;
-                assert!(ui.render(&mut layer, &mut display, &styled(&font), t0));
+                let main_img = snapshot(&mut ui, &mut layer, &mut display, &mut t);
+                ui.navigate(&PAGE_DETAIL).unwrap();
+                let detail_img = snapshot(&mut ui, &mut layer, &mut display, &mut t);
+                assert_ne!(main_img, detail_img, "the two pages must differ for the check to mean anything");
+                ui.navigate_back();
+                settle(&mut ui, &mut layer, &mut display, &mut t);
+
+                // OPEN: a reveal -- the back holds the OUTGOING (main), the page we are leaving
+                ui.navigate(&PAGE_DETAIL).unwrap();
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), t));
                 assert!(display.is_frozen());
-                while layer.poll(&mut display).unwrap() {}
-                let m = layer.transform();
-                let (ux, uy) = (m.b.signum(), m.d.signum());
-                assert_ne!((ux, uy), (0, 0));
-                let span = if ux != 0 { 64 } else { 48 };
-                // at the midpoint the blit offset is span/2 (span - travel, travel = span/2)
-                assert!(ui.render(&mut layer, &mut display, &styled(&font), t0 + u64::from(ui.page_move_ms) * 500));
-                while layer.poll(&mut display).unwrap() {}
-                let off = span / 2;
-                let (off_x, off_y) = (ux * off, uy * off);
-                let (f, incoming) = display.frame_and_capture().expect("frozen mid-transition");
-                let mut covered = 0;
-                for dy in 0..48i32 {
-                        for dx in 0..64i32 {
-                                let (sx, sy) = (dx - off_x, dy - off_y);
-                                let d = ((dy * 64 + dx) * 2) as usize;
-                                if !(0..64).contains(&sx) || !(0..48).contains(&sy) {
-                                        //   uncovered: the front still holds the outgoing, untouched
-                                        assert_eq!(&f[d..d + 2], &outgoing[d..d + 2], "uncovered ({dx},{dy}) is not the static outgoing");
-                                        continue;
-                                }
-                                //   covered: the incoming (in the back buffer) displaced up
-                                let s = ((sy * 64 + sx) * 2) as usize;
-                                assert_eq!(&f[d..d + 2], &incoming[s..s + 2], "covered ({dx},{dy}) is not the incoming image displaced by ({off_x},{off_y})");
-                                covered += 1;
-                        }
-                }
-                assert_eq!(covered, 64 * 48 / 2);
-                // run out: thawed, and the settled tree is the Row page
+                let (_f, captured) = display.frame_and_capture().expect("frozen on open");
+                assert_eq!(captured, &main_img[..], "open should REVEAL: the back is the outgoing (main)");
+                assert_ne!(captured, &detail_img[..]);
+                settle(&mut ui, &mut layer, &mut display, &mut t);
+
+                // CLOSE: a cover -- the back holds the INCOMING (main), the parent we return to
+                assert!(ui.navigate_back());
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), t));
+                assert!(display.is_frozen());
+                let (_f, captured) = display.frame_and_capture().expect("frozen on close");
+                assert_eq!(captured, &main_img[..], "close should COVER: the back is the returning parent (main)");
+                assert_ne!(captured, &detail_img[..]);
                 settle(&mut ui, &mut layer, &mut display, &mut t);
                 assert!(!display.is_frozen());
         }

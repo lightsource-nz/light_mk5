@@ -198,13 +198,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 self.page_move_dy = sign * uy;
                                 self.page_move_span = if ux != 0 { i32::from(pw) } else { i32::from(ph) };
                         } else {
-                                //   a forward vertical (Row-page) transition COVERS: the new page
-                                // slides up over the old one, which stays put. Render the incoming
-                                // into the back buffer ONCE and leave the front (the outgoing) as
-                                // the static background; each step blits the incoming up over it.
-                                // Every other capture-mode transition REVEALS: freeze the outgoing
-                                // into the back and slide it off the live incoming.
-                                let cover = self.page_move_descent.vertical() && !self.page_move_back;
+                                //   a mirrored slide: OPEN reveals, CLOSE covers. On open (forward)
+                                // freeze the outgoing into the back and slide it off the live incoming
+                                // -- the outgoing leaves, the child is revealed. On close (back) render
+                                // the incoming (the returning parent) into the back ONCE and blit it
+                                // back on over the static outgoing (the child) -- the parent returns,
+                                // covering the child. Same page, same edge, one motion reversed.
+                                let cover = self.page_move_back;
                                 if cover {
                                         let Some(back) = display.freeze_render() else {
                                                 return Step::Waiting; // busy: try next pass
@@ -217,25 +217,22 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                         return Step::Waiting; // busy: capture next pass
                                 }
                                 //   the direction is chosen in LOGICAL terms and converted here,
-                                // because the blit works in physical space: the transform's a and
-                                // c are the physical components of logical +x (b and d of +y),
-                                // exactly one of each pair non-zero for a pure rotation, so this
-                                // picks the axis the viewer calls horizontal -- or, for a Row
-                                // page's vertical transition, vertical -- whatever the board's
-                                // orientation. Reveal-forward pushes the outgoing toward -x so the
-                                // child arrives from the right; cover-forward's +y unit is the
-                                // logical DOWN the incoming rises from, offset shrinking to zero.
+                                // because the blit works in physical space: the transform's a and c
+                                // are the physical components of logical +x (b and d of +y), exactly
+                                // one of each pair non-zero for a pure rotation, so this picks the
+                                // axis the viewer calls horizontal (or vertical) whatever the board's
+                                // orientation. The sign is the descent axis's alone and does NOT turn
+                                // on `back`: the reveal slides the outgoing toward that unit, and the
+                                // cover brings the incoming back FROM it (its offset shrinking to
+                                // zero), so open and close leave and return the same edge.
                                 let m = layer.transform();
                                 let asign = self.page_move_descent.axis_sign();
-                                let (ux, uy, sign) = if self.page_move_descent.vertical() {
-                                        //   both directions run the descent's vertical axis: forward
-                                        // the incoming rises into it (cover), back the outgoing
-                                        // sinks off it (reveal) -- the one is the other reversed, so
-                                        // the sign is the axis's alone and does not turn on `back`
-                                        (m.b.signum(), m.d.signum(), asign)
+                                let (ux, uy) = if self.page_move_descent.vertical() {
+                                        (m.b.signum(), m.d.signum())
                                 } else {
-                                        (m.a.signum(), m.c.signum(), asign * if self.page_move_back { -1 } else { 1 })
+                                        (m.a.signum(), m.c.signum())
                                 };
+                                let sign = asign;
                                 let (pw, ph) = layer.physical_size();
                                 self.page_move_dx = sign * ux;
                                 self.page_move_dy = sign * uy;
@@ -260,7 +257,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return Step::Finished;
                 }
                 let travel = ((self.page_move_span as i64 * elapsed as i64) / (i64::from(self.page_move_ms) * 1000)) as i32;
-                let cover = !self.page_move_over && !self.page_move_region && self.page_move_descent.vertical() && !self.page_move_back;
+                let cover = !self.page_move_over && !self.page_move_region && self.page_move_back;
                 if self.page_move_over {
                         //   no clear: the outgoing image IS the ground the incoming page
                         // slides in over
@@ -269,12 +266,12 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         self.paint(&mut c, style);
                         drop(c);
                 } else if cover {
-                        //   COVER: the incoming page (already rendered into the back buffer at
-                        // setup) slides up over the static outgoing (the untouched front). Blit
-                        // it at a SHRINKING offset along the logical-down axis: at full span it
-                        // sits off-screen past the bottom, at zero it fully covers. The front
-                        // keeps showing the outgoing wherever the incoming has not yet reached.
-                        // Just a blit per step -- the incoming is drawn only once.
+                        //   COVER (close): the incoming page (the returning parent, rendered into the
+                        // back buffer once at setup) slides back on over the static outgoing (the
+                        // child, in the untouched front). Blit it at a SHRINKING offset along the
+                        // descent axis: at full span it sits off-screen past the edge it left from,
+                        // at zero it fully covers. The front keeps showing the child wherever the
+                        // parent has not yet reached. Just a blit per step -- the incoming drawn once.
                         let Some(c) = layer.frame_begin_over(display, now_us) else { return Step::Waiting };
                         drop(c);
                         if let Some((front, incoming)) = display.frame_and_capture() {
