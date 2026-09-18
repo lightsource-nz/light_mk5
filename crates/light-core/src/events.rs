@@ -44,7 +44,7 @@ impl<E: Copy, const N: usize, const S: usize> Inner<E, N, S> {
         }
 }
 
-pub struct EventBus<E: Copy, const N: usize, const S: usize> {
+pub struct EventBus<E: Copy, const N: usize = { crate::DEFAULT_EVENT_DEPTH }, const S: usize = { crate::DEFAULT_MODULES }> {
         inner: Mutex<RefCell<Inner<E, N, S>>>,
         refused: AtomicU32,
 }
@@ -180,6 +180,18 @@ mod tests {
                         v.push(e);
                 }
                 v
+        }
+
+        #[test]
+        fn the_default_capacities_give_a_slot_per_default_module() {
+                //   a board that names no capacities gets the defaults; the subscriber count is
+                // derived to equal the module capacity, so the default bus has a slot for every
+                // module a default runtime can hold
+                let bus: EventBus<Ev> = EventBus::new();
+                for _ in 0..crate::DEFAULT_MODULES {
+                        assert!(bus.subscribe().is_some());
+                }
+                assert!(bus.subscribe().is_none(), "one slot per default module, no more");
         }
 
         #[test]

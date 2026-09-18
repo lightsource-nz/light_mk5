@@ -67,9 +67,10 @@ pub trait Module {
 
 /// The application's module set, ordered and driven.
 ///
-/// `N` is the capacity. Exceeding it is a value the caller sees rather than a silently dropped
-/// module.
-pub struct Runtime<'a, const N: usize> {
+/// `N` is the capacity, defaulting to [`DEFAULT_MODULES`](crate::DEFAULT_MODULES); a board names it
+/// only for an unusually large module set. Exceeding it is a value the caller sees ([`Error::Capacity`]
+/// from [`add`](Runtime::add)) rather than a silently dropped module.
+pub struct Runtime<'a, const N: usize = { crate::DEFAULT_MODULES }> {
         modules: Vec<&'a mut dyn Module, N>,
         /// Indices into `modules`, in load order. Empty until `start`.
         order: Vec<usize, N>,

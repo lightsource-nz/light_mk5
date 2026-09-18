@@ -157,18 +157,24 @@ core's stack region.
 
 ### mk5 decision — capacities have defaults and derive where they can
 
-*Decided for mk5 (proposal G, capacities half).* mk4 makes every board hand-pick the fixed-capacity
-const generics — `EventBus<E, N, S>`, `Runtime<N>`, `Ui<A, N>` — and a wrong subscriber count `S`
-surfaces only as a runtime `expect("subscriber slot")` panic. mk5:
+*Decided and implemented for mk5 (proposal G, capacities half).* mk4 made every board hand-pick the
+fixed-capacity const generics — `EventBus<E, N, S>`, `Runtime<N>`, `Ui<A, N>` — and a wrong
+subscriber count `S` surfaced only as a runtime `expect("subscriber slot")` panic. mk5:
 
-- gives each capacity a **sensible default** (a default event-bus depth and subscriber count, a
-  default runtime capacity) behind type aliases, so a board specifies a capacity only when it differs
-  from the default;
-- **derives the subscriber count from the module set** where feasible (the runtime knows how many
-  modules were added), so an under-provisioned bus is a build-time or start-time error, not a
-  mid-run panic;
-- keeps the capacities a board *does* set in **one documented place** per board rather than scattered
-  across call sites.
+- gives the runtime and the event bus **default const-generic parameters** (`light_core::DEFAULT_MODULES`
+  and `DEFAULT_EVENT_DEPTH`), so a board writes `EventBus<AppEvent>` / `Runtime` and names a capacity
+  only when it differs — cleaner than a type alias, and fully backward-compatible with the explicit
+  `EventBus<E, N, S>` boards that need other numbers. (`Ui<A, N>`'s arena is a page-complexity fact
+  with no meaningful default, so it stays explicit.)
+- **derives the default subscriber count from the module set**: the default `S` *is*
+  `DEFAULT_MODULES`, one slot per module a default `Runtime` can hold, so a board on the defaults can
+  never under-provision the bus. Over-provisioning surfaces at **startup** — `subscribe` returns
+  `None` and `Runtime::add` returns `Error::Capacity`, both in the init path — never as a mid-run
+  panic (every subscription is taken at startup). A per-board compile-time count would need a
+  module-registration macro; the derived default is the feasible slice, and the explicit path stays
+  for boards that outgrow it.
+- keeps the capacities a board *does* set in **one documented place** per board (its statics and the
+  `Runtime<N>` in `light_app_main`) rather than scattered across call sites.
 
 ## Behaviour and invariants
 

@@ -15,6 +15,20 @@
 
 #![no_std]
 
+//   default capacities, so a board names a const generic only when it differs from these. The
+// subscriber default equals the module default on purpose: a default [`EventBus`](events::EventBus)
+// has exactly one subscriber slot per module a default [`Runtime`](module::Runtime) can hold, so
+// the common case (each module subscribes once) cannot under-provision the bus. A board that adds
+// more modules than the default, or a module that takes several subscriptions, raises both
+// consistently -- and an over-subscription then surfaces at startup (`subscribe` returns `None`,
+// `add` returns `Error::Capacity`), never as a mid-run panic.
+/// Default [`Runtime`](module::Runtime) module capacity, and the default subscriber-slot count of an
+/// [`EventBus`](events::EventBus): one slot per module. See the note above.
+pub const DEFAULT_MODULES: usize = 8;
+/// Default [`EventBus`](events::EventBus) ring depth -- how many published events it holds for the
+/// slowest subscriber before it refuses. Generous enough for the burst a poll pass produces.
+pub const DEFAULT_EVENT_DEPTH: usize = 16;
+
 pub mod activity;
 pub mod blink;
 pub mod button;

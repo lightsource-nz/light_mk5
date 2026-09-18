@@ -312,18 +312,45 @@ timings, quirks — are facts about those parts, not the framework.
 
 ### mk5 decision — region buffering to relieve the memory model
 
-*Decided for mk5 (proposal G, memory half).* On the largest panels a full second framebuffer is the
-dominant RAM user (a ~430 KB double buffer of ~520 KB total), yet double buffering is what the
-whole-page slide and rotation animations need — without a back buffer the toolkit degrades them to a
-snap. mk5 commits to **region (partial) buffering**: buffering a band rather than a full second frame,
-to free that RAM on the big panels so features are not gated by the memory model.
+*Decided for mk5 (proposal G, memory half); design settled, implementation deferred to a focused,
+hardware-verified pass.* On the largest panels a full second framebuffer is the dominant RAM user (a
+~430 KB double buffer of ~520 KB total), yet double buffering exists **only** to serve the whole-page
+slide and rotation animations — steady-state UI already pushes just the invalidated regions, and
+without a back buffer the toolkit degrades the animations to a snap. mk5 commits to **region (partial)
+buffering**: buffering a band rather than a full second frame, so the big panels keep their animations
+without the second-frame RAM.
 
-The hard part, to be resolved in the design pass, is reconciling a partial buffer with the *whole-page*
-animations, which today `freeze` a full image and blit it. The direction is to express a transition as
-a moving region the band can carry (rendering the transition in strips, or compositing it into the
-scanout) rather than as a full-frame blit — so an animation costs a band, not a second frame. The
-existing buffering choices (full double-buffer, single-buffer snap, single-buffer scanout) remain the
-fallbacks a board selects; region buffering is the new option that lifts the RAM ceiling.
+**The mechanism (the design pass).** A board selects a *buffering strategy* — the existing `Full`
+(double buffer: every animation, most RAM), `SingleSnap` (single buffer, slide-over) and `Scanout`
+(single live buffer) stay, and mk5 adds **`Region { band }`**: one live frame plus a small band-sized
+scratch. The animations become a *moving region* the band carries, resolved per panel class:
+
+- **Steady state** needs no second buffer at all — a frame draws *over* the live one and pushes only
+  what it invalidated (the draw-over/`frame_begin_over` path the scanout board already uses),
+  splitting an invalid area larger than the band into band-sized sub-pushes the chunk model already
+  sequences. Region buffering makes this the default rather than a scanout special case; the
+  full-repaint-into-a-cleared-back-buffer contract applies only under `Full`.
+- **The page slide** is a seam sweeping across the panel: at offset *x* the panel is the incoming page
+  on one side of *x* and the outgoing page on the other, and only the strip the seam crossed since the
+  last step actually changes. So the toolkit keeps **both page trees alive for the transition** (the
+  arena holds the incoming tree plus the outgoing one until it finishes, in place of a full pixel
+  snapshot) and each step renders just the newly-uncovered band from the appropriate tree. On a
+  windowed push panel the untouched sides already sit in GDDRAM, so only the band is pushed; on a
+  full-frame-only push panel (the AXS15231B, which ignores windowing) the live buffer is shifted in
+  place by the step's travel and the vacated strip is redrawn from the incoming tree, then the whole
+  frame is pushed — the *buffer* is saved, not the transfer; on a scanout panel the swept band is
+  drawn straight into the live buffer at the moving seam. None needs a second full frame.
+- **The rotation** is the exception: every pixel moves along an arc each frame, so there is no small
+  moving region — an animated rotation genuinely needs the whole prior image to `blit_rotated`. Under
+  `Region` a rotation therefore **snaps** (as it does today with no back buffer); a board that wants
+  the rotation *animated* selects `Full` and pays for the frame. Region buffering targets the slide
+  and steady state, which is where the RAM ceiling actually bites.
+
+**Open risks for the implementation pass** (why it is deferred, not done here): the in-place buffer
+shift must honour the chunk/DMA in-flight borrow rules (no shift while a transfer reads the buffer);
+holding two widget trees raises the arena's peak, which the big boards must be measured against; and
+the whole path is only trustworthy once the slide is confirmed tear-free on the 3.49 and 4.0 glass.
+Those make this a focused follow-up rather than part of the capacities change.
 
 ## The widget toolkit — `light-ui`
 

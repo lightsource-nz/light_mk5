@@ -142,15 +142,26 @@ instantiate against, so they come first.
 - **Touches.** [10-build-and-release.md](10-build-and-release.md),
   [07-ports-and-shell.md](07-ports-and-shell.md).
 
-## G. Static capacities and the memory model — *decided*
+## G. Static capacities and the memory model — *capacities implemented; memory model designed, impl deferred*
 
-> **Decided (mk5), design recorded** in [01](01-core-runtime.md#) (capacities: defaults + type
-> aliases, derive the subscriber count from the module set so under-provisioning is a build/start
-> error not a runtime panic, one config point per board) and [02](02-graphics-and-ui.md#) (memory:
-> commit to region/partial buffering — a band, not a full second frame — to lift the RAM ceiling on
-> the largest panels; the hard part, deferred to the design pass, is expressing whole-page slide and
-> rotation animations as a moving region rather than a full-frame blit). **Not yet applied to code;
-> the region-buffering mechanism still needs a design pass.**
+> **Capacities half — implemented (mk5)**, design in [01](01-core-runtime.md#). `EventBus` and
+> `Runtime` gained default const-generic parameters (`light_core::DEFAULT_MODULES` /
+> `DEFAULT_EVENT_DEPTH`), so a board names a capacity only when it differs; the default subscriber
+> count *is* the module default (one slot per module), so a default bus cannot under-provision a
+> default runtime, and over-provisioning surfaces at startup, never as a mid-run panic. Backward
+> compatible with the explicit-capacity boards; `Ui`'s arena stays explicit (no meaningful default).
+> Verified: light-core tests (incl. a defaults test) + full host suite green; a firmware board with
+> explicit capacities still builds.
+>
+> **Memory-model half — design settled** in [02](02-graphics-and-ui.md#), **implementation deferred**
+> to a focused, hardware-verified follow-up. The mechanism: a per-board buffering strategy adds
+> `Region { band }` (one live frame + a band scratch) beside `Full`/`SingleSnap`/`Scanout`; steady
+> state and the page slide become a moving region (keep both page trees for the transition and render
+> the swept band; shift-in-place then full-push on the windowing-blind AXS15231B; draw the band into
+> the live buffer on a scanout panel), while animated rotation stays gated on `Full` (it touches every
+> pixel each frame). Deferred because the in-place shift must respect the DMA in-flight rules, the
+> two-tree arena peak must be measured on the big boards, and tear-free behaviour needs the 3.49/4.0
+> glass to confirm.
 
 - **Status quo (mk4).** Fixed-capacity generics (the event bus, the UI arena, the runtime) push
   sizing onto every board; the double framebuffer dominates RAM and left the largest board genuinely
