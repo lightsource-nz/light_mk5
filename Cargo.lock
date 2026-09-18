@@ -1993,10 +1993,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-board-touch169"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-input",
+ "light-power-manager",
+ "light-rp2",
+]
+
+[[package]]
+name = "light-board-touch28"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-input",
+ "light-power-manager",
+ "light-rp2",
+]
+
+[[package]]
 name = "light-board-touch349"
 version = "0.1.0"
 dependencies = [
  "light-core",
+ "light-input",
+ "light-power-manager",
+ "light-rp2",
+]
+
+[[package]]
+name = "light-board-touch4"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-display",
  "light-input",
  "light-power-manager",
  "light-rp2",
@@ -2240,6 +2271,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "light-audio",
+ "light-board-touch169",
  "light-core",
  "light-display",
  "light-draw",
@@ -2255,6 +2287,7 @@ dependencies = [
 name = "light_app_ui_demo_touch28"
 version = "0.1.0"
 dependencies = [
+ "light-board-touch28",
  "light-core",
  "light-display",
  "light-draw",
@@ -2278,6 +2311,7 @@ dependencies = [
  "light-font",
  "light-fs",
  "light-input",
+ "light-power-manager",
  "light-rp2",
  "light-rtc",
  "light-sd",
@@ -2289,6 +2323,7 @@ dependencies = [
 name = "light_app_ui_demo_touch4"
 version = "0.1.0"
 dependencies = [
+ "light-board-touch4",
  "light-core",
  "light-display",
  "light-draw",
@@ -2328,6 +2363,7 @@ dependencies = [
  "light-font",
  "light-fs",
  "light-input",
+ "light-power-manager",
  "light-rp2",
  "light-rtc",
  "light-sd",
