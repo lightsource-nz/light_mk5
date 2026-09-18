@@ -269,11 +269,12 @@ fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str, arg: &str) 
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
-/// Two frame buffers, 215 KB each -- 430 KB of the RP2350's 520: tight but linkable. If a
-/// later addition overflows SRAM, the back buffer is the thing to give up (single-buffered
-/// costs the animations), or the PSRAM on CS1 is the thing to bring up.
+/// One frame buffer, 215 KB of the RP2350's 520. Region (partial) buffering keeps the page-slide
+/// transition without the second full frame the capture path needs: the outgoing image is scrolled
+/// off this buffer in place while the incoming is painted into the strip it uncovers (see
+/// [`Display::set_region_buffering`] and the toolkit's page step). Rotation snaps rather than
+/// animating -- the one animation a single buffer cannot carry.
 static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
-static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's steel theme, the default for every board with
@@ -1173,9 +1174,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         info!("clocks: sys {} Hz, peri {} Hz; touch i2c0 at {} Hz, imu i2c1 at {} Hz", clocks.sys_hz, clocks.peri_hz, p.touch_bus.actual_hz, p.imu_bus.actual_hz);
 
         let front: &'static mut [u8] = FRAME_FRONT.take();
-        let back: &'static mut [u8] = FRAME_BACK.take();
         let mut display = Display::new(Axs15231b::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2::now_us);
-        display.set_back_buffer(back);
+        //   region buffering: the page slide runs on this one buffer, no 215 KB second frame
+        display.set_region_buffering(true);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),

@@ -312,53 +312,45 @@ timings, quirks — are facts about those parts, not the framework.
 
 ### mk5 decision — region buffering to relieve the memory model
 
-*Decided for mk5 (proposal G, memory half); design settled, implementation deferred to a focused,
-hardware-verified pass.* On the largest panels a full second framebuffer is the dominant RAM user (a
-~430 KB double buffer of ~520 KB total), yet double buffering exists **only** to serve the whole-page
-slide and rotation animations — steady-state UI already pushes just the invalidated regions, and
-without a back buffer the toolkit degrades the animations to a snap. mk5 commits to **region (partial)
-buffering**: buffering a band rather than a full second frame, so the big panels keep their animations
-without the second-frame RAM.
+*Decided and implemented for mk5 (proposal G, memory half); host-verified and confirmed on the 3.49
+glass.* On the largest panels a full second framebuffer is the dominant RAM user (a ~430 KB double
+buffer of ~520 KB total), yet double buffering exists **only** to serve the whole-page slide and
+rotation animations — steady-state UI already pushes just the invalidated regions, and without a back
+buffer the toolkit snaps them. mk5 keeps the slide on a **single buffer** by scrolling the outgoing
+image off it in place, so a big panel drops the second frame without losing its slide.
 
-**The mechanism (the design pass).** A board selects a *buffering strategy* — the existing `Full`
-(double buffer: every animation, most RAM), `SingleSnap` (single buffer, slide-over) and `Scanout`
-(single live buffer) stay, and mk5 adds **`Region { band }`**: one live frame plus a small band-sized
-scratch. The animations become a *moving region* the band carries, resolved per panel class:
+**The mechanism.** A board opts in with [`Display::set_region_buffering`](../crates/light-display) and
+supplies no back buffer; the toolkit's page step then runs the slide a third way beside the `Full`
+capture path (a back buffer to blit the outgoing from) and the `over` fallback (redraw the incoming at
+a shrinking offset):
 
-- **Steady state** needs no second buffer at all — a frame draws *over* the live one and pushes only
-  what it invalidated (the draw-over/`frame_begin_over` path the scanout board already uses),
-  splitting an invalid area larger than the band into band-sized sub-pushes the chunk model already
-  sequences. Region buffering makes this the default rather than a scanout special case; the
-  full-repaint-into-a-cleared-back-buffer contract applies only under `Full`.
-- **The page slide** is a seam sweeping across the panel: at offset *x* the panel is the incoming page
-  on one side of *x* and the outgoing page on the other, and only the strip the seam crossed since the
-  last step actually changes. So the toolkit keeps **both page trees alive for the transition** (the
-  arena holds the incoming tree plus the outgoing one until it finishes, in place of a full pixel
-  snapshot) and each step renders just the newly-uncovered band from the appropriate tree. On a
-  windowed push panel the untouched sides already sit in GDDRAM, so only the band is pushed; on a
-  full-frame-only push panel (the AXS15231B, which ignores windowing) the live buffer is shifted in
-  place by the step's travel and the vacated strip is redrawn from the incoming tree, then the whole
-  frame is pushed — the *buffer* is saved, not the transfer; on a scanout panel the swept band is
-  drawn straight into the live buffer at the moving seam. None needs a second full frame.
-- **The rotation** is the exception: every pixel moves along an arc each frame, so there is no small
-  moving region — an animated rotation genuinely needs the whole prior image to `blit_rotated`. Under
-  `Region` a rotation therefore **snaps** (as it does today with no back buffer); a board that wants
-  the rotation *animated* selects `Full` and pays for the frame. Region buffering targets the slide
-  and steady state, which is where the RAM ceiling actually bites.
+- **The outgoing image needs no copy.** It is already in the live buffer, and it survives there as
+  *pixels* — the widget tree that drew it is torn down at navigate, but the image is not. Each step
+  scrolls the still-outgoing part of the buffer off by the step's travel with
+  [`Canvas::shift_region`](../crates/light-draw) (an in-place, single-axis memmove that drops what
+  falls past the edge and leaves the uncovered near strip), then paints the incoming into that strip
+  from the live tree — the same one-static-tree, paint-only-the-new-strip shape the capture path has,
+  with the shift standing in for the capture's blit-from-a-second-frame. So neither a second frame nor
+  a second widget tree is held. On the full-frame-only AXS15231B (which ignores windowing) the whole
+  composited buffer is pushed each step, as it must be — the *buffer* is what region buffering saves,
+  not the transfer.
+- **Every direction is a reveal.** One buffer cannot slide the incoming *in* over a static outgoing
+  (the incoming is not in the buffer to move), so the region path reveals in every direction — the
+  outgoing scrolls off, the incoming is revealed under it. A vertical (`Row`-page) transition that the
+  capture path would *cover* is a reveal here instead; the difference is slight and consistent.
+- **Rotation snaps.** Every pixel moves along an arc each frame, so a rotation has no small moving
+  region and genuinely needs the whole prior image to `blit_rotated` — which the single-buffer path
+  already snaps (`rotation_step` falls back without a back buffer). A board that wants the rotation
+  *animated* keeps `Full` and pays for the frame; region buffering targets the slide, which is the
+  common animation and where the RAM ceiling bites.
 
-**Progress.** The foundational primitive is implemented and host-tested: `Canvas::shift_region`
-scrolls a rectangle of the live buffer's own contents by one axis in place, dropping what falls past
-the far edge and leaving the uncovered strip for the caller — the single-buffer counterpart of
-`blit_offset`, and exactly what the slide needs to move the outgoing image off without a second
-frame. The `page_step` integration (a region-slide branch that shifts the outgoing off and paints the
-incoming into the uncovered band, selected by a per-board opt-in) and the board flip remain, gated on
-the differential host test below and on-glass confirmation.
-
-**Open risks for the implementation pass** (why the rest is deferred): the in-place buffer
-shift must honour the chunk/DMA in-flight borrow rules (no shift while a transfer reads the buffer);
-holding two widget trees raises the arena's peak, which the big boards must be measured against; and
-the whole path is only trustworthy once the slide is confirmed tear-free on the 3.49 and 4.0 glass.
-Those make this a focused follow-up rather than part of the capacities change.
+**Verification.** A differential host test drives the same transition through both the capture display
+and a single-buffer region display and asserts the pushed frames are **byte-identical at every step**
+of a horizontal reveal — so the in-place shift is provably as correct as the verified capture path,
+without a second frame. On hardware, the 3.49 ui_demo was flipped to region buffering (its 215 KB back
+buffer removed): frames advance with zero skips and zero chunk timeouts through navigation, and the
+page slides were confirmed smooth and tear-free on the glass, rotation snapping as intended. The
+`Full`/`over`/scanout paths are unchanged, so every board not opted in keeps its existing behaviour.
 
 ## The widget toolkit — `light-ui`
 

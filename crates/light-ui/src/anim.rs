@@ -1,5 +1,5 @@
 use light_core::debug;
-use light_draw::{Rotation, Flip};
+use light_draw::{Rotation, Flip, Region};
 use light_display::{Display, DisplayDriver};
 use light_display::frames::FrameLayer;
 use crate::{Ui, Style, Rect};
@@ -140,7 +140,15 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // shrinking offset, and the outgoing page survives in the live buffer
                         // wherever a step has not yet covered it. Only what the blit speaks
                         // can capture; the slide-over works in any format
-                        self.page_move_over = !(display.is_double_buffered() && display.format().is_rgb565());
+                        //   three ways to run the slide: CAPTURE (a back buffer holds the outgoing
+                        // to blit from), REGION (one RGB565 buffer, opted in: scroll the outgoing
+                        // off in place), or OVER (any single buffer: redraw the incoming at a
+                        // shrinking offset). Capture is richest, region is the big-panel RAM saver,
+                        // over is the universal fallback
+                        let capture = display.is_double_buffered() && display.format().is_rgb565();
+                        let region = !capture && display.region_buffering();
+                        self.page_move_region = region;
+                        self.page_move_over = !capture && !region;
                         if self.page_move_over {
                                 //   logical space end to end -- the canvas transform does the
                                 // physical mapping -- so direction is just the arrival side:
@@ -166,6 +174,22 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                         self.page_move_dy = 0;
                                         self.page_move_span = i32::from(w);
                                 }
+                        } else if region {
+                                //   region mode does a reveal in EVERY direction (one buffer cannot
+                                // slide the incoming in), so it wants the same physical unit and span
+                                // the capture reveal computes -- but no freeze: the outgoing is
+                                // already in the live buffer, to be scrolled off in place
+                                let m = layer.transform();
+                                let asign = self.page_move_descent.axis_sign();
+                                let (ux, uy, sign) = if self.page_move_descent.vertical() {
+                                        (m.b.signum(), m.d.signum(), asign)
+                                } else {
+                                        (m.a.signum(), m.c.signum(), asign * if self.page_move_back { -1 } else { 1 })
+                                };
+                                let (pw, ph) = layer.physical_size();
+                                self.page_move_dx = sign * ux;
+                                self.page_move_dy = sign * uy;
+                                self.page_move_span = if ux != 0 { i32::from(pw) } else { i32::from(ph) };
                         } else {
                                 //   a forward vertical (Row-page) transition COVERS: the new page
                                 // slides up over the old one, which stays put. Render the incoming
@@ -229,7 +253,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return Step::Finished;
                 }
                 let travel = ((self.page_move_span as i64 * elapsed as i64) / (i64::from(self.page_move_ms) * 1000)) as i32;
-                let cover = !self.page_move_over && self.page_move_descent.vertical() && !self.page_move_back;
+                let cover = !self.page_move_over && !self.page_move_region && self.page_move_descent.vertical() && !self.page_move_back;
                 if self.page_move_over {
                         //   no clear: the outgoing image IS the ground the incoming page
                         // slides in over
@@ -251,6 +275,48 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 let mut c = layer.canvas(front);
                                 c.blit_offset(incoming, self.page_move_dx * off, self.page_move_dy * off);
                         }
+                } else if self.page_move_region {
+                        //   REGION: one live buffer, no capture. The outgoing image is already in
+                        // it; scroll the still-outgoing part off by the step's travel (in place),
+                        // then paint the incoming into the strip that uncovered. The incoming is
+                        // static at its final position, so only the new strip is drawn -- the same
+                        // cheap-per-step shape as the capture reveal, without the second frame
+                        let Some(mut c) = layer.frame_begin_over(display, now_us) else { return Step::Waiting };
+                        let prev = self.page_move_travel;
+                        if travel > prev {
+                                let delta = travel - prev;
+                                let (pw, ph) = layer.physical_size();
+                                let (pw, ph) = (i32::from(pw), i32::from(ph));
+                                //   the part of the buffer the outgoing still occupies at `prev`:
+                                // everything the incoming has not reached, on the far side of the
+                                // seam. shift_region leaves the near strip for the band paint below
+                                let outgoing = if self.page_move_dx > 0 {
+                                        Region::new(prev as u16, 0, (pw - 1) as u16, (ph - 1) as u16)
+                                } else if self.page_move_dx < 0 {
+                                        Region::new(0, 0, (pw - 1 - prev) as u16, (ph - 1) as u16)
+                                } else if self.page_move_dy > 0 {
+                                        Region::new(0, prev as u16, (pw - 1) as u16, (ph - 1) as u16)
+                                } else {
+                                        Region::new(0, 0, (pw - 1) as u16, (ph - 1 - prev) as u16)
+                                };
+                                c.shift_region(outgoing, self.page_move_dx * delta, self.page_move_dy * delta);
+                                //   the incoming band, logical -- identical to the capture reveal's,
+                                // since the incoming sits at its final position in both
+                                let vertical = self.page_move_descent.vertical();
+                                let asign = self.page_move_descent.axis_sign();
+                                let s = if vertical { asign } else { asign * if self.page_move_back { -1 } else { 1 } };
+                                let (lw, lh) = layer.logical_size();
+                                let (lw, lh) = (i32::from(lw), i32::from(lh));
+                                let extent = if vertical { lh } else { lw };
+                                let (b0, b1) = if s > 0 { (prev, travel - 1) } else { (extent - travel, extent - prev - 1) };
+                                let band = if vertical { Rect::new(0, b0, lw - 1, b1) } else { Rect::new(b0, 0, b1, lh - 1) };
+                                if let Some(root) = self.root {
+                                        self.paint_clipped(&mut c, style, root, band);
+                                }
+                                c.clear_clip();
+                                self.page_move_travel = travel;
+                        }
+                        drop(c);
                 } else {
                         //   over, not cleared: the buffer holds the previous step's frame, and
                         // the incoming page is STATIC in this mode -- only the strip the

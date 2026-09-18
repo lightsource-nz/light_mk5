@@ -142,7 +142,7 @@ instantiate against, so they come first.
 - **Touches.** [10-build-and-release.md](10-build-and-release.md),
   [07-ports-and-shell.md](07-ports-and-shell.md).
 
-## G. Static capacities and the memory model — *capacities implemented; memory model designed, impl deferred*
+## G. Static capacities and the memory model — *implemented*
 
 > **Capacities half — implemented (mk5)**, design in [01](01-core-runtime.md#). `EventBus` and
 > `Runtime` gained default const-generic parameters (`light_core::DEFAULT_MODULES` /
@@ -153,15 +153,17 @@ instantiate against, so they come first.
 > Verified: light-core tests (incl. a defaults test) + full host suite green; a firmware board with
 > explicit capacities still builds.
 >
-> **Memory-model half — design settled** in [02](02-graphics-and-ui.md#), **implementation deferred**
-> to a focused, hardware-verified follow-up. The mechanism: a per-board buffering strategy adds
-> `Region { band }` (one live frame + a band scratch) beside `Full`/`SingleSnap`/`Scanout`; steady
-> state and the page slide become a moving region (keep both page trees for the transition and render
-> the swept band; shift-in-place then full-push on the windowing-blind AXS15231B; draw the band into
-> the live buffer on a scanout panel), while animated rotation stays gated on `Full` (it touches every
-> pixel each frame). Deferred because the in-place shift must respect the DMA in-flight rules, the
-> two-tree arena peak must be measured on the big boards, and tear-free behaviour needs the 3.49/4.0
-> glass to confirm.
+> **Memory-model half — implemented (mk5)**, design in [02](02-graphics-and-ui.md#). Region buffering
+> keeps the page slide on a SINGLE buffer: the outgoing image survives in the live buffer as pixels and
+> is scrolled off in place by `Canvas::shift_region` (a new in-place single-axis buffer scroll) while
+> the incoming is painted into the strip it uncovers — no second frame and no second widget tree. A
+> board opts in with `Display::set_region_buffering` and supplies no back buffer; every direction is a
+> reveal (one buffer cannot slide the incoming in), and rotation snaps (single-buffer already does).
+> Verified: a differential host test proves the region path is byte-identical to the capture path at
+> every step of a horizontal reveal; the 3.49 ui_demo was flipped to region buffering (215 KB back
+> buffer removed) and confirmed smooth and tear-free on the glass, frames advancing with zero skips and
+> zero chunk timeouts. The `Full`/over/scanout paths are untouched, so boards not opted in are
+> unchanged.
 
 - **Status quo (mk4).** Fixed-capacity generics (the event bus, the UI arena, the runtime) push
   sizing onto every board; the double framebuffer dominates RAM and left the largest board genuinely

@@ -106,13 +106,18 @@ pub struct Display<'b, D: DisplayDriver> {
         now: fn() -> u64,
         /// Updates abandoned on a chunk deadline, for the caller to report.
         pub timeouts: u32,
+        /// Region (partial) buffering: on a SINGLE-buffered RGB565 display, run the page slide by
+        /// scrolling the outgoing image off the live buffer in place rather than blitting it from a
+        /// captured second frame -- so a big panel keeps its slide without the second-frame RAM. A
+        /// no-op unless the board opts in and omits the back buffer; see the toolkit's page step.
+        region: bool,
 }
 
 impl<'b, D: DisplayDriver> Display<'b, D> {
         /// `buf` must hold `format.buffer_len(width, height)` bytes.
         pub fn new(driver: D, buf: &'b mut [u8], width: u16, height: u16, format: PixelFormat, now: fn() -> u64) -> Self {
                 assert!(buf.len() >= format.buffer_len(width, height));
-                Self { driver, buf, back: None, frozen: false, width, height, format, update: None, now, timeouts: 0 }
+                Self { driver, buf, back: None, frozen: false, width, height, format, update: None, now, timeouts: 0, region: false }
         }
 
         /// Give the display a second buffer. Drawing then goes into the back buffer while an
@@ -120,6 +125,19 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         pub fn set_back_buffer(&mut self, back: &'b mut [u8]) {
                 assert!(back.len() >= self.format.buffer_len(self.width, self.height));
                 self.back = Some(back);
+        }
+
+        /// Opt into region (partial) buffering for the page slide: with no back buffer set, the
+        /// toolkit scrolls the outgoing page off the single live buffer instead of holding a whole
+        /// second frame. RGB565 only, and only meaningful single-buffered (with a back buffer the
+        /// richer capture path is used regardless). See [`region_buffering`](Self::region_buffering).
+        pub fn set_region_buffering(&mut self, on: bool) {
+                self.region = on;
+        }
+
+        /// Whether region buffering is enabled and usable here: opted in, single-buffered, RGB565.
+        pub fn region_buffering(&self) -> bool {
+                self.region && self.back.is_none() && self.format.is_rgb565()
         }
 
         pub fn is_double_buffered(&self) -> bool {

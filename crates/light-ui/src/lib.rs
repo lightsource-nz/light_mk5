@@ -268,6 +268,11 @@ pub struct Ui<A: 'static, const N: usize> {
         /// OVER the old image, which survives in the live buffer wherever a step has not yet
         /// overdrawn it. Chosen at the first step, from what the display can hold.
         page_move_over: bool,
+        /// Region (partial) buffering: a single-buffered RGB565 display that opted in scrolls the
+        /// outgoing image off the live buffer in place (a reveal for every direction, since one
+        /// buffer cannot slide the incoming IN), rather than the over-mode full repaint. Chosen at
+        /// the first step. Mutually exclusive with `page_move_over`.
+        page_move_region: bool,
         /// Physical unit direction, derived from the logical one at the first step -- or the
         /// LOGICAL sign of the incoming page's offset in the slide-over mode, which draws
         /// through the canvas transform and never leaves logical space.
@@ -327,6 +332,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         page_move_back: false,
                         page_move_descent: Descent::FromRight,
                         page_move_over: false,
+                        page_move_region: false,
                         page_move_dx: 0,
                         page_move_dy: 0,
                         page_move_travel: 0,
@@ -1885,6 +1891,105 @@ mod tests {
                 // run out: thawed, and the settled tree is the Row page
                 settle(&mut ui, &mut layer, &mut display, &mut t);
                 assert!(!display.is_frozen());
+        }
+
+        //   like Mock, but snapshots the full frame it is handed each push, so a test can compare
+        // what two displays would actually show. chunk_count is 1 over the full region here, so
+        // frame.buf IS the whole composite
+        struct CapMock {
+                pushed: StdVec<Region>,
+                last_full: StdVec<u8>,
+        }
+        impl DisplayDriver for CapMock {
+                fn init(&mut self, _: &mut dyn Clock, _: u16, _: u16) {}
+                fn chunk_count(&self, _: &Region) -> u16 {
+                        1
+                }
+                fn chunks_per_poll(&self, _: &Region) -> u16 {
+                        0
+                }
+                fn kick(&mut self, frame: &Frame<'_>, r: &Region, _: u16) {
+                        self.pushed.push(*r);
+                        self.last_full = frame.buf.to_vec();
+                }
+                fn chunk_complete(&mut self) -> bool {
+                        true
+                }
+                fn chunk_timeout_ms(&self) -> u32 {
+                        10
+                }
+        }
+
+        #[test]
+        fn region_buffering_slide_matches_the_capture_path() {
+                //   the region slide must produce, frame for frame, exactly what the verified
+                // capture (double-buffer) slide does for a horizontal reveal -- that is what proves
+                // the in-place shift is correct without a second framebuffer. Drive a capture
+                // display and a single-buffer region display through the same transition on the same
+                // clock, and compare the pushed frames pixel for pixel.
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let (w, h) = (40u16, 24u16);
+                let px = (w as usize) * (h as usize) * 2;
+
+                let mut cap_front = std::vec![0u8; px];
+                let mut cap_back = std::vec![0u8; px];
+                let mut cap = Display::new(CapMock { pushed: StdVec::new(), last_full: StdVec::new() }, &mut cap_front, w, h, PixelFormat::Rgb565, now);
+                cap.set_back_buffer(&mut cap_back);
+                let mut cap_layer = FrameLayer::new(w, h, PixelFormat::Rgb565);
+                let mut cap_ui: Ui<Ev, 8> = Ui::new();
+
+                let mut reg_buf = std::vec![0u8; px];
+                let mut reg = Display::new(CapMock { pushed: StdVec::new(), last_full: StdVec::new() }, &mut reg_buf, w, h, PixelFormat::Rgb565, now);
+                reg.set_region_buffering(true);
+                let mut reg_layer = FrameLayer::new(w, h, PixelFormat::Rgb565);
+                let mut reg_ui: Ui<Ev, 8> = Ui::new();
+                assert!(reg.region_buffering() && !cap.region_buffering());
+
+                fn settle(ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, CapMock>, font: &Font<'_>, t: &mut u64) {
+                        loop {
+                                ui.render(layer, display, &styled(font), *t);
+                                while layer.poll(display).unwrap() {}
+                                *t += 50_000;
+                                if !ui.is_animating() && !ui.is_dirty() {
+                                        break;
+                                }
+                        }
+                }
+
+                for (ui, layer, display) in [
+                        (&mut cap_ui, &mut cap_layer, &mut cap as &mut Display<'_, CapMock>),
+                        (&mut reg_ui, &mut reg_layer, &mut reg),
+                ] {
+                        ui.set_style(&styled(&font));
+                        ui.fit(layer);
+                        ui.navigate(&PAGE_MAIN).unwrap();
+                }
+                let mut tc = 0u64;
+                let mut tr = 0u64;
+                settle(&mut cap_ui, &mut cap_layer, &mut cap, &font, &mut tc);
+                settle(&mut reg_ui, &mut reg_layer, &mut reg, &font, &mut tr);
+                // same starting image
+                assert_eq!(cap.driver().last_full, reg.driver().last_full, "settled main differs before the transition");
+
+                cap_ui.navigate(&PAGE_DETAIL).unwrap();
+                reg_ui.navigate(&PAGE_DETAIL).unwrap();
+                let t0 = tc.max(tr);
+                // step both through the transition on the same clock, comparing each pushed frame
+                let ms = u64::from(cap_ui.page_move_ms);
+                for k in 0..=6u64 {
+                        let t = t0 + ms * 1000 * k / 6;
+                        cap_ui.render(&mut cap_layer, &mut cap, &styled(&font), t);
+                        while cap_layer.poll(&mut cap).unwrap() {}
+                        reg_ui.render(&mut reg_layer, &mut reg, &styled(&font), t);
+                        while reg_layer.poll(&mut reg).unwrap() {}
+                        assert_eq!(cap.driver().last_full, reg.driver().last_full, "region and capture frames differ at step {k}/6 (t={t})");
+                }
+                // and the settled child page is identical
+                settle(&mut cap_ui, &mut cap_layer, &mut cap, &font, &mut tc);
+                settle(&mut reg_ui, &mut reg_layer, &mut reg, &font, &mut tr);
+                assert_eq!(cap.driver().last_full, reg.driver().last_full, "settled child differs after the transition");
+                assert!(!reg.is_double_buffered(), "region path used a single buffer");
         }
 
         #[test]
