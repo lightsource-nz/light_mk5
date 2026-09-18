@@ -224,11 +224,6 @@ pub struct PioI2sOut {
         pin_lrclk: usize,
         ch: [usize; 2],
         bufs: Option<[&'static mut [u32; STREAM_WORDS]; 2]>,
-        //   the POLLED path's state; the IRQ path keeps its ring/drain/underruns in the
-        // `STREAM` static instead (the interrupt reaches them without a handle)
-        last_busy: [bool; 2],
-        /// Times the whole stream starved on the POLLED path (both buffers drained).
-        pub underruns: u32,
         //   the capture (microphone) side, present after `attach_capture`
         _din: Option<Input>,
         pin_din: usize,
@@ -322,8 +317,6 @@ impl PioI2sOut {
                         pin_lrclk: lrclk_pin,
                         ch: [dma_a, dma_b],
                         bufs: None,
-                        last_busy: [false; 2],
-                        underruns: 0,
                         _din: None,
                         pin_din: 0,
                         cap_ch: [0; 2],
@@ -566,55 +559,6 @@ impl PioI2sOut {
                                 .en()
                                 .set_bit()
                 });
-        }
-
-        /// Hand over the two DMA buffers and start the chained ring for the POLLED path: each
-        /// completed buffer waits for [`refill`](Self::refill) on the poll loop. No interrupt,
-        /// no prefetch ring -- for a board too RAM-tight for [`start_stream_irq`]'s ring and
-        /// with only light audio (a beep, a tone) that a poll can keep fed.
-        pub fn start_stream(&mut self, bufs: [&'static mut [u32; STREAM_WORDS]; 2]) {
-                self.configure_channel(self.ch[0], self.ch[1], bufs[0]);
-                self.configure_channel(self.ch[1], self.ch[0], bufs[1]);
-                self.bufs = Some(bufs);
-                self.last_busy = [true, false];
-                let dma = unsafe { &*pac::DMA::ptr() };
-                dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.ch[0]) });
-        }
-
-        /// Refill whichever buffer the polled ring has finished with (see [`start_stream`]):
-        /// `fill` is called with each completed buffer and the channel is re-armed. Both idle
-        /// means the stream starved -- counted, refilled and restarted. Not used with the IRQ
-        /// path, which re-arms from the interrupt instead.
-        pub fn refill(&mut self, mut fill: impl FnMut(&mut [u32; STREAM_WORDS])) {
-                let Some(bufs) = self.bufs.as_mut() else { return };
-                let dma = unsafe { &*pac::DMA::ptr() };
-                let mut busy = [false; 2];
-                for i in 0..2 {
-                        busy[i] = dma.ch(self.ch[i]).ch_ctrl_trig().read().busy().bit_is_set();
-                        if self.last_busy[i] && !busy[i] {
-                                fill(bufs[i]);
-                                let c = dma.ch(self.ch[i]);
-                                c.ch_read_addr().write(|w| unsafe { w.bits(bufs[i].as_ptr() as u32) });
-                                c.ch_trans_count().write(|w| unsafe { w.bits(STREAM_WORDS as u32) });
-                        }
-                        self.last_busy[i] = busy[i];
-                }
-                if !busy[0] && !busy[1] {
-                        light_core::warn!("i2s: stream ring drained; restarted");
-                        self.underruns = self.underruns.wrapping_add(1);
-                        self.last_busy = [true, false];
-                        dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.ch[0]) });
-                }
-        }
-
-        /// Underruns on the POLLED path; the IRQ path uses [`stream_underruns`](Self::stream_underruns).
-        pub fn underruns(&self) -> u32 {
-                self.underruns
-        }
-
-        /// Zero the polled-path underrun count.
-        pub fn reset_polled_underruns(&mut self) {
-                self.underruns = 0;
         }
 
         /// Hand over the two DMA buffers (their content plays first -- zeros are silence) and

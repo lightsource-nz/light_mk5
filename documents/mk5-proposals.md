@@ -99,13 +99,15 @@ instantiate against, so they come first.
 - **Touches.** [02-graphics-and-ui.md](02-graphics-and-ui.md),
   [09-application-model.md](09-application-model.md) (interface-as-data).
 
-## E. One audio streaming path: the prefetch ring — *decided*
+## E. One audio streaming path: the prefetch ring — *implemented*
 
-> **Decided (mk5), design recorded** in [04](04-audio-and-midi.md#) — remove the polled path; the IRQ
-> prefetch ring is the single model. Grounded in the finding that the `AudioStream` contract is
-> already ring-only and the polled `start_stream`/`refill` are unused inherent methods; removing them
-> also retires the idle-drain-miscounted-as-starvation wrinkle. A RAM-tight board is a port concern
-> (proposal G), not a second contract path. **Not yet applied to code.**
+> **Implemented (mk5)**, design in [04](04-audio-and-midi.md#). Removed `PioI2sOut`'s polled path
+> (`start_stream`/`refill`, the polled-only `underruns()`/`reset_polled_underruns()` accessors, and
+> the `last_busy`/`underruns` fields they used) from `light-rp2`. The `AudioStream` contract was
+> already ring-only, the polled methods had no callers, and their removal also retired the
+> idle-drain-miscounted-as-starvation wrinkle. The IRQ prefetch ring is the single model; a RAM-tight
+> board is a port concern (proposal G), not a second contract path. Verified: the two touch349 audio
+> targets (ui_demo, dictaphone) build and link.
 
 - **Status quo (mk4).** `AudioStream` has a polled path and an IRQ prefetch-ring path; the polled
   path silently miscounts idle draining as starvation.

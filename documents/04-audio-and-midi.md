@@ -127,34 +127,28 @@ BCLK/LRCLK as a slave data-out.
   machine's byte order. The port owns the buffers, their sizes and the transport; the application
   owns only the samples.
 
-### Two output paths, and why the IRQ path exists
+### One output path: the IRQ prefetch ring
 
-> **mk5 decision (proposal E) — one output path: the prefetch ring.** The `AudioStream` contract is
-> already ring-only (`stream_push`/`stream_free`/`stream_pending`/`stream_clear`/`set_active`); the
-> polled `start_stream`/`refill` below are unused inherent methods that no application calls. mk5
-> **removes the polled path** — the IRQ prefetch ring is the single model, which also retires the
-> polled path's correctness wrinkle (an idle ring draining to silence was miscounted as starvation).
-> The rationale for the ring is kept below. A board too RAM-tight for the ring is a port concern
-> addressed by proposal G, not a second contract path.
+> **mk5 decision (proposal E) — one output path, implemented.** The `AudioStream` contract is
+> ring-only (`stream_push`/`stream_free`/`stream_pending`/`stream_clear`/`set_active`); the polled
+> `start_stream`/`refill` were unused inherent methods no application called. mk5 **removed the
+> polled path** — the IRQ prefetch ring is the single model, which also retired the polled path's
+> correctness wrinkle (an idle ring draining to silence miscounted as starvation) and the
+> polled-only underrun counter and buffer-busy state it carried. A board too RAM-tight for the ring
+> is a port concern addressed by proposal G, not a second contract path.
 
-`PioI2sOut` offers two ways to keep the DAC fed, both over the same two ping-pong DMA buffers
-(~85 ms each, `STREAM_WORDS = 2048` frames at 24 kHz, sized against a *measured* worst-case
-64.8 ms poll-to-poll gap from an SD card's internal read stall):
+`PioI2sOut` keeps the DAC fed over two ping-pong DMA buffers (~85 ms each, `STREAM_WORDS = 2048`
+frames at 24 kHz, sized against a *measured* worst-case 64.8 ms poll-to-poll gap from an SD card's
+internal read stall), refilled from the **DMA-completion interrupt** (`light_i2s_dma_irq` on
+`DMA_IRQ_0`), which drains a larger backing **ring** (the board's store) that the poll loop tops up
+toward full each pass (`start_stream_irq` + `stream_push`/`stream_free`/`stream_pending`/
+`set_active`/`stream_clear`).
 
-- **The polled path** (`start_stream` + `refill`): each completed DMA buffer waits for the poll
-  loop to refill it. Simple, no interrupt, no prefetch ring — for a board too RAM-tight for the ring
-  and with only light audio (a beep, a tone) a poll can keep fed. Both buffers idle means the stream
-  starved: it is counted, refilled and restarted, not guessed about.
-- **The IRQ prefetch-ring path** (`start_stream_irq` + `stream_push`/`stream_free`/`stream_pending`/
-  `set_active`/`stream_clear`): the two DMA buffers are refilled from the **DMA-completion
-  interrupt** (`light_i2s_dma_irq` on `DMA_IRQ_0`), which drains a larger backing **ring** (the
-  board's store) that the poll loop tops up toward full each pass.
-
-The IRQ path exists because a slow poll spends the *ring's lead*, not the codec's deadline. The
-four-word TX FIFO holds only ~83 µs of audio and a single display draw is two hundred times that,
-so polled FIFO writes were audibly choppy; the ping-pong buffers fix that, but on the polled path a
-blocked main loop (a card read, a display push) can still miss a buffer's refill and starve the
-codec directly. With the IRQ path, only the *ring* running dry starves it, and the ring carries a
+The IRQ path is the model because a slow poll spends the *ring's lead*, not the codec's deadline. The
+four-word TX FIFO holds only ~83 µs of audio and a single display draw is two hundred times that, so
+polled FIFO writes were audibly choppy; the ping-pong buffers fix that, but a polled refill from a
+blocked main loop (a card read, a display push) could still miss a buffer and starve the codec
+directly. Feeding from the interrupt, only the *ring* running dry starves it, and the ring carries a
 lead that rides such gaps out. The interrupt handler is a pure RAM copy plus two register writes —
 it never touches the card or the filesystem — so it is safe at interrupt time.
 
