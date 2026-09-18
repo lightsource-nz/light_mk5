@@ -461,15 +461,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "bare-metal"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5deb64efa5bd81e31fcd1938615a6d98c82eafcbcd787162b6f63b91d6bac5b3"
-dependencies = [
- "rustc_version 0.2.3",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -483,12 +474,6 @@ name = "bit-vec"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2c54ff287cfc0a34f38a6b832ea1bd8e448a330b3e40a50859e6488bee07f22"
-
-[[package]]
-name = "bitfield"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46afbd2983a5d5a7bd740ccb198caf5b82f45c40c09c0eed36052d91cb92e719"
 
 [[package]]
 name = "bitflags"
@@ -829,32 +814,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cortex-m"
-version = "0.7.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "844b9697e922c99847eed515c6eb6d101e7ce62ff556fcaec243798291427ee8"
-dependencies = [
- "bare-metal",
- "bitfield",
- "cortex-m-macros",
- "critical-section",
- "embedded-hal 0.2.7",
- "embedded-hal 1.0.0",
- "volatile-register",
-]
-
-[[package]]
-name = "cortex-m-macros"
-version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d1922be58519ad40368fc4ca595a2cefa51a7abf947be3b0c90586dc7dbd0e2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -883,30 +842,6 @@ name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
-
-[[package]]
-name = "crossfire_pico2_app"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-rp2",
- "light_app_crossfire",
-]
-
-[[package]]
-name = "crossfire_pico_app"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-rp2",
- "light_app_crossfire",
-]
 
 [[package]]
 name = "crush"
@@ -945,26 +880,6 @@ name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
-
-[[package]]
-name = "dictaphone_touch349_app"
-version = "0.1.0"
-dependencies = [
- "light-board-touch349",
- "light-draw",
- "light-input",
- "light_dictaphone_touch349",
-]
-
-[[package]]
-name = "dictaphone_wide_touch349_app"
-version = "0.1.0"
-dependencies = [
- "light-board-touch349",
- "light-draw",
- "light-input",
- "light_dictaphone_touch349",
-]
 
 [[package]]
 name = "digest"
@@ -1154,22 +1069,6 @@ checksum = "b1fe0049ce51d0fb414d029e668dd72eb30bc2b739bf34296ed97bd33df544f3"
 dependencies = [
  "bytemuck",
 ]
-
-[[package]]
-name = "embedded-hal"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35949884794ad573cf46071e41c9b60efb0cb311e3ca01f7af807af1debc66ff"
-dependencies = [
- "nb 0.1.3",
- "void",
-]
-
-[[package]]
-name = "embedded-hal"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 
 [[package]]
 name = "endi"
@@ -1874,7 +1773,7 @@ checksum = "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
 dependencies = [
  "proc-macro2",
  "quote",
- "rustc_version 0.4.1",
+ "rustc_version",
  "simd_cesu8",
  "syn 2.0.119",
 ]
@@ -1993,47 +1892,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "light-board-touch169"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-input",
- "light-power-manager",
- "light-rp2",
-]
-
-[[package]]
-name = "light-board-touch28"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-input",
- "light-power-manager",
- "light-rp2",
-]
-
-[[package]]
-name = "light-board-touch349"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-input",
- "light-power-manager",
- "light-rp2",
-]
-
-[[package]]
-name = "light-board-touch4"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-input",
- "light-power-manager",
- "light-rp2",
-]
-
-[[package]]
 name = "light-core"
 version = "0.1.0"
 dependencies = [
@@ -2112,19 +1970,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "light-rp2"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "critical-section",
- "light-core",
- "light-midi",
- "portable-atomic",
- "rp2040-pac",
- "rp235x-pac",
-]
-
-[[package]]
 name = "light-rtc"
 version = "0.1.0"
 dependencies = [
@@ -2135,24 +1980,6 @@ dependencies = [
 name = "light-sd"
 version = "0.1.0"
 dependencies = [
- "light-core",
-]
-
-[[package]]
-name = "light-stm32f4"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "critical-section",
- "light-core",
-]
-
-[[package]]
-name = "light-stm32h7"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "critical-section",
  "light-core",
 ]
 
@@ -2208,52 +2035,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "light_app_f411"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-stm32f4",
-]
-
-[[package]]
-name = "light_app_h7"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-stm32h7",
- "light-ui",
-]
-
-[[package]]
-name = "light_app_lui_touch349"
-version = "0.1.0"
-dependencies = [
- "light-board-touch349",
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-input",
- "light-rp2",
- "light-ui",
-]
-
-[[package]]
-name = "light_app_pico2"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-rp2",
- "light-ui",
-]
-
-[[package]]
 name = "light_app_ui_demo"
 version = "0.1.0"
 dependencies = [
@@ -2263,77 +2044,6 @@ dependencies = [
  "light-font",
  "light-input",
  "light-ui",
-]
-
-[[package]]
-name = "light_app_ui_demo_touch169"
-version = "0.1.0"
-dependencies = [
- "critical-section",
- "light-audio",
- "light-board-touch169",
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-input",
- "light-power-manager",
- "light-rp2",
- "light-ui",
- "light_app_ui_demo",
-]
-
-[[package]]
-name = "light_app_ui_demo_touch28"
-version = "0.1.0"
-dependencies = [
- "light-board-touch28",
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-input",
- "light-power-manager",
- "light-rp2",
- "light-ui",
- "light_app_ui_demo",
-]
-
-[[package]]
-name = "light_app_ui_demo_touch349"
-version = "0.1.0"
-dependencies = [
- "light-audio",
- "light-board-touch349",
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-fs",
- "light-input",
- "light-power-manager",
- "light-rp2",
- "light-rtc",
- "light-sd",
- "light-ui",
- "light_app_ui_demo",
-]
-
-[[package]]
-name = "light_app_ui_demo_touch4"
-version = "0.1.0"
-dependencies = [
- "light-board-touch4",
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-input",
- "light-power-manager",
- "light-rp2",
- "light-rtc",
- "light-ui",
- "light_app_ui_demo",
 ]
 
 [[package]]
@@ -2349,26 +2059,6 @@ dependencies = [
  "light-input",
  "light-ui",
  "light_ui_components",
-]
-
-[[package]]
-name = "light_dictaphone_touch349"
-version = "0.1.0"
-dependencies = [
- "light-audio",
- "light-board-touch349",
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-fs",
- "light-input",
- "light-power-manager",
- "light-rp2",
- "light-rtc",
- "light-sd",
- "light-ui",
- "light_dictaphone_core",
 ]
 
 [[package]]
@@ -2518,21 +2208,6 @@ dependencies = [
  "thiserror 1.0.69",
  "unicode-xid",
 ]
-
-[[package]]
-name = "nb"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "801d31da0513b6ec5214e9bf433a77966320625a37860f910be265be6e18d06f"
-dependencies = [
- "nb 1.1.0",
-]
-
-[[package]]
-name = "nb"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
 
 [[package]]
 name = "ndk"
@@ -3234,26 +2909,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
-name = "rp2040-pac"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83cbcd3f7a0ca7bbe61dc4eb7e202842bee4e27b769a7bf3a4a72fa399d6e404"
-dependencies = [
- "cortex-m",
- "vcell",
-]
-
-[[package]]
-name = "rp235x-pac"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3f1227561239cdfbcea69f6f1c66c78cc8197d5b4103db394eacf20aedf74fa"
-dependencies = [
- "cortex-m",
- "vcell",
-]
-
-[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3267,20 +2922,11 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustc_version"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
-dependencies = [
- "semver 0.9.0",
-]
-
-[[package]]
-name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
- "semver 1.0.28",
+ "semver",
 ]
 
 [[package]]
@@ -3351,24 +2997,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
-dependencies = [
- "semver-parser",
-]
-
-[[package]]
-name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
-
-[[package]]
-name = "semver-parser"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "serde"
@@ -3463,7 +3094,7 @@ version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
 dependencies = [
- "rustc_version 0.4.1",
+ "rustc_version",
  "simdutf8",
 ]
 
@@ -3892,12 +3523,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
-name = "vcell"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77439c1b53d2303b20d9459b1ade71a83c716e3f9c34f3228c00e6f185d6c002"
-
-[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3908,21 +3533,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "void"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
-
-[[package]]
-name = "volatile-register"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de437e2a6208b014ab52972a27e59b33fa2920d3e00fe05026167a1c509d19cc"
-dependencies = [
- "vcell",
-]
 
 [[package]]
 name = "walkdir"

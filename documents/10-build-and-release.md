@@ -32,23 +32,30 @@ projects.
 
 ## mk5 decision — two workspaces and uniform target naming (proposal F)
 
-*Decided for mk5.* mk4 keeps one cargo workspace, which forces two workarounds that mk5 removes.
+*Decided and implemented for mk5.* mk4 kept one cargo workspace, which forced two workarounds mk5
+removes.
 
 - **Two workspaces, one version.** The single-global `critical-section` (a property of that crate, not
   a defect — see [07-ports-and-shell.md](07-ports-and-shell.md)) means the ports cannot build
-  together and none build on the host, so mk4's host test is `cargo test --workspace` with a
-  seventeen-entry `--exclude` list. mk5 splits the tree into a **portable workspace** (the framework
-  crates, the portable application crates, and the host tools) and a **firmware workspace** (the
+  together and none build on the host, so mk4's host test was `cargo test --workspace` with a
+  twenty-plus-entry `--exclude` list that every new board had to grow. mk5 splits the tree into a
+  **portable workspace** (the repository-root `Cargo.toml`: the framework crates, the portable
+  application crates, and the host tools) and a **firmware workspace** (`firmware/Cargo.toml`: the
   ports, the board-support crates, the per-board instantiation crates, and the `module/*` executables,
-  each firmware selecting one port). The portable workspace then host-tests with a plain `cargo test`
-  — no excludes — and no build ever pulls two ports together. The firmware workspace depends on the
-  portable crates by path across the boundary; the shared version (see *Versioning*) is coordinated
-  across both by the release tooling.
-- **Uniform target naming.** mk4's `_app` suffix exists because a CMake `add_executable(<name>)`
+  each firmware selecting one port). The portable workspace host-tests with `cargo test --workspace`
+  and no port to exclude (only the two GUI tools, which have no tests). `firmware/Cargo.toml` is a
+  virtual manifest whose members reach back into `crates/` and `module/` by path; each such crate
+  names it with `workspace = "…/firmware"`, so cargo assigns it to the firmware workspace even though
+  it sits under the portable root — no root `exclude` list is needed, so *neither* manifest carries a
+  per-board list to maintain. Corrosion imports the firmware staticlibs from `firmware/Cargo.toml`
+  (and `crush`, a host tool, from the root); the firmware crates depend on the portable ones by path
+  across the boundary. Both manifests carry the same `[workspace.package] version` literal (cargo
+  cannot inherit one across workspaces); a release bumps both in the commit it tags.
+- **Uniform target naming.** mk4's `_app` suffix existed because a CMake `add_executable(<name>)`
   target and a Corrosion-imported crate of the same name collide in one CMake namespace. mk5 adopts a
   uniform convention where the instantiation crate and the executable never share a stem — the crate
-  is `light_app_<name>` and the executable is `<name>` (the pattern the ui_demo targets already use,
-  which need no suffix) — so the collision cannot arise and the `_app` workaround is dropped.
+  is `light_app_<name>` and the executable is `<name>` — so the collision cannot arise and the four
+  `_app` crates are renamed (`crossfire_pico_app` → `light_app_crossfire_pico`, and so on).
 
 The single-global critical-section itself stays a per-firmware property; F changes the build *around*
 it, not the choice.
@@ -93,18 +100,20 @@ font, or a theme is data: an authored file and one call, no firmware source touc
   `-Send "cmd"` (or a list) — sending each command and capturing its reply — so a script, CI, or an
   agent can read `stats` and issue commands without a terminal.
 
-`cargo build --workspace --target thumbv8m…` does **not** work: `crush` is a `std` binary, and a
-workspace-wide cross build unifies features across the two `critical-section` flavours. Build the
-firmware through the scripts, or a single crate with `cargo build -p <crate> --target …`.
+No `--workspace` cross build works, in either workspace: the portable root has `std` binaries
+(`crush`, the GUI tools) that do not cross-compile, and the firmware workspace holds every port at
+once, so a workspace-wide build unifies features across the two `critical-section` flavours. Build the
+firmware through the scripts, or a single crate with `cargo build -p <crate> --target …` (which pulls
+in only that firmware's one port) — the shape Corrosion uses.
 
 ## Host tests
 
-- `scripts/test.ps1` configures a host build tree and runs `cargo test` on the portable crates.
-- The port crates and the per-board `staticlib` crates are **excluded** from the host test run:
-  `light-rp2` needs a chip chosen, the ports carry `no_std`/target-only code, and a workspace-wide
-  invocation cannot unify the cortex-m single-core `critical-section` (the STM32 ports) with
-  `light-rp2`'s own. Shared app-board libraries (a board-specific app crate) are excluded for
-  the same reason.
+- `scripts/test.ps1` configures a host build tree and runs `cargo test --workspace` over the
+  **portable workspace** (the repository root). The ports and their dependents are not members of it
+  — they live in the firmware workspace — so there is nothing to exclude for the `critical-section`
+  reason, and adding a board never touches the test command.
+- The only exclusions are the two desktop GUI tools (`light-host-gui`, `light-ui-editor`): they are
+  `cargo -p` build targets with no tests, and their windowing dependencies are dead weight headless.
 - The host suite is also run in CI through the framework's shared GitHub workflow.
 
 ## Toolchain

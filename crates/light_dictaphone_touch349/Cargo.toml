@@ -1,4 +1,5 @@
 [package]
+workspace = "../../firmware"
 name = "light_dictaphone_touch349"
 version.workspace = true
 edition.workspace = true

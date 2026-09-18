@@ -1,4 +1,5 @@
 [package]
+workspace = "../../../firmware"
 #   _app suffix: the plain name is the CMake EXECUTABLE (which must match the module
 # directory -- light-flash.ps1 finds module/<target>/<target>.uf2), and CMake target
 # names are one namespace with Corrosion's crate targets

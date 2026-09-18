@@ -117,15 +117,19 @@ instantiate against, so they come first.
 - **Touches.** [04-audio-and-midi.md](04-audio-and-midi.md),
   [01-core-runtime.md](01-core-runtime.md) (`AudioStream` hal).
 
-## F. Rework the build and port seams — *decided*
+## F. Rework the build and port seams — *implemented*
 
-> **Decided (mk5), design recorded** in [10](10-build-and-release.md#) (two workspaces — portable vs
-> firmware/ports — so host tests run with a plain `cargo test` and no `--exclude` list; uniform
-> `light_app_<name>` crate + `<name>` executable naming so the CMake/Corrosion collision that forced
-> `_app` cannot arise), with cross-refs in [09](09-application-model.md#) (naming), [07](07-ports-and-shell.md#)
-> (ports move to the firmware workspace), and [00](00-overview.md#) (principle 6 → two workspaces, one
-> version). The single-global critical-section stays a per-firmware property; F changes the build
-> around it. **Not yet applied to code.**
+> **Implemented (mk5)**, design in [10](10-build-and-release.md#). Two workspaces: the repository-root
+> `Cargo.toml` is now portable-only (framework + portable apps + host tools), and a new
+> `firmware/Cargo.toml` virtual manifest holds the ports, board-support, per-board instantiation
+> crates and `module/*` executables. Each firmware crate names the firmware manifest with
+> `workspace = "…/firmware"`, so no root `--exclude`/`exclude` list exists on either side — host tests
+> are `cargo test --workspace` (bar the two GUI tools), and adding a board touches only
+> `firmware/Cargo.toml`'s members. Corrosion imports the firmware staticlibs from `firmware/Cargo.toml`.
+> The four `_app` crates were renamed to `light_app_<name>` (part 1, done separately). The
+> single-global critical-section stays a per-firmware property; F changes the build around it. Verified:
+> full host suite green with no port excludes; RP2350 (ui_demo_touch349) and STM32H7 (light_mk4_h7)
+> firmware build and link through the firmware workspace.
 
 - **Status quo (mk4).** The build system's executable/crate namespace collision forces an `_app`
   suffix on some crates; the single-global `critical-section` means the two flavours cannot coexist,

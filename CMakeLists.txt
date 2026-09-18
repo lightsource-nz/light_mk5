@@ -54,9 +54,11 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         )
         FetchContent_MakeAvailable(Corrosion)
 
-        #   one staticlib per board application; only the one the executable links is built
+        #   one staticlib per board application, from the FIRMWARE workspace (the ports and their
+        # dependents live there, separate from the portable crates this repo root now holds); only
+        # the one the executable links is built
         corrosion_import_crate(
-                MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
+                MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/firmware/Cargo.toml
                 CRATES light_app_ui_demo_touch169 light_app_ui_demo_touch28 light_app_ui_demo_touch349 light_app_dictaphone_touch349 light_app_dictaphone_wide_touch349 light_app_lui_touch349 light_app_ui_demo_touch4 light_app_pico2 light_app_crossfire_pico light_app_crossfire_pico2 light_app_h7 light_app_f411
                 NO_STD
         )
@@ -135,12 +137,12 @@ endif()
 
 #   the host tree exists so scripts/test.ps1 -- and CI's project-test workflow -- run the Rust
 # tests through the same door as every other project: one ctest that is `cargo test` over the
-# portable crates. The staticlib crates are excluded: they have no tests and their panic
-# handlers are target-only anyway. So are the port crates: light-rp2 needs a chip feature
-# chosen, and the STM32 ones for a subtler reason -- cargo unifies features across everything
-# in one invocation, and cortex-m's single-core critical section selects critical-section's
-# restore-state-u32 while light-rp2 selects restore-state-bool -- fine in a firmware build,
-# which sees one port crate, a compile error in a workspace-wide test run that sees both
+# PORTABLE workspace (this repo root). The ports and their dependents live in the separate
+# firmware workspace (firmware/Cargo.toml) and are never seen here, so there is no port to
+# exclude -- which is why the tree is split: cargo unifies features across a workspace, and
+# cortex-m's critical section (restore-state-u32) and light-rp2's (restore-state-bool) cannot
+# coexist in one test run. Only the two desktop GUI tools are excluded: they are `cargo -p`
+# build targets with no tests, and their windowing deps are dead weight for a headless test.
 if(LIGHT_PLATFORM STREQUAL "HOST")
         include(CTest)
         find_program(LIGHT_CARGO cargo
@@ -149,7 +151,7 @@ if(LIGHT_PLATFORM STREQUAL "HOST")
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_ui_demo_touch169 --exclude light_app_ui_demo_touch28 --exclude light_app_ui_demo_touch349 --exclude light_app_dictaphone_touch349 --exclude light_app_dictaphone_wide_touch349 --exclude light_app_lui_touch349 --exclude light_app_ui_demo_touch4 --exclude light_app_pico2 --exclude light_app_crossfire_pico --exclude light_app_crossfire_pico2 --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-board-touch169 --exclude light-board-touch28 --exclude light-board-touch4 --exclude light-board-touch349 --exclude light_dictaphone_touch349 --exclude light-stm32h7 --exclude light-stm32f4 --exclude light-host-gui --exclude light-ui-editor
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light-host-gui --exclude light-ui-editor
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()

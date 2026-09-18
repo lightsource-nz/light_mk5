@@ -1,0 +1,59 @@
+#   the FIRMWARE workspace: the ports, the board-support crates, the per-board instantiation
+# crates, and the module/* executables' crates -- everything that selects a port and cannot
+# build on the host. It is kept separate from the portable workspace at the repository root so
+# the host test there is a plain `cargo test` with no port to exclude, and so no build ever pulls
+# two ports (two `critical-section` implementations) together. Nothing here is ever built
+# workspace-wide: CMake/Corrosion builds one instantiation crate at a time, each selecting its own
+# port. Members reach back up into crates/ and module/ by path; each such crate names this manifest
+# with `workspace = "..."` so cargo assigns it here rather than to the portable root.
+[workspace]
+resolver = "2"
+members = [
+        # ports
+        "../crates/light-rp2",
+        "../crates/light-stm32h7",
+        "../crates/light-stm32f4",
+        # board-support layers
+        "../crates/light-board-touch169",
+        "../crates/light-board-touch28",
+        "../crates/light-board-touch4",
+        "../crates/light-board-touch349",
+        # per-board instantiation crates (touch fleet)
+        "../crates/light_app_ui_demo_touch169",
+        "../crates/light_app_ui_demo_touch28",
+        "../crates/light_app_ui_demo_touch349",
+        "../crates/light_app_ui_demo_touch4",
+        "../crates/light_dictaphone_touch349",
+        # the module/* executables' instantiation crates
+        "../module/dictaphone_touch349/rust",
+        "../module/dictaphone_wide_touch349/rust",
+        "../module/light_mk4_lui_touch349/rust",
+        "../module/light_mk4_pico2/rust",
+        "../module/crossfire_pico/rust",
+        "../module/crossfire_pico2/rust",
+        "../module/light_mk4_h7/rust",
+        "../module/light_mk4_f411/rust",
+]
+
+#   one version across BOTH workspaces: this literal has to agree with the portable workspace's
+# (../Cargo.toml) and with the git tag light-release.ps1 mints -- a release bumps all in the same
+# commit. cargo cannot read a tag, and the two workspaces cannot share one [workspace.package].
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+#   the firmware is linked by the SDK's / the CMSIS shell's CMake, which owns panic handling --
+# Rust panics are handed to the C shell -- so unwinding tables are dead weight. These match the
+# portable workspace's profiles; a firmware crate inherits them from THIS root.
+[profile.dev]
+panic = "abort"
+opt-level = 1
+debug = true
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+debug = true
+lto = "fat"
+codegen-units = 1
