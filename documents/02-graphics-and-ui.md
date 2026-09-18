@@ -346,7 +346,15 @@ scratch. The animations become a *moving region* the band carries, resolved per 
   the rotation *animated* selects `Full` and pays for the frame. Region buffering targets the slide
   and steady state, which is where the RAM ceiling actually bites.
 
-**Open risks for the implementation pass** (why it is deferred, not done here): the in-place buffer
+**Progress.** The foundational primitive is implemented and host-tested: `Canvas::shift_region`
+scrolls a rectangle of the live buffer's own contents by one axis in place, dropping what falls past
+the far edge and leaving the uncovered strip for the caller — the single-buffer counterpart of
+`blit_offset`, and exactly what the slide needs to move the outgoing image off without a second
+frame. The `page_step` integration (a region-slide branch that shifts the outgoing off and paints the
+incoming into the uncovered band, selected by a per-board opt-in) and the board flip remain, gated on
+the differential host test below and on-glass confirmation.
+
+**Open risks for the implementation pass** (why the rest is deferred): the in-place buffer
 shift must honour the chunk/DMA in-flight borrow rules (no shift while a transfer reads the buffer);
 holding two widget trees raises the arena's peak, which the big boards must be measured against; and
 the whole path is only trustworthy once the slide is confirmed tear-free on the 3.49 and 4.0 glass.

@@ -928,6 +928,75 @@ impl<'a> Canvas<'a> {
                 true
         }
 
+        /// Shift this buffer's OWN contents inside the physical rectangle `region` by `(dx, dy)`,
+        /// in place, along exactly one axis (the other displacement zero). Content pushed past the
+        /// region's far edge is dropped; the near strip the shift uncovers is left as it was, for
+        /// the caller to repaint. RGB565 only; `false` on a bad format, a region outside the
+        /// buffer, or a two-axis request.
+        ///
+        /// This is what lets a page slide run on a SINGLE framebuffer: the outgoing image, already
+        /// in the live buffer, is scrolled off region by region while the incoming page is painted
+        /// into the uncovered strip -- the region-buffering alternative to capturing a whole second
+        /// frame to blit from (see [`blit_offset`](Self::blit_offset), its two-buffer sibling).
+        pub fn shift_region(&mut self, region: Region, dx: i32, dy: i32) -> bool {
+                if !self.format.is_rgb565() {
+                        return false;
+                }
+                if (dx != 0) == (dy != 0) {
+                        // exactly one axis: a page slide runs one way at a time, and a two-axis
+                        // in-place move would need an intermediate copy this primitive avoids
+                        return false;
+                }
+                let (pw, ph) = (i32::from(self.phys_w), i32::from(self.phys_h));
+                let (x0, y0, x1, y1) = (i32::from(region.x0), i32::from(region.y0), i32::from(region.x1), i32::from(region.y1));
+                if x1 < x0 || y1 < y0 || x0 < 0 || y0 < 0 || x1 >= pw || y1 >= ph {
+                        return false;
+                }
+                let stride = self.format.stride(self.phys_w);
+                const BPP: usize = 2;
+                if dy == 0 {
+                        //   each row shifts its own column run; copy_within is a memmove, so the
+                        // overlap between source and destination columns is handled
+                        let (cs0, cs1) = if dx > 0 { (x0, x1 - dx) } else { (x0 - dx, x1) };
+                        if cs1 < cs0 {
+                                return true; // shifted clean past the region: nothing survives
+                        }
+                        for y in y0..=y1 {
+                                let base = y as usize * stride;
+                                let s = base + cs0 as usize * BPP;
+                                let e = base + (cs1 + 1) as usize * BPP;
+                                let d = base + (cs0 + dx) as usize * BPP;
+                                self.buf.copy_within(s..e, d);
+                        }
+                } else {
+                        //   rows move whole; each copy is between two distinct rows, so the only
+                        // care is order -- write the rows nearest the destination edge first, or a
+                        // not-yet-read source row is clobbered
+                        let (rs0, rs1) = if dy > 0 { (y0, y1 - dy) } else { (y0 - dy, y1) };
+                        if rs1 < rs0 {
+                                return true;
+                        }
+                        let coloff = x0 as usize * BPP;
+                        let colbytes = (x1 - x0 + 1) as usize * BPP;
+                        let mut rows: [i32; 2] = [rs0, rs1];
+                        if dy > 0 {
+                                rows.swap(0, 1); // high row first
+                        }
+                        let step = if dy > 0 { -1 } else { 1 };
+                        let mut sy = rows[0];
+                        loop {
+                                let s = sy as usize * stride + coloff;
+                                let d = (sy + dy) as usize * stride + coloff;
+                                self.buf.copy_within(s..s + colbytes, d);
+                                if sy == rows[1] {
+                                        break;
+                                }
+                                sy += step;
+                        }
+                }
+                true
+        }
+
         /// Draw `text` with its cell's top-left at `origin`, ink in `fg`. Only ink is painted;
         /// clear the box first (or use [`text_boxed`](Self::text_boxed)) if the background
         /// matters. Returns the logical region the cells cover, clipped, if any of it landed.
@@ -1252,5 +1321,70 @@ mod tests {
                 c.fill_region(&Region::new(1, 1, 2, 2), 0xABCD);
                 assert_eq!(c.get(1, 1), 0xABCD);
                 assert_eq!(c.get(0, 0), 0x1234);
+        }
+
+        //   each column gets a distinct colour so a shift is legible: column x is 0x0100*(x+1)
+        fn striped(w: u16, h: u16) -> (std::vec::Vec<u8>, ()) {
+                (std::vec![0u8; PixelFormat::Rgb565.buffer_len(w, h)], ())
+        }
+
+        #[test]
+        fn shift_region_moves_a_column_run_right_and_leaves_the_uncovered_strip() {
+                let (mut buf, ()) = striped(8, 2);
+                let mut c = Canvas::new(&mut buf, PixelFormat::Rgb565, 8, 2);
+                for x in 0..8u16 {
+                        c.set(i32::from(x), 0, 0x0100 * (x + 1));
+                        c.set(i32::from(x), 1, 0x0100 * (x + 1));
+                }
+                assert!(c.shift_region(Region::new(0, 0, 7, 1), 2, 0));
+                // columns 0..1 are the untouched near strip (still their originals)
+                assert_eq!(c.get(0, 0), 0x0100);
+                assert_eq!(c.get(1, 0), 0x0200);
+                // columns 2..7 are the old 0..5, on both rows; old 6,7 fell off the right
+                for x in 2..8u16 {
+                        let expect = 0x0100 * (x - 2 + 1);
+                        assert_eq!(c.get(i32::from(x), 0), expect, "row0 col {x}");
+                        assert_eq!(c.get(i32::from(x), 1), expect, "row1 col {x}");
+                }
+        }
+
+        #[test]
+        fn shift_region_moves_left_and_vertically() {
+                // left shift
+                let (mut buf, ()) = striped(6, 1);
+                let mut c = Canvas::new(&mut buf, PixelFormat::Rgb565, 6, 1);
+                for x in 0..6u16 {
+                        c.set(i32::from(x), 0, 0x0100 * (x + 1));
+                }
+                assert!(c.shift_region(Region::new(0, 0, 5, 0), -2, 0));
+                // cols 0..3 = old 2..5; cols 4,5 untouched originals
+                assert_eq!(c.get(0, 0), 0x0300);
+                assert_eq!(c.get(3, 0), 0x0600);
+                assert_eq!(c.get(4, 0), 0x0500);
+                assert_eq!(c.get(5, 0), 0x0600);
+
+                // vertical shift down by 1: rows move, the top row is the uncovered strip
+                let (mut a, ()) = striped(2, 4);
+                let mut ca = Canvas::new(&mut a, PixelFormat::Rgb565, 2, 4);
+                for y in 0..4u16 {
+                        ca.set(0, i32::from(y), 0x0100 * (y + 1));
+                        ca.set(1, i32::from(y), 0x0100 * (y + 1));
+                }
+                assert!(ca.shift_region(Region::new(0, 0, 1, 3), 0, 1));
+                assert_eq!(ca.get(0, 0), 0x0100, "row 0 untouched (uncovered)");
+                assert_eq!(ca.get(0, 1), 0x0100, "old row 0 -> row 1");
+                assert_eq!(ca.get(1, 2), 0x0200, "old row 1 -> row 2");
+                assert_eq!(ca.get(0, 3), 0x0300, "old row 2 -> row 3; old row 3 fell off");
+        }
+
+        #[test]
+        fn shift_region_rejects_two_axes_and_bad_format() {
+                let (mut buf, ()) = striped(4, 4);
+                let mut c = Canvas::new(&mut buf, PixelFormat::Rgb565, 4, 4);
+                assert!(!c.shift_region(Region::new(0, 0, 3, 3), 1, 1), "two axes refused");
+                assert!(!c.shift_region(Region::new(0, 0, 3, 3), 0, 0), "no-op axis refused");
+                let mut m = std::vec![0u8; PixelFormat::Mono1.buffer_len(8, 8)];
+                let mut cm = Canvas::new(&mut m, PixelFormat::Mono1, 8, 8);
+                assert!(!cm.shift_region(Region::new(0, 0, 7, 7), 2, 0), "mono refused");
         }
 }
