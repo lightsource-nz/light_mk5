@@ -1175,7 +1175,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         let front: &'static mut [u8] = FRAME_FRONT.take();
         let mut display = Display::new(Axs15231b::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2::now_us);
-        //   region buffering: the page slide runs on this one buffer, no 215 KB second frame
+        //   region buffering: the page slide runs on this one buffer, no 215 KB second frame --
+        // reveal off on open, cover back on close
         display.set_region_buffering(true);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,

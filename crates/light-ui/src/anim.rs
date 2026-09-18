@@ -134,19 +134,17 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// One step of a page transition; the same contract as `rotation_step`.
         pub(crate) fn page_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, style: &Style<'_>, now_us: u64) -> Step {
                 if !self.page_move_started {
-                        //   with a back buffer, the outgoing image is captured and slid off the
-                        // incoming tree; without one (a single-buffered scanned panel), the
-                        // roles swap -- the incoming tree draws OVER the old image at a
-                        // shrinking offset, and the outgoing page survives in the live buffer
-                        // wherever a step has not yet covered it. Only what the blit speaks
-                        // can capture; the slide-over works in any format
-                        //   three ways to run the slide: CAPTURE (a back buffer holds the outgoing
-                        // to blit from), REGION (one RGB565 buffer, opted in: scroll the outgoing
-                        // off in place), or OVER (any single buffer: redraw the incoming at a
-                        // shrinking offset). Capture is richest, region is the big-panel RAM saver,
-                        // over is the universal fallback
+                        //   the slide runs one of three ways. CAPTURE (a back buffer): the outgoing
+                        // is frozen and blit. On ONE buffer a mirrored slide is reveal-off on open,
+                        // cover-in on close -- the outgoing page is the mover, sliding off to reveal
+                        // the child and back to cover it -- and each half wants a different
+                        // single-buffer mechanic: REGION scrolls the outgoing off in place (the
+                        // reveal, RGB565, opted in, no second frame), while OVER redraws the incoming
+                        // at a shrinking offset (the cover, any format). So a region board reveals
+                        // forward with REGION and covers back with OVER; everything else
+                        // single-buffered stays on OVER both ways.
                         let capture = display.is_double_buffered() && display.format().is_rgb565();
-                        let region = !capture && display.region_buffering();
+                        let region = !capture && !self.page_move_back && display.region_buffering();
                         self.page_move_region = region;
                         self.page_move_over = !capture && !region;
                         if self.page_move_over {
@@ -164,7 +162,14 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 // enters from the top), the horizontal one its negation (left
                                 // enters from the right). Back reverses either.
                                 let asign = self.page_move_descent.axis_sign();
-                                let dir = if self.page_move_back { -1 } else { 1 };
+                                //   normally back reverses the arrival side. But when this OVER is a
+                                // region board's cover-BACK (the reveal-forward ran as a shift), the
+                                // cover must enter the edge the reveal LEFT from, so it does not
+                                // reverse -- and only on the vertical axis, since the horizontal one
+                                // already negates the sign below, so its mirror falls out with the
+                                // ordinary reversal.
+                                let region_cover_back = display.region_buffering();
+                                let dir = if self.page_move_back && !(region_cover_back && self.page_move_descent.vertical()) { -1 } else { 1 };
                                 if self.page_move_descent.vertical() {
                                         self.page_move_dx = 0;
                                         self.page_move_dy = asign * dir;
@@ -175,17 +180,19 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                         self.page_move_span = i32::from(w);
                                 }
                         } else if region {
-                                //   region mode does a reveal in EVERY direction (one buffer cannot
-                                // slide the incoming in), so it wants the same physical unit and span
-                                // the capture reveal computes -- but no freeze: the outgoing is
-                                // already in the live buffer, to be scrolled off in place
+                                //   region runs the OPEN half only (the reveal): the outgoing is
+                                // already in the live buffer, to be scrolled off in place -- no freeze,
+                                // no second frame. The physical unit and span are the capture reveal's,
+                                // taken from the transform so the shift is rotation-correct; the OVER
+                                // cover-back (above) is aligned to leave and return the same edge.
                                 let m = layer.transform();
                                 let asign = self.page_move_descent.axis_sign();
-                                let (ux, uy, sign) = if self.page_move_descent.vertical() {
-                                        (m.b.signum(), m.d.signum(), asign)
+                                let (ux, uy) = if self.page_move_descent.vertical() {
+                                        (m.b.signum(), m.d.signum())
                                 } else {
-                                        (m.a.signum(), m.c.signum(), asign * if self.page_move_back { -1 } else { 1 })
+                                        (m.a.signum(), m.c.signum())
                                 };
+                                let sign = asign;
                                 let (pw, ph) = layer.physical_size();
                                 self.page_move_dx = sign * ux;
                                 self.page_move_dy = sign * uy;
@@ -300,11 +307,12 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                         Region::new(0, 0, (pw - 1) as u16, (ph - 1 - prev) as u16)
                                 };
                                 c.shift_region(outgoing, self.page_move_dx * delta, self.page_move_dy * delta);
-                                //   the incoming band, logical -- identical to the capture reveal's,
-                                // since the incoming sits at its final position in both
+                                //   the incoming band, logical. The sign matches the setup's, so the
+                                // band lands in the strip the shift just uncovered (region runs the
+                                // open reveal only, so the sign is the descent axis's)
                                 let vertical = self.page_move_descent.vertical();
                                 let asign = self.page_move_descent.axis_sign();
-                                let s = if vertical { asign } else { asign * if self.page_move_back { -1 } else { 1 } };
+                                let s = asign;
                                 let (lw, lh) = layer.logical_size();
                                 let (lw, lh) = (i32::from(lw), i32::from(lh));
                                 let extent = if vertical { lh } else { lw };

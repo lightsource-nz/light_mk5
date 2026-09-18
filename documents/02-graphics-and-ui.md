@@ -324,33 +324,37 @@ supplies no back buffer; the toolkit's page step then runs the slide a third way
 capture path (a back buffer to blit the outgoing from) and the `over` fallback (redraw the incoming at
 a shrinking offset):
 
-- **The outgoing image needs no copy.** It is already in the live buffer, and it survives there as
-  *pixels* — the widget tree that drew it is torn down at navigate, but the image is not. Each step
-  scrolls the still-outgoing part of the buffer off by the step's travel with
-  [`Canvas::shift_region`](../crates/light-draw) (an in-place, single-axis memmove that drops what
-  falls past the edge and leaves the uncovered near strip), then paints the incoming into that strip
-  from the live tree — the same one-static-tree, paint-only-the-new-strip shape the capture path has,
-  with the shift standing in for the capture's blit-from-a-second-frame. So neither a second frame nor
-  a second widget tree is held. On the full-frame-only AXS15231B (which ignores windowing) the whole
-  composited buffer is pushed each step, as it must be — the *buffer* is what region buffering saves,
-  not the transfer.
-- **Every direction is a reveal.** One buffer cannot slide the incoming *in* over a static outgoing
-  (the incoming is not in the buffer to move), so the region path reveals in every direction — the
-  outgoing scrolls off, the incoming is revealed under it. A vertical (`Row`-page) transition that the
-  capture path would *cover* is a reveal here instead; the difference is slight and consistent.
+- **A mirrored slide from two single-buffer mechanics.** A slide that reads right opens and closes as
+  mirror images: on **open** the outgoing page slides *off* to reveal the child (a REVEAL); on **close**
+  it slides back *on* to hide it (a COVER) — the same page, the same edge, one motion reversed. On a
+  single buffer each half is a different trick. The **reveal** (open): the outgoing image is already in
+  the buffer and survives there as *pixels* (its widget tree is torn down at navigate, the image is
+  not), so each step scrolls the still-outgoing part off by the step's travel with
+  [`Canvas::shift_region`](../crates/light-draw) — an in-place, single-axis memmove that drops what
+  falls past the edge and leaves the uncovered strip — then paints the incoming into that strip from
+  the live tree; a static-incoming, paint-only-the-new-strip shape, the shift standing in for the
+  capture path's blit-from-a-second-frame. The **cover** (close): the returning page is not in the
+  buffer, so it is redrawn at a shrinking offset over the outgoing (the `over` mechanic). Neither holds
+  a second frame or a second tree. The two are aligned to leave and return the *same* edge — the one
+  subtlety is that `over` negates the horizontal axis but not the vertical, so the cover-close's
+  reversal is suppressed on the vertical axis to keep the mirror. On the full-frame-only AXS15231B
+  (which ignores windowing) the whole composited buffer is pushed each step, as it must be — the
+  *buffer* is what region buffering saves, not the transfer.
 - **Rotation snaps.** Every pixel moves along an arc each frame, so a rotation has no small moving
   region and genuinely needs the whole prior image to `blit_rotated` — which the single-buffer path
   already snaps (`rotation_step` falls back without a back buffer). A board that wants the rotation
   *animated* keeps `Full` and pays for the frame; region buffering targets the slide, which is the
   common animation and where the RAM ceiling bites.
 
-**Verification.** A differential host test drives the same transition through both the capture display
-and a single-buffer region display and asserts the pushed frames are **byte-identical at every step**
-of a horizontal reveal — so the in-place shift is provably as correct as the verified capture path,
-without a second frame. On hardware, the 3.49 ui_demo was flipped to region buffering (its 215 KB back
-buffer removed): frames advance with zero skips and zero chunk timeouts through navigation, and the
-page slides were confirmed smooth and tear-free on the glass, rotation snapping as intended. The
-`Full`/`over`/scanout paths are unchanged, so every board not opted in keeps its existing behaviour.
+**Verification.** A differential host test drives the same open transition through both the capture
+display and a single-buffer region display and asserts the pushed frames are **byte-identical at every
+step** of the reveal — so the in-place shift is provably as correct as the verified capture path,
+without a second frame — and a second test locks the routing (open reveals via the shift, close covers
+via `over`). On hardware, all three 3.49 apps were flipped to region buffering (each 215 KB back buffer
+removed): ui_demo and the upright dictaphone (horizontal transitions) and the wide dictaphone (a
+rotated, vertical `FromBottom` transition), and the open/close was confirmed a clean mirror on the
+glass in every case, smooth and tear-free, with zero skipped frames and zero chunk timeouts. The
+`Full`/scanout paths and single-buffer boards that do not opt in are unchanged.
 
 ## The widget toolkit — `light-ui`
 

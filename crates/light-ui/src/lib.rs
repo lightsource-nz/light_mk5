@@ -1993,6 +1993,48 @@ mod tests {
         }
 
         #[test]
+        fn region_board_reveals_on_open_and_covers_on_close() {
+                //   a mirrored slide on ONE buffer is reveal-off on open, cover-in on close: the
+                // outgoing page slides away to show the child, then slides back to hide it. Those are
+                // two single-buffer mechanics -- REGION (the in-place shift) forward, OVER (the
+                // offset redraw) back -- and this locks the routing. The direction each produces is
+                // in a different space (physical vs logical), so a mirror is confirmed on glass, not
+                // by comparing the stored units; here we guard that the right mechanic runs each way.
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let (w, h) = (40u16, 24u16);
+                let mut buf = std::vec![0u8; (w as usize) * (h as usize) * 2];
+                let mut display = Display::new(Mock { pushed: StdVec::new() }, &mut buf, w, h, PixelFormat::Rgb565, now);
+                display.set_region_buffering(true);
+                let mut layer = FrameLayer::new(w, h, PixelFormat::Rgb565);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                ui.navigate(&PAGE_MAIN).unwrap();
+                let mut t = 0u64;
+                let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, t: &mut u64| loop {
+                        ui.render(layer, display, &styled(&font), *t);
+                        while layer.poll(display).unwrap() {}
+                        *t += 50_000;
+                        if !ui.is_animating() && !ui.is_dirty() {
+                                break;
+                        }
+                };
+                settle(&mut ui, &mut layer, &mut display, &mut t);
+
+                // open: the reveal runs on the region (shift) path
+                ui.navigate(&PAGE_DETAIL).unwrap();
+                ui.render(&mut layer, &mut display, &styled(&font), t);
+                assert!(ui.page_move_region && !ui.page_move_over, "open should REVEAL via the region shift");
+                settle(&mut ui, &mut layer, &mut display, &mut t);
+
+                // close: the cover runs on the over (offset redraw) path
+                assert!(ui.navigate_back());
+                ui.render(&mut layer, &mut display, &styled(&font), t);
+                assert!(ui.page_move_over && !ui.page_move_region, "close should COVER via the over-mode redraw");
+        }
+
+        #[test]
         fn render_pushes_only_the_changed_widgets_after_the_first_full_frame() {
                 let blob = font_blob();
                 let font = Font::parse(&blob).unwrap();
