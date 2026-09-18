@@ -145,15 +145,24 @@ and widget tags are the contract between the JSON and the firmware.
 
 ### mk5 decision — one UI construction path: data only
 
-*Decided for mk5 (proposal D).* mk4's `UiSource` offers two construction paths — a hand-written
-`const` page tree (`Const`) and a compiled LUI blob (`Blob`) — that must be kept behaviorally
-identical. In practice no application uses `Const`; every board builds from a blob, and the const
-`Desc`/`Page` trees survive only as the toolkit's own test fixtures. mk5 makes **the LUI blob the one
-app-facing path**: `UiSource` collapses to the blob, and the const-tree public API (`navigate(&Page)`
-/ `build(&Desc)` and the `Page`/`Desc` descriptor types) is retired as an app-facing construction
-path. The low-level widget creators (`create_window`/`create_button`/`create_label`) stay — the LUI
-builder is written on them — and the toolkit keeps a minimal way to build a tree directly for its own
-tests. Every interface is authored as data.
+*Decided and implemented for mk5 (proposal D).* mk4's `UiSource` offered two construction paths — a
+hand-written `const` page tree (`Const`/`Pages`) and a compiled LUI blob (`Blob`) — that had to be
+kept behaviorally identical. mk5 makes **the LUI blob the one app-facing path**: `UiSource` is gone,
+and each app's display config now holds a parsed `Lui` blob directly. Every application is
+blob-authored — the touch fleet, and the two key-driven boards (an OLED Pico and a bare-CMSIS
+STM32) that were the last const-tree holdouts, now ported: each embeds a `design.json`, builds it with
+`build_lui_with`, and drives navigation from the design's `goto`/`back` through a small `map_child`.
+
+The const-tree API — `navigate(&Page)`/`build(&Desc)` and the `Page`/`Desc` descriptor types — is
+**retired as an app-facing whole-page construction path**: no application uses it. It is not deleted,
+because it remains the machinery behind the `file_list!` list helper (which emits `Desc` rows a
+`FilePicker` fills) and the toolkit's own test fixtures, so it stays `pub`. The low-level widget
+creators (`create_window`/`create_button`/`create_label`) stay — the LUI builder is written on them.
+
+Boards that share a near-identical demo author it once and override: the two key-driven boards extend
+a shared `design.json` (a data-only `crates/*/` entry resolved by `extends` name), overriding only
+device size and list-row height — the same authored-once-overridden-per-board pattern the touch fleet
+uses against `light_app_ui_demo`. Every interface is authored as data.
 
 ## The board-generic modules seam
 

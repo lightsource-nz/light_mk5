@@ -14,7 +14,7 @@
 
 use core::cell::RefCell;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
+use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod};
 use light_input::drivers::axs15231b::Axs15231bTouch;
 use light_input::imu::{Imu, Orientation};
 use light_input::drivers::qmi8658::Qmi8658;
@@ -1262,7 +1262,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         repush: true,
                         draw_over: false,
                         rotation_map,
-                        source: UiSource::Blob(lui),
+                        source: lui,
                         backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook,

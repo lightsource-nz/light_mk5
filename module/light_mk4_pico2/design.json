@@ -1,0 +1,17 @@
+{
+  "extends": "light_app_ui_demo_keys",
+  "device": { "width": 128, "height": 64 },
+  "pages": [
+    {},
+    {
+      "children": [
+        { "min_h": 14 },
+        { "min_h": 14 },
+        { "min_h": 14 },
+        { "min_h": 14 },
+        { "min_h": 14 },
+        { "min_h": 14 }
+      ]
+    }
+  ]
+}

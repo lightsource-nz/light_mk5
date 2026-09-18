@@ -27,4 +27,11 @@ light_mk4_add_theme(light_mk4_pico2_theme MONO
         CRATE light_app_pico2 ENV LIGHT_THEME_LTH
 )
 
+#   the interface as data: this board's two-page design (the toggles and the scrolling
+# list), compiled to an LUI blob the app embeds through LIGHT_UI_LUI
+light_mk4_add_ui(light_mk4_pico2_ui
+        UI ${CMAKE_CURRENT_LIST_DIR}/design.json
+        CRATE light_app_pico2 ENV LIGHT_UI_LUI
+)
+
 light_mk4_shell_configure(light_mk4_pico2)

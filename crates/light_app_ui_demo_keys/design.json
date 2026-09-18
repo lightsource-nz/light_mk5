@@ -1,0 +1,41 @@
+{
+  "device": { "width": 160, "height": 80, "corner_radius": 0 },
+  "root": 0,
+  "actions": [
+    { "name": "Toggle0", "event": 1 },
+    { "name": "Toggle1", "event": 2 },
+    { "name": "ListOpen", "goto": 1 },
+    { "name": "Item1", "event": 16 },
+    { "name": "Item2", "event": 17 },
+    { "name": "Item3", "event": 18 },
+    { "name": "Item4", "event": 19 },
+    { "name": "Item5", "event": 20 },
+    { "name": "Back", "back": true }
+  ],
+  "pages": [
+    {
+      "title": "mk4",
+      "layout": "stack",
+      "gap": 1,
+      "children": [
+        { "button": "Alpha", "action": "Toggle0", "tag": 1 },
+        { "button": "Beta", "action": "Toggle1", "tag": 2 },
+        { "button": "List >", "action": "ListOpen" }
+      ]
+    },
+    {
+      "title": "List",
+      "layout": "stack",
+      "gap": 1,
+      "scroll": true,
+      "children": [
+        { "button": "Item 1", "action": "Item1", "min_h": 16 },
+        { "button": "Item 2", "action": "Item2", "min_h": 16 },
+        { "button": "Item 3", "action": "Item3", "min_h": 16 },
+        { "button": "Item 4", "action": "Item4", "min_h": 16 },
+        { "button": "Item 5", "action": "Item5", "min_h": 16 },
+        { "button": "< Back", "action": "Back", "min_h": 16 }
+      ]
+    }
+  ]
+}

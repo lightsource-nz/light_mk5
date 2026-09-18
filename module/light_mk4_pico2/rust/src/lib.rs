@@ -10,7 +10,8 @@
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::sh1107::Sh1107;
-use light_ui::{scroll, Desc, Fonts, Page, Style, Theme, Ui};
+use light_ui::lui::code;
+use light_ui::{Fonts, Lui, LuiChild, Style, Theme, Ui};
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
@@ -44,6 +45,9 @@ enum AppEvent {
         /// The UI events as commands, for driving the UI from the console or a script.
         UiFocus { next: bool },
         UiActivate,
+        /// Open the design page a "goto" button names -- the blob analogue of following a
+        /// `Page` link.
+        UiOpen(u8),
         UiBack,
         /// What a widget emitted.
         Toggle(u8),
@@ -60,6 +64,9 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's MONO default (this panel is 1 bpp), with this
 /// board's outer rounding -- see theme/po13.json.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
+/// The interface as data: this board's two-page design, compiled to an LUI blob -- see
+/// design.json and light_mk4_add_ui.
+static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
 fn log_sink(record: &log::Record) {
         let mut line = StackBuf::<160> { buf: [0; 160], len: 0 };
@@ -84,28 +91,30 @@ pub extern "C" fn light_app_core1_service() {
 // The same shape as the touch169's, cut to what 128x64 logical pixels hold: three rows per
 // page. The list page overflows on purpose, and KEY0 cycling focus through it is what scrolls it.
 
-const ROW_GAP: u8 = 1;
-const LIST_MIN_ROW: i32 = 14;
 const FPS: u32 = 20;
 
 const LABEL_OFF: [&str; 2] = ["Alpha", "Beta"];
 const LABEL_ON: [&str; 2] = ["Alpha *", "Beta *"];
 
-static BTN_ALPHA: Desc<AppEvent> = Desc::button(LABEL_OFF[0]).emit(AppEvent::Toggle(0)).tag(1);
-static BTN_BETA: Desc<AppEvent> = Desc::button(LABEL_OFF[1]).emit(AppEvent::Toggle(1)).tag(2);
-static BTN_LIST: Desc<AppEvent> = Desc::button("List >").navigate(&PAGE_LIST);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4").stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_LIST]);
-
-static ITEM_1: Desc<AppEvent> = Desc::button("Item 1").emit(AppEvent::Item(1)).min_size(0, LIST_MIN_ROW);
-static ITEM_2: Desc<AppEvent> = Desc::button("Item 2").emit(AppEvent::Item(2)).min_size(0, LIST_MIN_ROW);
-static ITEM_3: Desc<AppEvent> = Desc::button("Item 3").emit(AppEvent::Item(3)).min_size(0, LIST_MIN_ROW);
-static ITEM_4: Desc<AppEvent> = Desc::button("Item 4").emit(AppEvent::Item(4)).min_size(0, LIST_MIN_ROW);
-static ITEM_5: Desc<AppEvent> = Desc::button("Item 5").emit(AppEvent::Item(5)).min_size(0, LIST_MIN_ROW);
-static BTN_LIST_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
-static LIST_WINDOW: Desc<AppEvent> = Desc::window("List").stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &BTN_LIST_BACK]);
-
-static PAGE_MAIN: Page<AppEvent> = Page::new(&MAIN_WINDOW, None);
-static PAGE_LIST: Page<AppEvent> = Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
+/// Map a design button to the app event it stands for: a carried `event` id (the two toggles,
+/// the list items -- matching design.json's `actions`), or the navigation a `goto`/`back` button
+/// carries, turned into [`AppEvent::UiOpen`]/[`AppEvent::UiBack`] for the display module to act on.
+/// Mirrors the const page tree this design replaced, so the interface behaves identically.
+fn map_child(_index: usize, child: &LuiChild) -> Option<AppEvent> {
+        if child.event != 0 {
+                return Some(match child.event {
+                        1 => AppEvent::Toggle(0),
+                        2 => AppEvent::Toggle(1),
+                        16..=20 => AppEvent::Item((child.event - 15) as u8),
+                        _ => return None,
+                });
+        }
+        match child.nav {
+                code::NAV_GOTO => Some(AppEvent::UiOpen(child.nav_page as u8)),
+                code::NAV_BACK => Some(AppEvent::UiBack),
+                _ => None,
+        }
+}
 
 /// The widest page is the list: a window and six rows.
 const UI_WIDGETS: usize = 8;
@@ -161,6 +170,11 @@ struct OledMod {
         layer: &'static mut FrameLayer,
         font: Font<'static>,
         ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
+        /// The interface, parsed from the embedded blob; the widget tree is built from its pages.
+        lui: Lui<'static>,
+        /// Which design page is shown: the blob carries no parent links, so the module keeps its
+        /// own place to run back from (this two-page design always returns to the root).
+        blob_page: usize,
         events: Subscription,
         toggled: [bool; 2],
 }
@@ -169,6 +183,17 @@ impl OledMod {
         fn publish(ev: Option<AppEvent>) {
                 if let Some(ev) = ev {
                         let _ = EVENTS.publish(ev);
+                }
+        }
+
+        /// Build a design page into the tree with the transition slide, and remember it as the
+        /// place back runs from.
+        fn show_page(&mut self, page: usize, back: bool) {
+                if let Some(p) = self.lui.page(page) {
+                        if let Err(e) = self.ui.navigate_lui(&p, back, None, map_child) {
+                                warn!("page {page} did not build: {e:?}");
+                        }
+                        self.blob_page = page;
                 }
         }
 
@@ -181,8 +206,12 @@ impl OledMod {
                                 let emitted = self.ui.activate();
                                 Self::publish(emitted);
                         }
+                        AppEvent::UiOpen(page) => self.show_page(page as usize, false),
                         AppEvent::UiBack => {
-                                if !self.ui.navigate_back() {
+                                let root = self.lui.root();
+                                if self.blob_page != root {
+                                        self.show_page(root, true);
+                                } else {
                                         info!("ui back: nowhere to go from this page");
                                 }
                         }
@@ -213,8 +242,15 @@ impl Module for OledMod {
                 self.layer.set_orientation(Rotation::R90, Flip::None);
                 self.layer.set_frame_rate(FPS);
                 self.ui.fit(self.layer);
-                if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
-                        warn!("the main page did not build: {e:?}");
+                let root = self.lui.root();
+                match self.lui.page(root) {
+                        Some(p) => {
+                                if let Err(e) = self.ui.build_lui_with(&p, map_child) {
+                                        warn!("the main page did not build: {e:?}");
+                                }
+                                self.blob_page = root;
+                        }
+                        None => warn!("the design has no root page"),
                 }
                 self.ui.invalidate_all();
                 let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
@@ -364,8 +400,14 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         };
         layer.bg = theme.bg;
         ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
+        //   the interface, from the embedded blob: a bad blob is a build-system bug worth
+        // halting on, like the font and the theme
+        let lui = match Lui::parse(UI_BLOB) {
+                Ok(l) => l,
+                Err(e) => panic!("the embedded UI does not parse: {e:?}"),
+        };
         static OLED_MOD: StaticCell<OledMod> = StaticCell::new();
-        let oled_mod = OLED_MOD.init(OledMod { display, layer, font, ui, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });
+        let oled_mod = OLED_MOD.init(OledMod { display, layer, font, ui, lui, blob_page: 0, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });
         let mut keys_mod = KeysMod { keys: [Button::new(p.key0, true), Button::new(p.key1, true)], presses: 0 };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 

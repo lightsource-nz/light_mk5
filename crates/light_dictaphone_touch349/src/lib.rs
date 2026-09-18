@@ -11,7 +11,7 @@
 
 use core::cell::RefCell;
 use light_dictaphone_core as dict;
-use dict::{dictaphone_commands, keep_recording, AudioSlots, AudioStatus, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, UiSource};
+use dict::{dictaphone_commands, keep_recording, AudioSlots, AudioStatus, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order};
 use light_input::drivers::axs15231b::Axs15231bTouch;
 use light_input::imu::{Imu, Orientation};
 use light_input::drivers::qmi8658::Qmi8658;
@@ -493,7 +493,7 @@ pub fn run(info: &ShellInfo, cfg: RunConfig) -> ! {
                         desc: cfg.desc,
                         rotation_map: cfg.rotation_map,
                         initial_rotation: cfg.initial_rotation,
-                        source: UiSource::Blob(lui),
+                        source: lui,
                         //   the layout axis comes from the design's orientation; the descent is this
                         // orientation's page-transition flow (portrait defaults, landscape rises)
                         default_descent: cfg.default_descent,

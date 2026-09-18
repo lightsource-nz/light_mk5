@@ -37,9 +37,9 @@ use light_input::imu::Orientation;
 use light_input::touch::Gesture;
 use light_ui::{Fonts, IndicatorShape, Lui, LuiChild, Style, SwipeDir, TextSlot, Touch, Ui};
 
-//   what the page-tree macro and the board crates build against, from one place
+//   what the board crates build against, from one place
 pub use light_input::drivers::cst816t::Event as TouchSample;
-pub use light_ui::{file_list, scroll, Axis, Desc, Descent, Page};
+pub use light_ui::{Axis, Descent};
 pub use light_ui_components::{DirEntry, FilePicker, Order};
 
 /// Widget arena size: the deepest page is the recordings list. Its widest form is the wide
@@ -489,25 +489,8 @@ fn fs_command<S: Store>(store: &mut S, op: FsOp, path: &str, arg: &str) {
 
 // --- the display module --------------------------------------------------------------------
 
-/// Where the display module's page tree comes from. A const-fn [`Page`] tree follows the pages'
-/// parent links for navigation; an LUI blob (UI as data, authored as `design.json` and compiled by
-/// crush) drives navigation from the design's app-event ids, with the page transition preserved by
-/// [`Ui::navigate_lui`]. A blob is window-plus-flat-children, so an interface with a nested
-/// scrolling strip -- the landscape recordings list -- stays on the const path until the format
-/// grows nesting; the upright interface, whose list is a flat scrolling window, is a blob.
-#[derive(Clone, Copy)]
-pub enum UiSource<X: Copy + 'static> {
-        /// A const-`Page` tree, with the axis its generic (`Linear`) windows run along -- the blob
-        /// path takes that axis from the design instead (see [`UiSource::Blob`]).
-        Pages { root: &'static Page<Event<X>>, axis: Axis },
-        /// An LUI design blob. Its `orientation` (authored in the design, [`Lui::landscape`])
-        /// decides the layout axis, so the design is the single source and the firmware states no
-        /// axis of its own.
-        Blob(Lui<'static>),
-}
-
 /// What a tangible board tells [`DisplayMod`] about its panel.
-pub struct DisplayConfig<X: Copy + 'static> {
+pub struct DisplayConfig {
         pub width: u16,
         pub height: u16,
         pub fps: u32,
@@ -518,8 +501,10 @@ pub struct DisplayConfig<X: Copy + 'static> {
         pub initial_rotation: Rotation,
         /// The board's measured orientation-to-rotation table.
         pub rotation_map: fn(Orientation) -> Option<Rotation>,
-        /// Where the page tree comes from: a const-`Page` tree or an LUI design blob.
-        pub source: UiSource<X>,
+        /// The interface as data: the parsed LUI design blob the widget tree is built from. Its
+        /// `orientation` ([`Lui::landscape`]) decides the layout axis, so the design is the single
+        /// source and the firmware states no axis of its own.
+        pub source: Lui<'static>,
         /// The direction child pages open across this interface. `None` keeps the toolkit's
         /// layout-derived flow (a `Row` page rises, everything else slides left); a landscape
         /// interface points it one way for the whole tree. It is expressed logically, so it
@@ -536,12 +521,12 @@ pub struct DisplayMod<D: DisplayDriver, C: Clock, X: Copy + 'static> {
         font: Font<'static>,
         ui: &'static mut Ui<Event<X>, UI_WIDGETS>,
         clock: C,
-        cfg: DisplayConfig<X>,
+        cfg: DisplayConfig,
         bus: &'static dyn Bus<Event<X>>,
         sub: Subscription,
         mode: RenderMode,
-        /// The blob interface's current page index (see [`PAGE_MAIN`]/[`PAGE_FILES`]); the display
-        /// drives navigation itself on that path. Unused on the const-`Page` path.
+        /// The interface's current page index (see [`PAGE_MAIN`]/[`PAGE_FILES`]); the display drives
+        /// navigation itself, keeping its own place since the blob carries no parent links.
         page: usize,
         /// What the title bar shows, and what gates the recording light.
         status: AudioStatus,
@@ -563,7 +548,7 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 ui: &'static mut Ui<Event<X>, UI_WIDGETS>,
                 clock: C,
                 bus: &'static dyn Bus<Event<X>>,
-                cfg: DisplayConfig<X>,
+                cfg: DisplayConfig,
         ) -> Self {
                 let sub = bus.subscribe().expect("subscriber slot");
                 Self { display, layer, font, ui, clock, cfg, bus, sub, mode: RenderMode::Normal, page: PAGE_MAIN, status: AudioStatus::Idle, blink_on: false, blink_last_us: 0, drag_reported: false, draw_us_max: 0, push_us_max: 0, push_started_us: None }
@@ -738,11 +723,11 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 }
         }
 
-        /// Move to a page of the blob interface with the transition ([`Ui::navigate_lui`]) and
-        /// re-apply the live transport state onto it (a `# Stop` mid-recording, the title-bar time
-        /// and indicator), which the design's static labels do not carry. A no-op off the blob path.
+        /// Move to a page of the design with the transition ([`Ui::navigate_lui`]) and re-apply the
+        /// live transport state onto it (a `# Stop` mid-recording, the title-bar time and
+        /// indicator), which the design's static labels do not carry.
         fn show_lui_page(&mut self, page: usize, back: bool) {
-                let UiSource::Blob(lui) = self.cfg.source else { return };
+                let lui = self.cfg.source;
                 let Some(p) = lui.page(page) else {
                         warn!("dictaphone: the design has no page {page}");
                         return;
@@ -763,13 +748,8 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 self.render_status();
         }
 
-        /// Navigate for a tapped action on the blob path: open the recordings list, or return from
-        /// it. The const-page path navigates structurally from the button itself, so this no-ops
-        /// there (its buttons carry `Nav::To`/`Nav::Back`, and swipe/`UiBack` reach [`Self::back`]).
+        /// Navigate for a tapped action: open the recordings list, or return from it.
         fn nav_for(&mut self, action: UiAction) {
-                if !matches!(self.cfg.source, UiSource::Blob(_)) {
-                        return;
-                }
                 match action {
                         UiAction::FilesOpen => self.show_lui_page(PAGE_FILES, false),
                         UiAction::Back => {
@@ -781,20 +761,14 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 }
         }
 
-        /// Go back one page: follow the parent link on the const path, or return to the main page on
-        /// the blob path. `false`, changing nothing, when there is nowhere to go -- so a swipe or
-        /// `UiBack` at the top means nothing there, as it did before.
+        /// Go back one page: return to the main page. `false`, changing nothing, when there is
+        /// nowhere to go -- so a swipe or `UiBack` at the top means nothing there, as it did before.
         fn back(&mut self) -> bool {
-                match self.cfg.source {
-                        UiSource::Pages { .. } => self.ui.navigate_back(),
-                        UiSource::Blob(_) => {
-                                if self.page == PAGE_MAIN {
-                                        return false;
-                                }
-                                self.show_lui_page(PAGE_MAIN, true);
-                                true
-                        }
+                if self.page == PAGE_MAIN {
+                        return false;
                 }
+                self.show_lui_page(PAGE_MAIN, true);
+                true
         }
 
         /// The status, in the title bar: `"<page> - REC 0:12"` and the like, composed onto
@@ -922,30 +896,13 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> Module fo
                         self.ui.set_rotation(self.layer, self.cfg.initial_rotation);
                 }
                 self.ui.set_default_descent(self.cfg.default_descent);
-                //   the layout axis: stated by a const-Page interface, but taken from the DESIGN for
-                // a blob (its orientation), so the design is the single source and the editor and
-                // firmware cannot disagree about which way it lays out
-                let axis = match self.cfg.source {
-                        UiSource::Pages { axis, .. } => axis,
-                        UiSource::Blob(lui) => {
-                                if lui.landscape() {
-                                        Axis::Horizontal
-                                } else {
-                                        Axis::Vertical
-                                }
-                        }
-                };
+                //   the layout axis is taken from the DESIGN (its orientation), so the design is the
+                // single source and the editor and firmware cannot disagree about which way it lays out
+                let axis = if self.cfg.source.landscape() { Axis::Horizontal } else { Axis::Vertical };
                 self.ui.set_layout_axis(axis);
-                //   the root is empty, so this first build snaps (navigate/navigate_lui start no
-                // transition until there is an outgoing page to slide off)
-                match self.cfg.source {
-                        UiSource::Pages { root, .. } => {
-                                if let Err(e) = self.ui.navigate(root) {
-                                        warn!("the main page did not build: {e:?}");
-                                }
-                        }
-                        UiSource::Blob(_) => self.show_lui_page(PAGE_MAIN, false),
-                }
+                //   the root is empty, so this first build snaps (navigate_lui starts no transition
+                // until there is an outgoing page to slide off)
+                self.show_lui_page(PAGE_MAIN, false);
                 self.ui.invalidate_all();
                 self.render();
                 info!(

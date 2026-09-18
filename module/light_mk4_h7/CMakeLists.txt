@@ -20,4 +20,11 @@ light_mk4_add_theme(light_mk4_h7_theme
         CRATE light_app_h7 ENV LIGHT_THEME_LTH
 )
 
+#   the interface as data: this board's two-page design (the toggles and the scrolling
+# list), compiled to an LUI blob the app embeds through LIGHT_UI_LUI
+light_mk4_add_ui(light_mk4_h7_ui
+        UI ${CMAKE_CURRENT_LIST_DIR}/design.json
+        CRATE light_app_h7 ENV LIGHT_UI_LUI
+)
+
 light_mk4_shell_cmsis_configure(light_mk4_h7 CHIP stm32h743)

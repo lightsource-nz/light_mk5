@@ -12,8 +12,9 @@
 //!   modules (audio, battery, PSRAM...) ride the same bus without this crate naming them.
 //! - The event bus itself is a board static (its depth and subscriber count are board
 //!   facts); it reaches the demo as `&'static dyn `[`Bus`].
-//! - [`demo_pages!`] expands the page tree in the board crate, where the event type is
-//!   concrete -- the board contributes only its title and touch-target metrics.
+//! - The interface is authored as data: a `design.json` compiled to an LUI blob the board crate
+//!   embeds and hands in as [`DisplayConfig::source`], its buttons mapped to demo events by
+//!   [`ui_event`]. The board contributes only its title and touch-target metrics, as design overrides.
 //! - [`DisplayMod`] is generic over the display driver, with a [`BoardHook`] for the
 //!   driver-specific edges: GDDRAM offsets, panel clears, and any board command that needs
 //!   the display or the UI (a bus re-clock, a test pattern).
@@ -34,7 +35,7 @@ use light_ui::{Fonts, Lui, LuiChild, Style, SwipeDir, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::drivers::cst816t::Event as TouchSample;
-pub use light_ui::{scroll, Desc, Page, Shade};
+pub use light_ui::Shade;
 
 /// Widget arena size: the deepest page is the list (a window and nine rows).
 pub const UI_WIDGETS: usize = 12;
@@ -122,11 +123,9 @@ pub enum UiAction {
         /// A drag scrolled a window: the finger's movement is spent, and the touch module
         /// must not let its release classify as a swipe as well.
         DragConsumed,
-        /// Open a page (blob path): a tapped button whose design carries a `goto`. The const
-        /// page path navigates from the button's own [`Page`] link instead, so this is never
-        /// emitted there.
+        /// Open a page: a tapped button whose design carries a `goto`.
         Open(u8),
-        /// Go back a page (blob path): a tapped button whose design carries `back`, or a swipe.
+        /// Go back a page: a tapped button whose design carries `back`, or a swipe.
         Back,
 }
 
@@ -155,68 +154,7 @@ pub fn touch_reads_held() -> bool {
         TOUCH_HOLD.load(core::sync::atomic::Ordering::Relaxed) && PUSHING.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-// --- the page tree, expanded where the event type is concrete ------------------------------
-
-/// The demo's three pages, as statics in the BOARD crate: `PAGE_MAIN`, `PAGE_DETAIL` and
-/// `PAGE_LIST`, with the board's window title, row gap and touch-target height baked in --
-/// the metrics are hardware (finger size against pixel density), the tree is not.
-///
-/// ```ignore
-/// light_app_ui_demo::demo_pages! {
-///         event: AppEvent, title: "mk4 2.8", row_gap: 6, list_min_row: 56,
-///         backlight_dim: BACKLIGHT_DIM
-/// }
-/// ```
-#[macro_export]
-macro_rules! demo_pages {
-        (event: $event:ty, title: $title:expr, row_gap: $row_gap:expr, list_min_row: $list_min_row:expr, backlight_dim: $backlight_dim:expr) => {
-                static BTN_ALPHA: $crate::Desc<$event> = $crate::Desc::button($crate::LABEL_OFF[0]).emit(<$event>::Ui($crate::UiAction::Toggle(0))).tag(1);
-                static BTN_BETA: $crate::Desc<$event> = $crate::Desc::button($crate::LABEL_OFF[1]).emit(<$event>::Ui($crate::UiAction::Toggle(1))).tag(2);
-                static BTN_GAMMA: $crate::Desc<$event> = $crate::Desc::button($crate::LABEL_OFF[2]).emit(<$event>::Ui($crate::UiAction::Toggle(2))).tag(3);
-                static BTN_MORE: $crate::Desc<$event> = $crate::Desc::button("More >").navigate(&PAGE_DETAIL);
-                static BTN_LIST: $crate::Desc<$event> = $crate::Desc::button("List >").navigate(&PAGE_LIST);
-                static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window($title).stack($row_gap).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_GAMMA, &BTN_MORE, &BTN_LIST]);
-
-                static LBL_DETAIL: $crate::Desc<$event> = $crate::Desc::label("swipe right to go back");
-                static BTN_DIM: $crate::Desc<$event> = $crate::Desc::button("Dim").emit(<$event>::Command($crate::Command::Backlight($backlight_dim)));
-                static BTN_BRIGHT: $crate::Desc<$event> = $crate::Desc::button("Bright").emit(<$event>::Command($crate::Command::Backlight($crate::BACKLIGHT_LEVEL_MAX)));
-                static BTN_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back();
-                static DETAIL_WINDOW: $crate::Desc<$event> = $crate::Desc::window("More").stack($row_gap).children(&[&LBL_DETAIL, &BTN_DIM, &BTN_BRIGHT, &BTN_BACK]);
-
-                static ITEM_1: $crate::Desc<$event> = $crate::Desc::button("Item 1").emit(<$event>::Ui($crate::UiAction::Item(1))).min_size(0, $list_min_row);
-                static ITEM_2: $crate::Desc<$event> = $crate::Desc::button("Item 2").emit(<$event>::Ui($crate::UiAction::Item(2))).min_size(0, $list_min_row);
-                static ITEM_3: $crate::Desc<$event> = $crate::Desc::button("Item 3").emit(<$event>::Ui($crate::UiAction::Item(3))).min_size(0, $list_min_row);
-                static ITEM_4: $crate::Desc<$event> = $crate::Desc::button("Item 4").emit(<$event>::Ui($crate::UiAction::Item(4))).min_size(0, $list_min_row);
-                static ITEM_5: $crate::Desc<$event> = $crate::Desc::button("Item 5").emit(<$event>::Ui($crate::UiAction::Item(5))).min_size(0, $list_min_row);
-                static ITEM_6: $crate::Desc<$event> = $crate::Desc::button("Item 6").emit(<$event>::Ui($crate::UiAction::Item(6))).min_size(0, $list_min_row);
-                static ITEM_7: $crate::Desc<$event> = $crate::Desc::button("Item 7").emit(<$event>::Ui($crate::UiAction::Item(7))).min_size(0, $list_min_row);
-                //   the back row is a list item like any other, and deliberately LAST:
-                // reaching it means scrolling the whole list, so navigating out doubles as
-                // the end-to-end check
-                static BTN_LIST_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back().min_size(0, $list_min_row);
-                static LIST_WINDOW: $crate::Desc<$event> = $crate::Desc::window("List")
-                        .stack($row_gap)
-                        .scroll($crate::scroll::VERTICAL)
-                        .children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &ITEM_6, &ITEM_7, &BTN_LIST_BACK]);
-
-                static PAGE_MAIN: $crate::Page<$event> = $crate::Page::new(&MAIN_WINDOW, None);
-                static PAGE_DETAIL: $crate::Page<$event> = $crate::Page::new(&DETAIL_WINDOW, Some(&PAGE_MAIN));
-                static PAGE_LIST: $crate::Page<$event> = $crate::Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
-        };
-}
-
-// --- the UI source: a const page tree, or an LUI design blob -------------------------------
-
-/// Where the widget tree comes from. `Const` is the hand-written [`Page`] tree from
-/// [`demo_pages!`] -- navigation follows the pages' own links. `Blob` is the same interface
-/// authored as data (a design compiled to an LUI blob, embedded with `include_bytes!`): the tree is
-/// built from the blob and navigation runs off the design's `goto`/`back`, mapped through
-/// [`ui_event`]. Both drive the same `Ui<DemoEvent<X>>`, so the rest of the module is unchanged.
-#[derive(Clone, Copy)]
-pub enum UiSource<X: Copy + 'static> {
-        Const(&'static Page<DemoEvent<X>>),
-        Blob(Lui<'static>),
-}
+// --- the design's event contract -----------------------------------------------------------
 
 /// The design's event contract: the app event id a design's button carries, turned into the demo
 /// event it stands for. This mirrors the const page tree's `emit`s, so a blob-authored interface
@@ -251,7 +189,7 @@ fn map_child<X: Copy>(child: &LuiChild, dim: u16) -> Option<DemoEvent<X>> {
 // --- the display module --------------------------------------------------------------------
 
 /// What a tangible board tells [`DisplayMod`] about its panel.
-pub struct DisplayConfig<X: Copy + 'static> {
+pub struct DisplayConfig {
         pub width: u16,
         pub height: u16,
         pub fps: u32,
@@ -270,8 +208,8 @@ pub struct DisplayConfig<X: Copy + 'static> {
         /// -- resting near-landscape on its long edge, ordinary handling flapped 180
         /// degrees per touch.
         pub rotation_map: fn(Orientation) -> Option<Rotation>,
-        /// Where the widget tree comes from: the const [`Page`] tree, or an LUI design blob.
-        pub source: UiSource<X>,
+        /// The interface as data: the parsed LUI design blob the widget tree is built from.
+        pub source: Lui<'static>,
         /// The backlight level the design's "Dim" button asks for (0..=[`BACKLIGHT_LEVEL_MAX`]) --
         /// a board fact the blob path reads, since the design carries event ids, not levels.
         pub backlight_dim: u16,
@@ -319,7 +257,7 @@ pub struct DisplayMod<D: DisplayDriver, C: Clock, X: Copy + 'static, H: BoardHoo
         ui: &'static mut Ui<DemoEvent<X>, UI_WIDGETS>,
         clock: C,
         hook: H,
-        cfg: DisplayConfig<X>,
+        cfg: DisplayConfig,
         bus: &'static dyn Bus<DemoEvent<X>>,
         sub: Subscription,
         toggled: [bool; 3],
@@ -344,7 +282,7 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                 ui: &'static mut Ui<DemoEvent<X>, UI_WIDGETS>,
                 clock: C,
                 bus: &'static dyn Bus<DemoEvent<X>>,
-                cfg: DisplayConfig<X>,
+                cfg: DisplayConfig,
                 hook: H,
         ) -> Self {
                 let sub = bus.subscribe().expect("subscriber slot");
@@ -491,11 +429,11 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                 }
         }
 
-        /// Open a blob page WITH the page transition, mapping the design's event ids to demo events.
-        /// A no-op off the blob path (const pages navigate themselves). The transition is the target
-        /// page's authored descent going forward, and the leaving page's going back, so it mirrors.
+        /// Open a design page WITH the page transition, mapping the design's event ids to demo
+        /// events. The transition is the target page's authored descent going forward, and the
+        /// leaving page's going back, so it mirrors.
         fn show_lui(&mut self, page: usize, back: bool) {
-                let UiSource::Blob(lui) = self.cfg.source else { return };
+                let lui = self.cfg.source;
                 let Some(p) = lui.page(page) else {
                         warn!("demo: the design has no page {page}");
                         return;
@@ -511,29 +449,22 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                 self.apply_toggle_labels();
         }
 
-        /// Go back a page: the const path follows the page links; the blob path returns to the root
-        /// (the demo's pages all hang off the main page). `false` when there is nowhere to go.
+        /// Go back a page: return to the root (the demo's pages all hang off the main page).
+        /// `false` when there is nowhere to go.
         fn nav_back(&mut self) -> bool {
-                match self.cfg.source {
-                        UiSource::Const(_) => self.ui.navigate_back(),
-                        UiSource::Blob(_) => {
-                                let root = self.blob_root();
-                                if self.blob_page != root {
-                                        self.show_lui(root, true);
-                                        true
-                                } else {
-                                        false
-                                }
-                        }
+                let root = self.blob_root();
+                if self.blob_page != root {
+                        self.show_lui(root, true);
+                        true
+                } else {
+                        false
                 }
         }
 
-        /// The blob path's root page (the main page), clamped in range; 0 off the blob path.
+        /// The design's root page (the main page), clamped in range.
         fn blob_root(&self) -> usize {
-                match self.cfg.source {
-                        UiSource::Blob(lui) => lui.root().min(lui.page_count().saturating_sub(1)),
-                        UiSource::Const(_) => 0,
-                }
+                let lui = self.cfg.source;
+                lui.root().min(lui.page_count().saturating_sub(1))
         }
 
         /// Re-apply the toggle buttons' on/off labels after a (re)build, so their state survives a
@@ -587,20 +518,9 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                 self.layer.bg = self.ui.theme().bg;
                 self.layer.draw_over = self.cfg.draw_over;
                 self.ui.fit(self.layer);
-                //   entered through the page system rather than built directly, so the toolkit knows
-                // which page it is showing and back has something to reason from; the blob path keeps
-                // its own page index and history for the same reason
-                match self.cfg.source {
-                        UiSource::Const(page) => {
-                                if let Err(e) = self.ui.navigate(page) {
-                                        warn!("the main page did not build: {e:?}");
-                                }
-                        }
-                        UiSource::Blob(lui) => {
-                                let root = lui.root().min(lui.page_count().saturating_sub(1));
-                                self.show_lui(root, false);
-                        }
-                }
+                //   the design keeps its own page index and history: build the root page, and back
+                // reasons from where it is (the demo's pages all hang off the main page)
+                self.show_lui(self.blob_root(), false);
                 // nothing on the panel matches the freshly built tree yet
                 self.ui.invalidate_all();
                 self.render();

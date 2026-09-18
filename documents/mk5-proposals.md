@@ -80,13 +80,16 @@ instantiate against, so they come first.
   structural refactor with no behaviour change, making each part independently testable.
 - **Touches.** [02-graphics-and-ui.md](02-graphics-and-ui.md).
 
-## D. One UI construction path: data only — *decided*
+## D. One UI construction path: data only — *implemented*
 
-> **Decided (mk5), design recorded** in [09](09-application-model.md#) — the LUI blob is the one
-> app-facing path; `UiSource` collapses to the blob and the const-tree public API (`Page`/`Desc`,
-> `navigate(&Page)`/`build(&Desc)`) is retired app-facing, with the low-level widget creators kept
-> for the LUI builder and the toolkit's tests. Grounded in the finding that no app uses `Const` today.
-> **Not yet applied to code.**
+> **Implemented (mk5)**, design in [09](09-application-model.md#). `UiSource` removed from both the
+> demo and the dictaphone — each app's display config now holds a parsed `Lui` blob directly. The two
+> const-tree holdouts (the OLED Pico and the bare-CMSIS STM32) were ported to LUI blobs, so every
+> application is now blob-authored; they share one `design.json` via `extends`, overriding only device
+> size and row height. The const-tree API (`Page`/`Desc`, `navigate(&Page)`/`build(&Desc)`) is retired
+> as an app-facing whole-page path — no app uses it — but stays `pub`, being the machinery behind
+> `file_list!` and the toolkit's own test fixtures. Verified: full host suite green; six firmware
+> targets build (both key boards, both dictaphone variants, two touch demos).
 
 - **Status quo (mk4).** A UI can be built two ways — a hand-written `const` page tree, or a compiled
   LUI blob (the `UiSource` `Const` | `Blob` dual path).

@@ -12,7 +12,7 @@
 
 use core::cell::RefCell;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
+use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod};
 use light_board_touch169::{board, Touch169Power};
 use board::*;
 use light_input::drivers::cst816t::Cst816t;
@@ -373,7 +373,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         repush: true,
                         draw_over: false,
                         rotation_map,
-                        source: UiSource::Blob(lui),
+                        source: lui,
                         backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook,

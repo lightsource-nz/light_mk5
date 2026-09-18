@@ -19,7 +19,7 @@
 
 use core::cell::RefCell;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode, UiSource};
+use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode};
 use light_board_touch4::{board, Touch4Power};
 use board::*;
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
@@ -474,7 +474,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         // OVER the last -- the window interiors cover what the clear used to
                         draw_over: true,
                         rotation_map,
-                        source: UiSource::Blob(lui),
+                        source: lui,
                         backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook { beam_waits: 0 },
