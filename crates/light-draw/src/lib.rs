@@ -934,11 +934,10 @@ impl<'a> Canvas<'a> {
         /// the caller to repaint. `false` on a bad format/axis, a region outside the buffer, or a
         /// two-axis request.
         ///
-        /// RGB565 shifts either axis. Mono1 (1 bpp, eight pixels packed per byte along a row) shifts
-        /// only WHOLE ROWS vertically over byte-aligned columns -- a plain byte move; a horizontal
-        /// (within-row) shift is sub-byte and would need bit work (a PIO program, say), so it is
-        /// unsupported. A 90-degree-rotated panel's horizontal page slide is a vertical buffer shift,
-        /// which is exactly the case that lands here.
+        /// RGB565 shifts either axis by whole-pixel byte moves. Mono1 (1 bpp, eight pixels packed per
+        /// byte along a row) shifts either axis too, but by two mechanics: a vertical shift moves
+        /// whole rows (a byte move, so the column run must be byte-aligned), while a horizontal shift
+        /// is sub-byte and moves pixel by pixel. Both are cheap on the small buffers a 1 bpp panel has.
         ///
         /// This is what lets a page slide run on a SINGLE framebuffer: the outgoing image, already
         /// in the live buffer, is scrolled off region by region while the incoming page is painted
@@ -988,18 +987,47 @@ impl<'a> Canvas<'a> {
                                 true
                         }
                         PixelFormat::Mono1 => {
-                                //   1 bpp: only a whole-row vertical shift over byte-aligned columns is a plain
-                                // byte move. A within-row (horizontal) shift is sub-byte -- unsupported here.
-                                if dy == 0 || x0 % 8 != 0 || (x1 + 1) % 8 != 0 {
-                                        return false;
-                                }
-                                let (rs0, rs1) = if dy > 0 { (y0, y1 - dy) } else { (y0 - dy, y1) };
-                                if rs1 < rs0 {
+                                if dy != 0 {
+                                        //   a whole-row vertical shift is a plain byte move, but only over
+                                        // byte-aligned columns (1 bpp packs eight per byte along a row)
+                                        if x0 % 8 != 0 || (x1 + 1) % 8 != 0 {
+                                                return false;
+                                        }
+                                        let (rs0, rs1) = if dy > 0 { (y0, y1 - dy) } else { (y0 - dy, y1) };
+                                        if rs1 < rs0 {
+                                                return true;
+                                        }
+                                        let coloff = (x0 / 8) as usize;
+                                        let colbytes = ((x1 + 1) / 8 - x0 / 8) as usize;
+                                        self.shift_rows(rs0, rs1, dy, stride, coloff, colbytes);
                                         return true;
                                 }
-                                let coloff = (x0 / 8) as usize;
-                                let colbytes = ((x1 + 1) / 8 - x0 / 8) as usize;
-                                self.shift_rows(rs0, rs1, dy, stride, coloff, colbytes);
+                                //   a within-row horizontal shift is sub-byte, so move it pixel by pixel --
+                                // cheap on the small 1 bpp buffers this runs on. Walk each row from the far
+                                // end back so a bit already written is never read again as a source.
+                                let (cs0, cs1) = if dx > 0 { (x0, x1 - dx) } else { (x0 - dx, x1) };
+                                if cs1 < cs0 {
+                                        return true;
+                                }
+                                for y in y0..=y1 {
+                                        let base = y as usize * stride;
+                                        if dx > 0 {
+                                                let mut sx = cs1;
+                                                loop {
+                                                        self.mono_move_bit(base, sx, sx + dx);
+                                                        if sx == cs0 {
+                                                                break;
+                                                        }
+                                                        sx -= 1;
+                                                }
+                                        } else {
+                                                let mut sx = cs0;
+                                                while sx <= cs1 {
+                                                        self.mono_move_bit(base, sx, sx + dx);
+                                                        sx += 1;
+                                                }
+                                        }
+                                }
                                 true
                         }
                 }
@@ -1025,6 +1053,15 @@ impl<'a> Canvas<'a> {
                         }
                         sy += step;
                 }
+        }
+
+        /// Copy one 1 bpp pixel within a row (both `x` columns physical, same `base = y * stride`):
+        /// read the source bit, write it to the destination bit. For the sub-byte horizontal shift.
+        fn mono_move_bit(&mut self, base: usize, sx: i32, dx: i32) {
+                let bit = (self.buf[base + sx as usize / 8] >> (sx % 8)) & 1;
+                let di = base + dx as usize / 8;
+                let db = dx % 8;
+                self.buf[di] = (self.buf[di] & !(1 << db)) | (bit << db);
         }
 
         /// Draw `text` with its cell's top-left at `origin`, ink in `fg`. Only ink is painted;
@@ -1434,6 +1471,24 @@ mod tests {
                 assert!(!c.shift_region(Region::new(0, 0, 3, 3), 0, 0), "no-op axis refused");
                 let mut m = std::vec![0u8; PixelFormat::Mono1.buffer_len(8, 8)];
                 let mut cm = Canvas::new(&mut m, PixelFormat::Mono1, 8, 8);
-                assert!(!cm.shift_region(Region::new(0, 0, 7, 7), 2, 0), "mono refused");
+                // mono VERTICAL needs byte-aligned columns (whole-row byte moves); x0=1 is not
+                assert!(!cm.shift_region(Region::new(1, 0, 6, 7), 0, 1), "mono unaligned vertical refused");
+        }
+
+        #[test]
+        fn shift_region_moves_mono1_pixels_horizontally() {
+                //   1 bpp within-row shift: sub-byte, moved pixel by pixel. Right by 2 over a full row
+                let mut buf = std::vec![0u8; PixelFormat::Mono1.buffer_len(8, 1)];
+                let mut c = Canvas::new(&mut buf, PixelFormat::Mono1, 8, 1);
+                // lit at cols 0 and 5
+                c.set(0, 0, 1);
+                c.set(5, 0, 1);
+                assert!(c.shift_region(Region::new(0, 0, 7, 0), 2, 0), "mono horizontal shift");
+                // cols 0..5 moved to 2..7; the near strip (cols 0,1) is left as it was
+                assert_eq!(c.get(0, 0), 1, "col 0 is the uncovered near strip, unchanged");
+                assert_eq!(c.get(2, 0), 1, "old col 0 -> col 2");
+                assert_eq!(c.get(7, 0), 1, "old col 5 -> col 7");
+                assert_eq!(c.get(5, 0), 0, "old col 5 vacated");
+                assert_eq!(c.get(1, 0), 0, "col 1 was clear and stays clear");
         }
 }

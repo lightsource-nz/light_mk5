@@ -351,11 +351,11 @@ impl<B: SpiDisplayBus, C: Clock> OledMod<B, C> {
                 let target = if self.page == PAGE_STATUS { PAGE_STATS } else { PAGE_STATUS };
                 let back = target < self.page;
                 //   force one axis for both directions: the two pages have different layouts (row vs
-                // stack) whose layout-derived descents run different axes, which would slide the
-                // forward turn horizontally and the back turn vertically. A fixed descent plus the
-                // `back` flag gives a mirrored horizontal slide either way.
+                // stack) whose layout-derived descents run different axes. A fixed descent plus the
+                // `back` flag gives a mirrored slide either way. Vertical on-screen -- under the panel's
+                // R90 rotation that is a within-row (sub-byte) buffer shift.
                 if let Some(p) = self.lui.page(target) {
-                        if let Err(e) = self.ui.navigate_lui(&p, back, Some(Descent::FromRight), |_, _: &LuiChild| None) {
+                        if let Err(e) = self.ui.navigate_lui(&p, back, Some(Descent::FromBottom), |_, _: &LuiChild| None) {
                                 warn!("page {target} did not build: {e:?}");
                                 return;
                         }
