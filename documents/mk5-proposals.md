@@ -23,7 +23,7 @@ instantiate against, so they come first.
 > `TouchController` trait; and the Rust shell glue as `light_rp2::shell`. Per the A/B split, A also
 > folded in the generic input-module extraction (board crates became board-specific-only at once); B
 > covered the remaining app-coupled modules (RTC, audio, power). **Shell-glue dedup since rolled out
-> to the non-touch boards too**: the non-touch RP2 boards (`light_mk4_pico2`, both `crossfire_*`)
+> to the non-touch boards too**: the non-touch RP2 boards (`light_pico2`, both `crossfire_*`)
 > adopted `light_rp2::shell`, and the STM32 boards (h7, f411) adopted a shared `light-shell-cmsis`
 > crate (the chip-independent bare-CMSIS analogue — see [07](07-ports-and-shell.md#)). The non-touch
 > boards have no touch/IMU/battery/RTC and a single consumer each, so shell glue was the only
@@ -140,7 +140,7 @@ instantiate against, so they come first.
 > `firmware/Cargo.toml`'s members. Corrosion imports the firmware staticlibs from `firmware/Cargo.toml`.
 > The four `_app` crates were renamed to `light_app_<name>` (part 1, done separately). The
 > single-global critical-section stays a per-firmware property; F changes the build around it. Verified:
-> full host suite green with no port excludes; RP2350 (ui_demo_touch349) and STM32H7 (light_mk4_h7)
+> full host suite green with no port excludes; RP2350 (ui_demo_touch349) and STM32H7 (light_h7)
 > firmware build and link through the firmware workspace.
 
 - **Status quo (mk4).** The build system's executable/crate namespace collision forces an `_app`

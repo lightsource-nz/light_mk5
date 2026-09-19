@@ -1,5 +1,5 @@
 //! The Rust side of the bare-CMSIS shell ABI: the small helpers every STM32/CMSIS firmware layers
-//! on the C shell's `light_shell_*` symbols. The CMSIS shell (`light_mk4_shell_cmsis`) hands the
+//! on the C shell's `light_shell_*` symbols. The CMSIS shell (`light_shell_cmsis`) hands the
 //! Rust staticlib its resolved clocks, takes its log lines and console input, and takes its panic
 //! message -- and that handshake is the same for every board on the bare-CMSIS shell, and
 //! chip-independent, so it lives here rather than in each board's crate. (The RP2 shell's analogue

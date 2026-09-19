@@ -1,4 +1,4 @@
-//! Portable core of the light framework, mk4: the runtime and what every other crate needs
+//! Portable core of the light framework, mk5: the runtime and what every other crate needs
 //! from it. The port interface ([`hal`]), the module runtime, the bounded log queue, the typed
 //! event bus and the mailbox, a line reader for consoles, and the two hal-level helpers small
 //! enough to live here (a blinker, a debounced button).

@@ -5,8 +5,8 @@ traits for a specific chip — and the **C shells** that own the boot path and h
 A port is the extension point by which any consumer adds support for their own chip: implement the
 `hal` traits their boards need and supply one `critical-section`. The ports and shells described here
 are the reference ones that ship, an extraction of the mk4 status quo: the ports are `light-rp2`,
-`light-stm32h7` and `light-stm32f4`; the shells are `light_mk4_shell` (the pico-sdk shell for the RP2
-boards) and `light_mk4_shell_cmsis` (the bare-CMSIS shell for the STM32 boards).
+`light-stm32h7` and `light-stm32f4`; the shells are `light_shell` (the pico-sdk shell for the RP2
+boards) and `light_shell_cmsis` (the bare-CMSIS shell for the STM32 boards).
 
 ---
 
@@ -181,7 +181,7 @@ makes it safe to call from inside another section.
 `light-stm32h7` is the STM32H743 port; `light-stm32f4` is the STM32F411 port. Both are written
 against the reference manual directly — **no pac** — because the handful of registers each touches is
 small enough that raw register access keeps the crate small and its failures legible. The C shell
-(`light_mk4_shell_cmsis`) owns what a chip port's runtime owns: the
+(`light_shell_cmsis`) owns what a chip port's runtime owns: the
 CMSIS startup file and linker script, the clock tree, the caches, and the console.
 
 ### Public surface
@@ -226,7 +226,7 @@ crate the linker drops.
 
 ---
 
-## The C shell and its ABI (`light_mk4_shell`, pico-sdk)
+## The C shell and its ABI (`light_shell`, pico-sdk)
 
 ### Responsibility
 
@@ -234,7 +234,7 @@ The C shell is the thin C layer that owns everything pico-sdk must own and nothi
 comes up through the SDK's `crt0` and `runtime_init` exactly as for any SDK program; then control
 passes to Rust on core 0 and does not come back. Keeping the shell to one `main.c` makes the size of
 the Rust↔C boundary visible. It is built as a CMake *function*
-(`light_mk4_shell_configure(<target> [USB_HOST])`) rather than a library, because
+(`light_shell_configure(<target> [USB_HOST])`) rather than a library, because
 `pico_enable_stdio_*` and the panic hook are per-executable settings.
 
 ### The ABI
@@ -326,16 +326,16 @@ does not belong in one STM32 port crate; it lives in a shared `light-shell-cmsis
 way, a board's instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry
 points that call in. See [09-application-model.md](09-application-model.md).
 
-## The bare-CMSIS shell (`light_mk4_shell_cmsis`)
+## The bare-CMSIS shell (`light_shell_cmsis`)
 
 ### Responsibility
 
-The same shape as `light_mk4_shell`, in miniature, for the STM32 ports — what pico-sdk's runtime
+The same shape as `light_shell`, in miniature, for the STM32 ports — what pico-sdk's runtime
 does for the RP2 boards, done here by the CMSIS startup file, ST's system file, and the small amount
 this shell adds: the clock tree and caches where the chip has them, and the console. Two chips so
 far: the H743 gets its caches and a 400 MHz clock tree; the F411 runs on its reset defaults (HSI at
 16 MHz, every prescaler at 1). It is a CMake function,
-`light_mk4_shell_cmsis_configure(<target> CHIP <stm32h743|stm32f411>)`, selecting the chip's
+`light_shell_cmsis_configure(<target> CHIP <stm32h743|stm32f411>)`, selecting the chip's
 sources, arch flags, linker script and packaging step. The CMSIS device and core headers come from
 the framework's vendored `lib/` checkouts, and the Rust staticlib is built for
 `thumbv7em-none-eabihf` — hard float on both chips.

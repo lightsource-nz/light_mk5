@@ -26,7 +26,7 @@ if(NOT EXISTS "${LIGHT_PATH}/light_init.cmake")
 endif()
 include(${LIGHT_PATH}/external/light_preinit.cmake)
 
-project(light_mk4 C CXX ASM)
+project(light_mk5 C CXX ASM)
 
 #   every STREQUAL literal below is QUOTED. An unquoted word on the right of STREQUAL is
 # dereferenced if a variable of that name exists, and pico_sdk_init() defines one called
@@ -75,7 +75,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightUi.cmake)
 
         if(LIGHT_SYSTEM STREQUAL "PICO_SDK")
-                add_subdirectory(module/light_mk4_shell)
+                add_subdirectory(module/light_shell)
                 #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2
                 # -- the layout every sibling project shares, and worth matching rather than
                 # forking the script
@@ -101,15 +101,15 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                         add_subdirectory(module/ui_demo_touch349)
                         add_subdirectory(module/dictaphone_touch349)
                         add_subdirectory(module/dictaphone_wide_touch349)
-                        add_subdirectory(module/light_mk4_lui_touch349)
+                        add_subdirectory(module/light_lui_touch349)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_4")
                         add_subdirectory(module/ui_demo_touch4)
                 elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico")
                         #   two applications share the Picos: the pico2 demo, and crossfire
                         # with the native port in its host role. One per tree -- they
                         # configure the shell differently -- chosen by the preset
-                        set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application a Pico tree builds: pico2 (the pico2 demo) or crossfire")
-                        if(LIGHT_MK4_PICO2_APP STREQUAL "crossfire")
+                        set(LIGHT_PICO2_APP "pico2" CACHE STRING "which application a Pico tree builds: pico2 (the pico2 demo) or crossfire")
+                        if(LIGHT_PICO2_APP STREQUAL "crossfire")
                                 #   the app is one portable crate; the module is the
                                 # TANGIBLE crossfire this tree's chip names
                                 if(PICO_BOARD STREQUAL "pico")
@@ -118,19 +118,19 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                                         add_subdirectory(module/crossfire_pico2)
                                 endif()
                         else()
-                                add_subdirectory(module/light_mk4_pico2)
+                                add_subdirectory(module/light_pico2)
                         endif()
                 endif()
         elseif(LIGHT_SYSTEM STREQUAL "CMSIS")
                 #   bare CMSIS: no SDK under the shell at all. The board selects the chip's
                 # shell and its application; only the H743 so far
-                add_subdirectory(module/light_mk4_shell_cmsis)
+                add_subdirectory(module/light_shell_cmsis)
                 if(LIGHT_BOARD STREQUAL "mini_stm32h7")
-                        add_subdirectory(module/light_mk4_h7)
+                        add_subdirectory(module/light_h7)
                 elseif(LIGHT_BOARD STREQUAL "blackpill")
-                        add_subdirectory(module/light_mk4_f411)
+                        add_subdirectory(module/light_f411)
                 else()
-                        message(FATAL_ERROR "no mk4 application for the CMSIS board '${LIGHT_BOARD}' (mini_stm32h7 and blackpill so far)")
+                        message(FATAL_ERROR "no mk5 application for the CMSIS board '${LIGHT_BOARD}' (mini_stm32h7 and blackpill so far)")
                 endif()
         endif()
 endif()

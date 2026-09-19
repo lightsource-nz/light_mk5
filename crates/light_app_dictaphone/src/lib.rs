@@ -5,7 +5,7 @@
 //! same engine out for glass held sideways.
 //!
 //! The interface is DATA, not code: [`design.json`](../design.json) beside this file, compiled
-//! by crush to an LUI blob (`light_mk4_add_ui` in the board module) and handed to the display as
+//! by crush to an LUI blob (`light_add_ui` in the board module) and handed to the display as
 //! [`UiSource::Blob`](light_dictaphone_core::UiSource). A button's `event` id maps to the app's
 //! [`UiAction`](light_dictaphone_core::UiAction) through
 //! [`ui_action`](light_dictaphone_core::ui_action); the ids and tags the design uses are the

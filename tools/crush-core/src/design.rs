@@ -455,7 +455,7 @@ mod tests {
                         "orientation": "landscape",
                         "device": { "width": 480, "height": 480 },
                         "pages": [
-                                { "title": "mk4 4.0" },
+                                { "title": "mk5 4.0" },
                                 { "children": [ { "min_h": 64 }, { "min_h": 64 } ] }
                         ]
                 });
@@ -463,7 +463,7 @@ mod tests {
                 let d: Design = serde_json::from_value(base).unwrap();
                 assert_eq!((d.device.width, d.device.height), (480, 480), "the overlay's device replaces the base's");
                 assert!(d.landscape(), "a field only the overlay has is added");
-                assert_eq!(d.pages[0].title, "mk4 4.0");
+                assert_eq!(d.pages[0].title, "mk5 4.0");
                 assert_eq!(d.pages[0].children.len(), 2, "an untouched page keeps its children");
                 assert_eq!(d.pages[0].children[0].button.as_deref(), Some("A"));
                 assert_eq!((d.pages[1].children[0].min_h, d.pages[1].children[1].min_h), (64, 64));
@@ -481,7 +481,7 @@ mod tests {
                 }"#).unwrap();
                 //   the child overrides the first page title and the second page's row heights
                 let mut child = parent.clone();
-                child.pages[0].title = "mk4 4.0".to_owned();
+                child.pages[0].title = "mk5 4.0".to_owned();
                 child.device.width = 480;
                 child.pages[1].children[0].min_h = 64;
                 child.pages[1].children[1].min_h = 64;

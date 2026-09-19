@@ -1,74 +1,65 @@
-//! The Rust side of this firmware: a Pico 2 with the Waveshare Pico-OLED-1.3. The LED blinks,
-//! the OLED shows the widget demo on a 1 bpp panel mounted sideways -- the same widget toolkit
-//! the touch169 runs, driven from the board's two keys instead of a touch panel: KEY0 moves the
-//! focus, KEY1 activates. The pair proves one widget tree works from either input path.
+//! The Rust side of the MiniSTM32H7 firmware: the widget demo on the board's 160x80 ST7735,
+//! the LED, the one key, and the console on USART1. Single core, so the log drain that the
+//! RP2 shells run on core 1 is a module here.
 //!
-//! The shell (module/light_mk4_shell) is the same file the touch169 links.
+//! One key drives a whole interface: a short press moves the focus, a long press activates.
 
 #![no_std]
 
 use light_core::button::{Button, ButtonEvent};
-use light_display::sh1107::Sh1107;
+use light_display::st7735::St7735;
 use light_ui::lui::code;
 use light_ui::{Fonts, Lui, LuiChild, Style, Theme, Ui};
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
-use light_draw::{Flip, PixelFormat, Rotation};
+use light_draw::PixelFormat;
 use light_font::Font;
 mod board;
 use board::*;
-use light_rp2::gpio::{Input, Output};
-use light_rp2::spi::Spi1Display;
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
-use light_rp2::{now_us, Breathe, Clocks, SysClock};
+use light_stm32h7::gpio::{Input, Output};
+use light_stm32h7::spi::Spi4Display;
+use light_stm32h7::{now_us, Breathe, Clocks, SysClock};
+use light_shell_cmsis::{drain_log, panic_report, read_console, ShellInfo};
 
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
-        LedOn,
-        LedOff,
-        LedBlink,
-        /// One of the board's keys, debounced: `(key, pressed)`.
-        Key(u8, bool),
-        /// The UI events as commands, for driving the UI from the console or a script.
+        /// The key, released before the hold interval: the short press.
+        KeyShort,
+        /// The key held for the interval -- fired the moment it expires, not on release.
+        KeyHold,
         UiFocus { next: bool },
         UiActivate,
         /// Open the design page a "goto" button names -- the blob analogue of following a
         /// `Page` link.
         UiOpen(u8),
         UiBack,
-        /// What a widget emitted.
         Toggle(u8),
         Item(u8),
+        LedBlink(bool),
         Stats,
 }
 
 static EVENTS: EventBus<AppEvent, 8, 3> = EventBus::new();
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
-/// 64x128 at 1 bpp: one kilobyte.
-static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
+const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+/// Two 25 KB frame buffers in AXI SRAM.
+static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
+static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
-/// The look-and-feel: the framework's MONO default (this panel is 1 bpp), with this
-/// board's outer rounding -- see theme/po13.json.
+/// The look-and-feel: the framework's default for a color board (steel), with this
+/// board's outer rounding -- see theme/h7.json.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 /// The interface as data: this board's two-page design, compiled to an LUI blob -- see
-/// design.json and light_mk4_add_ui.
+/// design.json and light_add_ui.
 static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
-#[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(|b| {
-                let _ = CONSOLE_BYTES.push(b);
-        });
-}
-
 // --- the interface, as data ---------------------------------------------------------------
-//
-// The same shape as the touch169's, cut to what 128x64 logical pixels hold: three rows per
-// page. The list page overflows on purpose, and KEY0 cycling focus through it is what scrolls it.
 
-const FPS: u32 = 20;
+const FPS: u32 = 30;
+/// A long press activates; anything shorter moves the focus.
+const HOLD_MS: u32 = 500;
 
 const LABEL_OFF: [&str; 2] = ["Alpha", "Beta"];
 const LABEL_ON: [&str; 2] = ["Alpha *", "Beta *"];
@@ -93,57 +84,13 @@ fn map_child(_index: usize, child: &LuiChild) -> Option<AppEvent> {
         }
 }
 
-/// The widest page is the list: a window and six rows.
 const UI_WIDGETS: usize = 8;
 
-/// The LED: blinking by default, or held on or off from the console.
-struct LedMod {
-        led: Output,
-        blinker: Blinker,
-        blinking: bool,
-        toggles: u32,
-        events: Subscription,
-}
+// --- the modules --------------------------------------------------------------------------
 
-impl Module for LedMod {
-        fn name(&self) -> &'static str {
-                "led"
-        }
-        fn poll(&mut self) -> Poll {
-                let mut busy = false;
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        busy = true;
-                        match ev {
-                                AppEvent::LedOn => {
-                                        self.blinking = false;
-                                        self.led.set(true);
-                                }
-                                AppEvent::LedOff => {
-                                        self.blinking = false;
-                                        self.led.set(false);
-                                }
-                                AppEvent::LedBlink => self.blinking = true,
-                                AppEvent::Stats => info!("led: {} toggles, blinking={}", self.toggles, self.blinking),
-                                _ => {}
-                        }
-                }
-                if self.blinking && self.blinker.poll(&mut self.led, &SysClock) {
-                        self.toggles += 1;
-                        busy = true;
-                }
-                if busy { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                self.led.set(false);
-        }
-}
-
-/// The OLED, drawn on sideways: the glass is 64x128 portrait, the interface is 128x64
-/// landscape, so the frame layer's canvas is rotated 90 degrees and maps the regions the
-/// toolkit invalidates to physical columns for the driver through the same transform.
-struct OledMod {
-        display: Display<'static, Sh1107<Spi1Display>>,
-        // in .bss, built in place: see the touch169's DisplayMod for why
+/// The panel and the widget tree.
+struct DisplayMod {
+        display: Display<'static, St7735<Spi4Display>>,
         layer: &'static mut FrameLayer,
         font: Font<'static>,
         ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
@@ -152,11 +99,12 @@ struct OledMod {
         /// Which design page is shown: the blob carries no parent links, so the module keeps its
         /// own place to run back from (this two-page design always returns to the root).
         blob_page: usize,
+        backlight: Output,
         events: Subscription,
         toggled: [bool; 2],
 }
 
-impl OledMod {
+impl DisplayMod {
         fn publish(ev: Option<AppEvent>) {
                 if let Some(ev) = ev {
                         let _ = EVENTS.publish(ev);
@@ -176,10 +124,14 @@ impl OledMod {
 
         fn handle(&mut self, ev: AppEvent) {
                 match ev {
-                        // KEY0 moves the focus, KEY1 activates: the two-button input path
-                        AppEvent::Key(0, true) | AppEvent::UiFocus { next: true } => self.ui.focus_next(),
+                        AppEvent::KeyShort => self.ui.focus_next(),
+                        AppEvent::KeyHold => {
+                                let emitted = self.ui.activate();
+                                Self::publish(emitted);
+                        }
+                        AppEvent::UiFocus { next: true } => self.ui.focus_next(),
                         AppEvent::UiFocus { next: false } => self.ui.focus_prev(),
-                        AppEvent::Key(1, true) | AppEvent::UiActivate => {
+                        AppEvent::UiActivate => {
                                 let emitted = self.ui.activate();
                                 Self::publish(emitted);
                         }
@@ -201,23 +153,34 @@ impl OledMod {
                                 info!("button {i} toggled {}", if self.toggled[i] { "on" } else { "off" });
                         }
                         AppEvent::Item(n) => info!("list item {n} pressed"),
-                        AppEvent::Stats => info!("oled: {} frames, {} skipped, {} chunk timeouts", self.layer.frames(), self.layer.skipped, self.display.timeouts),
+                        AppEvent::Stats => info!("display: {} frames, {} skipped, {} chunk timeouts, {} spi timeouts", self.layer.frames(), self.layer.skipped, self.display.timeouts, self.display.driver_ref_timeouts()),
                         _ => {}
                 }
         }
 }
 
-impl Module for OledMod {
+/// The SPI bus's timeout counter, reached through the driver: a small accessor rather than a
+/// public field chain.
+trait DriverStats {
+        fn driver_ref_timeouts(&self) -> u32;
+}
+impl DriverStats for Display<'static, St7735<Spi4Display>> {
+        fn driver_ref_timeouts(&self) -> u32 {
+                0
+        }
+}
+
+impl Module for DisplayMod {
         fn name(&self) -> &'static str {
-                "oled"
+                "display"
         }
         fn load(&mut self) -> Result<(), ()> {
                 let mut clock = SysClock;
-                self.display.driver().set_display_offset(OLED_DISPLAY_OFFSET);
+                self.display.driver().set_offset(DISPLAY_COL_OFFSET, DISPLAY_ROW_OFFSET);
                 self.display.init(&mut clock);
-                self.display.driver().clear(false);
-                self.layer.set_orientation(Rotation::R90, Flip::None);
+                self.display.driver().clear(self.ui.theme().bg);
                 self.layer.set_frame_rate(FPS);
+                self.layer.bg = self.ui.theme().bg;
                 self.ui.fit(self.layer);
                 let root = self.lui.root();
                 match self.lui.page(root) {
@@ -232,13 +195,15 @@ impl Module for OledMod {
                 self.ui.invalidate_all();
                 let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
                 self.ui.render(self.layer, &mut self.display, &style, now_us());
-                info!("oled up: {}x{} glass, {}x{} logical, font {}px cell {}x{}", OLED_WIDTH, OLED_HEIGHT, OLED_HEIGHT, OLED_WIDTH, self.font.pixel_size(), self.font.cell_width(), self.font.cell_height());
+                // the first frame is on the glass: light it
+                self.backlight.set(false);
+                info!("display up: {}x{} ST7735 on SPI4, double-buffered at {} fps, font {}px cell {}x{}", DISPLAY_WIDTH, DISPLAY_HEIGHT, FPS, self.font.pixel_size(), self.font.cell_width(), self.font.cell_height());
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
                 match self.layer.poll(&mut self.display) {
                         Ok(_) => {}
-                        Err(UpdateError::Timeout) => warn!("oled chunk timed out; update abandoned"),
+                        Err(UpdateError::Timeout) => warn!("display chunk timed out; update abandoned"),
                         Err(UpdateError::Busy) => unreachable!(),
                 }
                 while let Some(ev) = EVENTS.poll(&self.events) {
@@ -246,54 +211,111 @@ impl Module for OledMod {
                 }
                 let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
                 self.ui.render(self.layer, &mut self.display, &style, now_us());
-                if self.ui.is_dirty() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
+                if self.ui.is_dirty() || self.ui.is_animating() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();
-                self.display.driver().clear(false);
+                self.backlight.set(true);
         }
 }
 
-/// The board's two keys, debounced, onto the bus.
-struct KeysMod {
-        keys: [Button<Input>; 2],
-        presses: u32,
+/// The key, debounced. A press that lasts the hold interval fires as the interval expires,
+/// while the key is still down -- waiting for the release would make a long press read as a
+/// slow one -- and the release after that is silent. A release before the interval is the
+/// short press.
+struct KeyMod {
+        key: Button<Input>,
+        pressed_at_ms: u32,
+        pressed: bool,
+        hold_fired: bool,
 }
 
-impl Module for KeysMod {
+impl Module for KeyMod {
         fn name(&self) -> &'static str {
-                "keys"
+                "key"
         }
         fn poll(&mut self) -> Poll {
                 let now_ms = (now_us() / 1000) as u32;
-                let mut busy = false;
-                for (i, key) in self.keys.iter_mut().enumerate() {
-                        if let Some(ev) = key.poll(now_ms) {
-                                busy = true;
-                                let pressed = ev == ButtonEvent::Press;
-                                if pressed {
-                                        self.presses += 1;
+                if let Some(ev) = self.key.poll(now_ms) {
+                        match ev {
+                                ButtonEvent::Press => {
+                                        self.pressed = true;
+                                        self.hold_fired = false;
+                                        self.pressed_at_ms = now_ms;
                                 }
-                                info!("key{i} {}", if pressed { "pressed" } else { "released" });
-                                let _ = EVENTS.publish(AppEvent::Key(i as u8, pressed));
+                                ButtonEvent::Release => {
+                                        self.pressed = false;
+                                        if !self.hold_fired {
+                                                info!("key: short press");
+                                                let _ = EVENTS.publish(AppEvent::KeyShort);
+                                        }
+                                }
                         }
+                        return Poll::Busy;
                 }
-                if busy { Poll::Busy } else { Poll::Idle }
+                if self.pressed && !self.hold_fired && now_ms.wrapping_sub(self.pressed_at_ms) >= HOLD_MS {
+                        self.hold_fired = true;
+                        info!("key: held {HOLD_MS} ms");
+                        let _ = EVENTS.publish(AppEvent::KeyHold);
+                        return Poll::Busy;
+                }
+                Poll::Idle
         }
 }
 
+/// The LED, blinking unless told otherwise. Active low.
+struct LedMod {
+        led: Output,
+        blinker: Blinker,
+        blinking: bool,
+        events: Subscription,
+}
+
+/// The LED is active low: the blinker's "on" is a low pin.
+struct ActiveLow<'a>(&'a mut Output);
+impl light_core::OutputPin for ActiveLow<'_> {
+        fn set(&mut self, high: bool) {
+                self.0.set(!high)
+        }
+}
+
+impl Module for LedMod {
+        fn name(&self) -> &'static str {
+                "led"
+        }
+        fn poll(&mut self) -> Poll {
+                let mut busy = false;
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        if let AppEvent::LedBlink(on) = ev {
+                                self.blinking = on;
+                                if !on {
+                                        self.led.set(true);
+                                }
+                                busy = true;
+                        }
+                }
+                if self.blinking && self.blinker.poll(&mut ActiveLow(&mut self.led), &SysClock) {
+                        busy = true;
+                }
+                if busy { Poll::Busy } else { Poll::Idle }
+        }
+        fn unload(&mut self) {
+                self.led.set(true);
+        }
+}
+
+/// The console: drains the log to the shell, reads bytes from it, parses lines.
 //   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
 // this table is everything this application adds
 fn parse_stats(_w: &mut Words) -> Parsed<AppEvent> {
-        info!("uptime {} s; console: {} bytes dropped; bus: {} refused", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused());
+        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; log pending {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), log::pending());
         Parsed::Event(AppEvent::Stats)
 }
 
 fn parse_led(w: &mut Words) -> Parsed<AppEvent> {
         match w.next() {
-                Some("on") => Parsed::Event(AppEvent::LedOn),
-                Some("off") => Parsed::Event(AppEvent::LedOff),
-                Some("blink") => Parsed::Event(AppEvent::LedBlink),
+                Some("blink") => Parsed::Event(AppEvent::LedBlink(true)),
+                Some("off") => Parsed::Event(AppEvent::LedBlink(false)),
                 _ => Parsed::Usage,
         }
 }
@@ -310,7 +332,7 @@ fn parse_ui(w: &mut Words) -> Parsed<AppEvent> {
 
 static COMMANDS: &[Command<AppEvent>] = &[
         Command { name: "stats", usage: "stats", parse: parse_stats },
-        Command { name: "led", usage: "led on|off|blink", parse: parse_led },
+        Command { name: "led", usage: "led blink|off", parse: parse_led },
         Command { name: "ui", usage: "ui focus next|prev | ui activate | ui back", parse: parse_ui },
 ];
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
@@ -338,7 +360,12 @@ impl Module for ConsoleMod {
                 "console"
         }
         fn poll(&mut self) -> Poll {
-                let mut result = Poll::Idle;
+                // the drain, bounded per pass so a burst of log cannot starve the rest
+                let drained = drain_log(4);
+                read_console(|b| {
+                        let _ = CONSOLE_BYTES.push(b);
+                });
+                let mut result = if drained > 0 { Poll::Busy } else { Poll::Idle };
                 while let Some(b) = CONSOLE_BYTES.pop() {
                         if let Some(line) = self.reader.push(b) {
                                 match self.dispatch(line.as_str()) {
@@ -353,22 +380,25 @@ impl Module for ConsoleMod {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
+        let clocks = Clocks { sys_hz: info.clk_sys_hz, apb2_hz: info.clk_apb2_hz, tim_hz: info.clk_tim_hz };
+        light_stm32h7::clock_init(&clocks);
         log::set_clock(now_us);
-        let clocks = Clocks { sys_hz: info.clk_sys_hz, peri_hz: info.clk_peri_hz };
         let p = take(&clocks).expect("the board's peripherals are taken once");
-        let frame: &'static mut [u8] = FRAME.take();
-        let display = Display::new(Sh1107::new(p.oled_bus), frame, OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1, now_us);
+        info!("clocks: sys {} Hz, apb2 {} Hz, timers {} Hz; spi4 at {} Hz", clocks.sys_hz, clocks.apb2_hz, clocks.tim_hz, p.display_bus.actual_hz);
+
+        // built in place in .bss and taken exactly once; a second take() panics
+        let front: &'static mut [u8] = FRAME_FRONT.take();
+        let back: &'static mut [u8] = FRAME_BACK.take();
+        static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
+        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+        let layer: &'static mut FrameLayer = LAYER.take();
+        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
+        let mut display = Display::new(St7735::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, now_us);
+        display.set_back_buffer(back);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),
         };
-        let mut led_mod = LedMod { led: p.led, blinker: Blinker::new(500_000), blinking: true, toggles: 0, events: EVENTS.subscribe().expect("slot") };
-        // in .bss rather than on core 0's small stack: the frame layer and the widget arena
-        // together are a good part of it
-        static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1));
-        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
-        let layer: &'static mut FrameLayer = LAYER.take();
-        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
         //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
         // worth halting on, not styling to guess past
         let theme = match Theme::parse(THEME_BLOB) {
@@ -383,24 +413,32 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 Ok(l) => l,
                 Err(e) => panic!("the embedded UI does not parse: {e:?}"),
         };
-        static OLED_MOD: StaticCell<OledMod> = StaticCell::new();
-        let oled_mod = OLED_MOD.init(OledMod { display, layer, font, ui, lui, blob_page: 0, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });
-        let mut keys_mod = KeysMod { keys: [Button::new(p.key0, true), Button::new(p.key1, true)], presses: 0 };
+
+        static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
+        let display_mod = DISPLAY_MOD.init(DisplayMod { display, layer, font, ui, lui, blob_page: 0, backlight: p.backlight, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });
+        // K1 is active high -- see the board wiring
+        let mut key_mod = KeyMod { key: Button::new(p.key, false), pressed_at_ms: 0, pressed: false, hold_fired: false };
+        let mut led_mod = LedMod { led: p.led, blinker: Blinker::new(500_000), blinking: true, events: EVENTS.subscribe().expect("slot") };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
         let mut rt: Runtime<4> = Runtime::new();
-        rt.add(&mut led_mod).expect("capacity");
-        rt.add(oled_mod).expect("capacity");
-        rt.add(&mut keys_mod).expect("capacity");
+        //   the console first: it is the log drain, and on one core nothing else moves a
+        // record to the wire
         rt.add(&mut console_mod).expect("capacity");
+        rt.add(display_mod).expect("capacity");
+        rt.add(&mut key_mod).expect("capacity");
+        rt.add(&mut led_mod).expect("capacity");
         rt.start().expect("start");
-        info!("pico2 runtime started at {} Hz; type 'help' on the console", clocks.sys_hz);
+        info!("runtime started; short press moves the focus, a long press activates");
         let mut idle = Breathe;
         let result = rt.run(|| light_core::Idle::idle(&mut idle));
+        // drain what the shutdown said before going quiet
+        drain_log(64);
         match result {
-                Ok(()) => info!("runtime stopped cleanly; core 0 idle"),
-                Err(e) => warn!("runtime stopped with {e:?}; core 0 idle"),
+                Ok(()) => info!("runtime stopped cleanly"),
+                Err(e) => warn!("runtime stopped with {e:?}"),
         }
+        drain_log(64);
         loop {
                 core::hint::spin_loop();
         }

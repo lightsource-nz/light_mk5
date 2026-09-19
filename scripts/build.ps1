@@ -1,4 +1,4 @@
-# Builds a light_mk4 target. Thin wrapper over $env:LIGHT_PATH/scripts/light-build.ps1 --
+# Builds a light_mk5 target. Thin wrapper over $env:LIGHT_PATH/scripts/light-build.ps1 --
 # the logic is shared, only the defaults are local.
 #
 # USAGE:  scripts/build.ps1 [-Target <name>] [-Preset <name>] [-Clean] [-Verbose]

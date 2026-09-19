@@ -3,7 +3,7 @@
 # links its application crate light_app_ui_demo_touch349, as the dictaphone executables link theirs;
 # the shared board support is light-board-touch349, which that app crate depends on.
 add_executable(ui_demo_touch349
-        ../light_mk4_shell/src/main.c
+        ../light_shell/src/main.c
         src/psram_info.c
 )
 
@@ -24,7 +24,7 @@ target_compile_definitions(ui_demo_touch349 PRIVATE
 )
 
 #   the demo's font: the 3.49" bar's real geometry (172x640 over 23.0x85.6 mm), 16 px
-light_mk4_add_font(ui_demo_touch349_font
+light_add_font(ui_demo_touch349_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY ws_touch349 WIDTH 172 HEIGHT 640 DIMENSION 23.0x85.6
         POINT_SIZE 14 PIXEL_SIZE 16
@@ -33,16 +33,16 @@ light_mk4_add_font(ui_demo_touch349_font
 
 #   the framework's default look-and-feel for a color board (steel); a board override
 # would be a local THEME file extending "default"
-light_mk4_add_theme(ui_demo_touch349_theme
+light_add_theme(ui_demo_touch349_theme
         CRATE light_app_ui_demo_touch349 ENV LIGHT_THEME_LTH
 )
 
 #   the demo interface as data: the app crate's design.json extends light_app_ui_demo's shared design
 # (overriding just the title) and compiles to an LUI blob. The demo core builds its tree from it
 # instead of a const page tree -- the UI-as-data path the dictaphone runs on.
-light_mk4_add_ui(ui_demo_touch349_ui
+light_add_ui(ui_demo_touch349_ui
         UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_ui_demo_touch349/design.json
         CRATE light_app_ui_demo_touch349 ENV LIGHT_UI_LUI
 )
 
-light_mk4_shell_configure(ui_demo_touch349)
+light_shell_configure(ui_demo_touch349)

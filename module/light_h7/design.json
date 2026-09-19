@@ -2,6 +2,6 @@
   "extends": "light_app_ui_demo_keys",
   "device": { "width": 160, "height": 80 },
   "pages": [
-    { "title": "mk4 h7" }
+    { "title": "mk5 h7" }
   ]
 }

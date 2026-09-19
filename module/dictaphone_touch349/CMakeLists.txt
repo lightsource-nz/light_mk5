@@ -7,7 +7,7 @@
 #   the executable name matches the module directory: light-flash.ps1 and light-debug.ps1
 # resolve module/<target>/<target>.{uf2,elf}
 add_executable(dictaphone_touch349
-        ../light_mk4_shell/src/main.c
+        ../light_shell/src/main.c
 )
 
 target_link_libraries(dictaphone_touch349 PRIVATE
@@ -18,7 +18,7 @@ target_link_libraries(dictaphone_touch349 PRIVATE
 )
 
 #   the same font as the board's demo: the 3.49" bar's real geometry, 16 px
-light_mk4_add_font(dictaphone_touch349_font
+light_add_font(dictaphone_touch349_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY ws_touch349 WIDTH 172 HEIGHT 640 DIMENSION 23.0x85.6
         POINT_SIZE 14 PIXEL_SIZE 16
@@ -32,21 +32,21 @@ light_mk4_add_font(dictaphone_touch349_font
 # retriggers the build; CREATING one where there was none needs a single reconfigure first.
 set(dictaphone_touch349_theme ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_dictaphone/theme.json)
 if(EXISTS ${dictaphone_touch349_theme})
-        light_mk4_add_theme(dictaphone_touch349_theme
+        light_add_theme(dictaphone_touch349_theme
                 THEME ${dictaphone_touch349_theme}
                 CRATE light_app_dictaphone_touch349 ENV LIGHT_THEME_LTH
         )
 else()
-        light_mk4_add_theme(dictaphone_touch349_theme
+        light_add_theme(dictaphone_touch349_theme
                 CRATE light_app_dictaphone_touch349 ENV LIGHT_THEME_LTH
         )
 endif()
 
 #   the portrait interface itself, as data: light_app_dictaphone's design compiled to an LUI
 # blob. light_dictaphone_core reads it and drives navigation from the design's event ids.
-light_mk4_add_ui(dictaphone_touch349_ui
+light_add_ui(dictaphone_touch349_ui
         UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_dictaphone/design.json
         CRATE light_app_dictaphone_touch349 ENV LIGHT_UI_LUI
 )
 
-light_mk4_shell_configure(dictaphone_touch349)
+light_shell_configure(dictaphone_touch349)

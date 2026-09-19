@@ -1,8 +1,8 @@
-#   light_mk4_add_theme(<name> [THEME <file.json>] [MONO] CRATE <rust crate> ENV <VAR>)
+#   light_add_theme(<name> [THEME <file.json>] [MONO] CRATE <rust crate> ENV <VAR>)
 #
 #   Compiles a JSON look-and-feel with crush into an LTH blob and hands its path to a Rust
 # crate as an environment variable, for `include_bytes!(env!("<VAR>"))` -- the same
-# assets-as-data arrangement as light_mk4_add_font, sharing its ordering trick: the crate's
+# assets-as-data arrangement as light_add_font, sharing its ordering trick: the crate's
 # cargo-prebuild target depends on the compile, and cargo tracks the blob through
 # include_bytes!, so editing the theme recompiles it and rebuilds the crate. Restyling an
 # interface is a data change: a theme file and this one call, no UI source touched.
@@ -19,19 +19,19 @@
 # one reconfigure before edits to it retrigger builds.)
 
 #   captured at include time, when CMAKE_CURRENT_LIST_DIR is this file's directory
-set(LIGHT_MK4_THEMES_DIR "${CMAKE_CURRENT_LIST_DIR}/../themes" CACHE INTERNAL "framework theme directory")
+set(LIGHT_THEMES_DIR "${CMAKE_CURRENT_LIST_DIR}/../themes" CACHE INTERNAL "framework theme directory")
 
-function(light_mk4_add_theme NAME)
+function(light_add_theme NAME)
         set(opts MONO)
         set(one THEME CRATE ENV)
         cmake_parse_arguments(T "${opts}" "${one}" "" ${ARGN})
         foreach(req CRATE ENV)
                 if(NOT DEFINED T_${req})
-                        message(FATAL_ERROR "light_mk4_add_theme(${NAME}) needs ${req}")
+                        message(FATAL_ERROR "light_add_theme(${NAME}) needs ${req}")
                 endif()
         endforeach()
         if(NOT TARGET crush)
-                message(FATAL_ERROR "light_mk4_add_theme(${NAME}) needs the crush target: import the crush crate with corrosion_set_hostbuild first")
+                message(FATAL_ERROR "light_add_theme(${NAME}) needs the crush target: import the crush crate with corrosion_set_hostbuild first")
         endif()
 
         if(T_MONO)
@@ -40,14 +40,14 @@ function(light_mk4_add_theme NAME)
                 set(default_theme steel)
         endif()
         if(NOT DEFINED T_THEME)
-                set(T_THEME "${LIGHT_MK4_THEMES_DIR}/${default_theme}.json")
+                set(T_THEME "${LIGHT_THEMES_DIR}/${default_theme}.json")
         endif()
         get_filename_component(theme_abs "${T_THEME}" ABSOLUTE)
-        file(GLOB base_themes "${LIGHT_MK4_THEMES_DIR}/*.json")
+        file(GLOB base_themes "${LIGHT_THEMES_DIR}/*.json")
         set(lth "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.lth")
         add_custom_command(
                 OUTPUT "${lth}"
-                COMMAND $<TARGET_FILE:crush> theme compile "${theme_abs}" "${lth}" --themes "${LIGHT_MK4_THEMES_DIR}" --default "${default_theme}"
+                COMMAND $<TARGET_FILE:crush> theme compile "${theme_abs}" "${lth}" --themes "${LIGHT_THEMES_DIR}" --default "${default_theme}"
                 DEPENDS crush "${theme_abs}" ${base_themes}
                 COMMENT "crush: theme ${NAME} -> LTH"
                 VERBATIM

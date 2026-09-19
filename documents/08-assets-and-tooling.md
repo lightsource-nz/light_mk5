@@ -14,8 +14,8 @@ a theme JSON, a design JSON — and compiled by `crush` to a binary blob that fi
 and one CMake call, with no firmware source touched. This is principle 4 of the overview, made
 concrete by three CMake helpers and one Rust convention.
 
-The helpers live in `cmake/`: `light_mk4_add_font` (`LightFont.cmake`), `light_mk4_add_theme`
-(`LightTheme.cmake`), and `light_mk4_add_ui` (`LightUi.cmake`). All three follow the same shape:
+The helpers live in `cmake/`: `light_add_font` (`LightFont.cmake`), `light_add_theme`
+(`LightTheme.cmake`), and `light_add_ui` (`LightUi.cmake`). All three follow the same shape:
 
 - A `crush` invocation compiles the source to a blob under the build directory (`<name>.lth`,
   `<name>.lui`, or the render's `<...>_font.lgf`).
@@ -30,19 +30,19 @@ The helpers live in `cmake/`: `light_mk4_add_font` (`LightFont.cmake`), `light_m
 A worked example — a representative app's `CMakeLists.txt` — wires all three into one app crate
 (the display token, dimensions and crate names are illustrative):
 
-    light_mk4_add_font(app_font
+    light_add_font(app_font
             FONT .../TypeLightSans.ttf
             DISPLAY <display> WIDTH 172 HEIGHT 640 DIMENSION 23.0x85.6
             POINT_SIZE 14 PIXEL_SIZE 16
             CRATE light_app_demo ENV LIGHT_FONT_LGF)
-    light_mk4_add_theme(app_theme
+    light_add_theme(app_theme
             CRATE light_app_demo ENV LIGHT_THEME_LTH)
-    light_mk4_add_ui(app_ui
+    light_add_ui(app_ui
             UI .../light_app_demo/design.json
             CRATE light_app_demo ENV LIGHT_UI_LUI)
 
 Each helper guards that the `crush` host target has been imported (`corrosion_set_hostbuild`) and
-fails at configure time otherwise. `light_mk4_add_theme` and `light_mk4_add_ui` glob their base
+fails at configure time otherwise. `light_add_theme` and `light_add_ui` glob their base
 directory (`themes/*.json`, `crates/*/design.json`) at configure time and depend on every file
 there, so editing a shared base rebuilds every consumer — with the caveat that a brand-new base
 file wants one reconfigure before edits to it retrigger builds.
@@ -88,7 +88,7 @@ truncated to 565.
 into a flat `Resolved`, which `emit` writes as an LTH blob. `extends: "name"` resolves to
 `name.json` in the themes directory; a path (contains a slash or ends `.json`) resolves relative to
 the source; and `extends: "default"` is an alias for whatever base the board's build declared —
-`steel`, or `mono` under `light_mk4_add_theme`'s MONO flag. A child's explicit `null` surface stays
+`steel`, or `mono` under `light_add_theme`'s MONO flag. A child's explicit `null` surface stays
 in the resolved map and *suppresses* the base's shade rather than inheriting it. The metric keys are
 u8 on the toolkit side, so a value past 255 is rejected at authoring rather than saturating quietly.
 `compile_flat` and `compile_source` skip resolution for a self-contained theme. `MAX_EXTENDS_DEPTH`

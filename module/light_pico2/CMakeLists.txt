@@ -1,10 +1,10 @@
 #   a Pico 2 wearing the Waveshare Pico-OLED-1.3 display board. The same shell, a Rust app
 # with the LED, the OLED and the console. Flashed and halted over SWD, by openocd or probe-rs
-add_executable(light_mk4_pico2
-        ../light_mk4_shell/src/main.c
+add_executable(light_pico2
+        ../light_shell/src/main.c
 )
 
-target_link_libraries(light_mk4_pico2 PRIVATE
+target_link_libraries(light_pico2 PRIVATE
         pico_stdlib
         pico_multicore
         pico_bootrom
@@ -13,7 +13,7 @@ target_link_libraries(light_mk4_pico2 PRIVATE
 
 #   the OLED's font: the Pico-OLED-1.3's real geometry (64x128 over 17.2x32.3 mm),
 # at 12 px -- the 128-pixel-wide logical row fits ten cells of it
-light_mk4_add_font(light_mk4_pico2_font
+light_add_font(light_pico2_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY po13 WIDTH 64 HEIGHT 128 DIMENSION 17.2x32.3
         POINT_SIZE 6 PIXEL_SIZE 8
@@ -22,16 +22,16 @@ light_mk4_add_font(light_mk4_pico2_font
 
 #   the framework's default look-and-feel for a MONO board (steel's focused fill
 # collapses illegibly at 1 bpp), plus this board's decorative 6 px outer rounding
-light_mk4_add_theme(light_mk4_pico2_theme MONO
+light_add_theme(light_pico2_theme MONO
         THEME ${CMAKE_CURRENT_LIST_DIR}/theme/po13.json
         CRATE light_app_pico2 ENV LIGHT_THEME_LTH
 )
 
 #   the interface as data: this board's two-page design (the toggles and the scrolling
 # list), compiled to an LUI blob the app embeds through LIGHT_UI_LUI
-light_mk4_add_ui(light_mk4_pico2_ui
+light_add_ui(light_pico2_ui
         UI ${CMAKE_CURRENT_LIST_DIR}/design.json
         CRATE light_app_pico2 ENV LIGHT_UI_LUI
 )
 
-light_mk4_shell_configure(light_mk4_pico2)
+light_shell_configure(light_pico2)

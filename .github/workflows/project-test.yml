@@ -12,7 +12,7 @@
 #
 #     $GITHUB_WORKSPACE/
 #       <project>/              <- the calling repository
-#       light_mk4/    <- LIGHT_PATH, always
+#       light_mk5/    <- LIGHT_PATH, always
 #       light_display/          <- optional
 #       font-crusher/           <- optional
 #       pico-sdk/               <- optional
@@ -21,7 +21,7 @@
 #
 #     jobs:
 #       test:
-#         uses: lightsource-nz/light_mk4/.github/workflows/project-test.yml@main
+#         uses: lightsource-nz/light_mk5/.github/workflows/project-test.yml@main
 #         with:
 #           project: screen-test
 #           light_display: true
@@ -56,7 +56,7 @@ on:
         type: boolean
         default: false
       framework_ref:
-        description: 'ref of light_mk4 to build against'
+        description: 'ref of light_mk5 to build against'
         type: string
         default: main
       artifact_path:
@@ -84,9 +84,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: lightsource-nz/light_mk4
+          repository: lightsource-nz/light_mk5
           ref: ${{ inputs.framework_ref }}
-          path: light_mk4
+          path: light_mk5
           submodules: recursive
 
       - uses: actions/checkout@v4

@@ -74,7 +74,7 @@ if ($effectiveSrc -ne $src) {
         # pointing across the mount would keep the 20s version check for screen-test, crossfire
         # and font-crusher -- i.e. for every project except this one
         if ($light -and $light -ne $src) {
-                $effectiveLight = Sync-LightWslMirror -From $light -Name 'light_mk4'
+                $effectiveLight = Sync-LightWslMirror -From $light -Name 'light_mk5'
                 if ($effectiveLight -ne $light) {
                         Write-Host "        + framework mirrored to $effectiveLight"
                 }
@@ -285,7 +285,7 @@ $profData = Join-Path $build 'cov.profdata'
 # sources whose recorded paths do not exist locally; it does not rewrite what the report
 # DISPLAYS. The text table hid that, because it prints paths relative to a common root, and the
 # mirror only showed up when the generated HTML was grepped -- 36 files still naming
-# /home/<user>/src-light_mk4.
+# /home/<user>/src-light_mk5.
 $pathMap = @()
 
 Write-Host ""

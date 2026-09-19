@@ -1,4 +1,4 @@
-# light mk4 — the Light Framework
+# light mk5 — the Light Framework
 
 The current, primary version of the **Light Framework** by lightsource aotearoa. This is the
 framework the lightsource projects build on.
@@ -41,12 +41,12 @@ the ones above it in this list and never on a port:
     crates/light-stm32f4    STM32F411 chip port, the same shape
     tools/crush             font-crusher in Rust: renders TrueType into the LGF bitmap font format
     tools/vendor            freetype-sys, vendored with a one-line build.rs fix (see Cargo.toml)
-    module/light_mk4_shell        the pico-sdk C shell (device and USB-host roles)
-    module/light_mk4_shell_cmsis  the bare-CMSIS C shell (H743, F411)
-    module/light_mk4_<board>/rust the staticlib crate a board's firmware links (light_app_<board>);
+    module/light_shell        the pico-sdk C shell (device and USB-host roles)
+    module/light_shell_cmsis  the bare-CMSIS C shell (H743, F411)
+    module/light_<board>/rust the staticlib crate a board's firmware links (light_app_<board>);
                                   its src/board.rs is the wiring -- pins, offsets, the taken-once
                                   peripheral set. Board wiring is the application's, never a crate's
-    module/light_mk4_<board>      the board's executable (module/<target>/ is where
+    module/light_<board>      the board's executable (module/<target>/ is where
                                   light-flash.ps1 looks for <target>.uf2)
     scripts/                the usual thin wrappers over $LIGHT_PATH/scripts
     .github/workflows       the host test suite through the framework's shared workflow

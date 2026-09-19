@@ -6,7 +6,7 @@
 //!
 //! Its two app-event hooks are recognizer fns (as `TouchMod` takes its `reads_held` gate): a
 //! backlight command carries a level, and a request reports the battery. Storage/PSRAM diagnostics
-//! that mk4 fused into the board module are a separate concern and stay app-side.
+//! are a separate concern and stay app-side, not fused into the board module.
 
 use light_core::hal::Clock;
 use light_core::{info, Bus, Module, Poll, Subscription};

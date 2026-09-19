@@ -2092,7 +2092,7 @@ mod tests {
         static T_C: Desc<Ev> = Desc::button("Gamma").emit(Ev::Alpha).tag(3);
         static T_MORE: Desc<Ev> = Desc::button("More >").navigate(&T_PAGE_DETAIL);
         static T_LIST: Desc<Ev> = Desc::button("List >").navigate(&T_PAGE_LIST);
-        static T_MAIN: Desc<Ev> = Desc::window("mk4 demo").rounded(24).stack(2).children(&[&T_A, &T_B, &T_C, &T_MORE, &T_LIST]);
+        static T_MAIN: Desc<Ev> = Desc::window("mk5 demo").rounded(24).stack(2).children(&[&T_A, &T_B, &T_C, &T_MORE, &T_LIST]);
         static T_LBL: Desc<Ev> = Desc::label("swipe right to go back");
         static T_BACK: Desc<Ev> = Desc::button("< Back").back();
         static T_DETAIL: Desc<Ev> = Desc::window("More").rounded(24).stack(2).children(&[&T_LBL, &T_A, &T_B, &T_BACK]);

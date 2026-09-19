@@ -29,12 +29,12 @@ members = [
         # the module/* executables' instantiation crates
         "../module/dictaphone_touch349/rust",
         "../module/dictaphone_wide_touch349/rust",
-        "../module/light_mk4_lui_touch349/rust",
-        "../module/light_mk4_pico2/rust",
+        "../module/light_lui_touch349/rust",
+        "../module/light_pico2/rust",
         "../module/crossfire_pico/rust",
         "../module/crossfire_pico2/rust",
-        "../module/light_mk4_h7/rust",
-        "../module/light_mk4_f411/rust",
+        "../module/light_h7/rust",
+        "../module/light_f411/rust",
 ]
 
 #   one version across BOTH workspaces: this literal has to agree with the portable workspace's

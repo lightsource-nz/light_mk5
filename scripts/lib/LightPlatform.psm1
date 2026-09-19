@@ -183,7 +183,7 @@ function Sync-LightWslMirror {
 function Sync-LightWslProject {
         param(
                 [Parameter(Mandatory)] [string]$From,
-                [string[]]$Also = @('light_mk4', 'light_display', 'font-crusher')
+                [string[]]$Also = @('light_mk5', 'light_display', 'font-crusher')
         )
 
         $mirrored = Sync-LightWslMirror -From $From

@@ -65,12 +65,12 @@ it, not the choice.
 Three CMake helpers turn authored files into blobs and hand their paths to the linked crate as env
 vars, which the crate `include_bytes!(env!("…"))`'s:
 
-- `light_mk4_add_font(<name> FONT … DISPLAY … CRATE <crate> ENV LIGHT_FONT_LGF)` — renders a
+- `light_add_font(<name> FONT … DISPLAY … CRATE <crate> ENV LIGHT_FONT_LGF)` — renders a
   TrueType face to an LGF blob.
-- `light_mk4_add_theme(<name> [THEME <file>] [MONO] CRATE <crate> ENV LIGHT_THEME_LTH)` — compiles a
+- `light_add_theme(<name> [THEME <file>] [MONO] CRATE <crate> ENV LIGHT_THEME_LTH)` — compiles a
   look-and-feel to an LTH blob; without a file it takes the framework default (steel, or mono), and
   a board theme may `extends` a base under `themes/`.
-- `light_mk4_add_ui(<name> UI <design.json> CRATE <crate> ENV LIGHT_UI_LUI)` — compiles a UI design
+- `light_add_ui(<name> UI <design.json> CRATE <crate> ENV LIGHT_UI_LUI)` — compiles a UI design
   to an LUI blob, resolving its `extends` chain against `--crates crates/`, and depends on every
   `crates/*/design.json` so editing a parent design rebuilds its consumers.
 
@@ -81,7 +81,7 @@ font, or a theme is data: an authored file and one call, no firmware source touc
 
 ## Presets, targets and configuration
 
-- `CMakePresets.json` supplies the board configurations (each a `conf-light_mk4-<board>-debug`
+- `CMakePresets.json` supplies the board configurations (each a `conf-light-<board>-debug`
   preset). The framework's preinit resolves `PICO_SDK_PATH` / `PICO_PLATFORM` / `PICO_BOARD` from the
   preset's `LIGHT_*` variables.
 - `scripts/project.config.ps1` maps each firmware **target** to its preset and its flash method

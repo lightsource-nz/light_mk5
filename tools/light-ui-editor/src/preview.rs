@@ -41,7 +41,7 @@ const THEME_JSON: &str = include_str!("../../../themes/steel.json");
 const STARTER_JSON: &str = r#"{ "pages": [ { "title": "Page", "children": [ { "button": "Button" } ] } ] }"#;
 
 /// The framework's default theme, and the base a fresh `theme.json` extends -- the same default a
-/// colour board's build uses (`light_mk4_add_theme` without MONO). The editor previews colour
+/// colour board's build uses (`light_add_theme` without MONO). The editor previews colour
 /// designs, so it assumes this default rather than reading each board's MONO flag.
 const DEFAULT_THEME: &str = "steel";
 

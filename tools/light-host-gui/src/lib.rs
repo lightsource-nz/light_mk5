@@ -1,6 +1,6 @@
 //! A host-side GUI runtime for the light framework.
 //!
-//! This is a HOST library, not the embedded shell: it links no C shell (`light_mk4_shell` is only
+//! This is a HOST library, not the embedded shell: it links no C shell (`light_shell` is only
 //! for firmware) and never reaches a device -- a desktop tool depends on this crate the way firmware
 //! depends on the shell, and the two never meet.
 //!

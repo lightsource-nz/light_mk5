@@ -1,7 +1,7 @@
 # Builds and runs the host test suite on every push and pull request.
 #
 # The framework IS this repository, so there is no separate framework to check out: the job
-# checks out light_mk4, installs ninja, and runs scripts/test.ps1 -- which configures the host
+# checks out light_mk5, installs ninja, and runs scripts/test.ps1 -- which configures the host
 # tree and runs its one ctest, `cargo test` over the portable crates. ubuntu-latest carries a
 # stable rustup toolchain and the host build needs no cross target; crush's bundled FreeType
 # builds with the runner's C compiler and cmake. Submodules are left unfetched: the CMSIS and

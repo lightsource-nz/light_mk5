@@ -2,6 +2,6 @@
   "extends": "light_app_ui_demo",
   "device": { "width": 240, "height": 320 },
   "pages": [
-    { "title": "mk4 2.8" }
+    { "title": "mk5 2.8" }
   ]
 }

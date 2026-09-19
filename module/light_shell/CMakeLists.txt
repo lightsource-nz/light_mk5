@@ -2,11 +2,11 @@
 # on. A function rather than a library because pico_enable_stdio_* and the panic hook are
 # per-executable settings.
 #
-#   light_mk4_shell_configure(<target> [USB_HOST]): the default is the device role -- TinyUSB
+#   light_shell_configure(<target> [USB_HOST]): the default is the device role -- TinyUSB
 # CDC on core 1 as the console. USB_HOST is crossfire's role: the native port hosts USB-MIDI
 # instruments, the host stack runs on core 0 under the Rust runtime, and the console is the
 # UART. The application supplies tusb_config.h on its include path either way.
-function(light_mk4_shell_configure TARGET)
+function(light_shell_configure TARGET)
         cmake_parse_arguments(SHELL "USB_HOST" "" "" ${ARGN})
         #   USB on core 1 -- see src/main.c. These are the knobs the touch169 bring-up settled on:
         target_compile_definitions(${TARGET} PRIVATE

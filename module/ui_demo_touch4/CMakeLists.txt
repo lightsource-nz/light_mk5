@@ -1,7 +1,7 @@
 #   the Waveshare RP2350-Touch-LCD-4: the widget demo on the 480x480 RGB (DPI) panel -- the
 # ST7701S's first bring-up, fed by the pure-hardware PIO scanout engine.
 add_executable(ui_demo_touch4
-        ../light_mk4_shell/src/main.c
+        ../light_shell/src/main.c
         src/psram_info.c
 )
 
@@ -22,7 +22,7 @@ target_compile_definitions(ui_demo_touch4 PRIVATE
 )
 
 #   the demo's font: the 4" square glass (480x480 over ~71.9x71.9 mm), 16 px
-light_mk4_add_font(ui_demo_touch4_font
+light_add_font(ui_demo_touch4_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY ws_touch4 WIDTH 480 HEIGHT 480 DIMENSION 71.9x71.9
         POINT_SIZE 14 PIXEL_SIZE 16
@@ -43,15 +43,15 @@ target_compile_definitions(ui_demo_touch4 PRIVATE
 
 #   the framework's default look-and-feel for a color board (steel); a board override
 # would be a local THEME file extending "default"
-light_mk4_add_theme(ui_demo_touch4_theme
+light_add_theme(ui_demo_touch4_theme
         CRATE light_app_ui_demo_touch4 ENV LIGHT_THEME_LTH
 )
 
 #   the demo interface as data: the app crate's design.json extends light_app_ui_demo's shared
 # design (overriding title, device size, gap and list-row height) and compiles to an LUI blob.
-light_mk4_add_ui(ui_demo_touch4_ui
+light_add_ui(ui_demo_touch4_ui
         UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_ui_demo_touch4/design.json
         CRATE light_app_ui_demo_touch4 ENV LIGHT_UI_LUI
 )
 
-light_mk4_shell_configure(ui_demo_touch4)
+light_shell_configure(ui_demo_touch4)

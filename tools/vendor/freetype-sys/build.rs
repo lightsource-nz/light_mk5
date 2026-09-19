@@ -94,7 +94,7 @@ fn main() {
 
     println!("cargo:rustc-link-lib=z");
 
-    // PATCHED (light_mk4): the crates.io package does not carry the libz-sys submodule the
+    // PATCHED (light_mk5): the crates.io package does not carry the libz-sys submodule the
     // upstream build script points at; libz-sys exports its own include directory instead
     let zlib_include = env::var("DEP_Z_INCLUDE").expect("libz-sys did not export DEP_Z_INCLUDE");
     let mut build = cc::Build::new();

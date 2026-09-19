@@ -1,4 +1,4 @@
-# Builds and flashes a light_mk4 target to a connected RP2 board over USB.
+# Builds and flashes a light_mk5 target to a connected RP2 board over USB.
 #
 # USAGE:  scripts/flash.ps1 [-Target <name>] [-NoBuild]
 param(

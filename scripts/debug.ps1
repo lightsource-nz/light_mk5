@@ -1,13 +1,13 @@
-# Starts an OpenOCD server, and optionally gdb, against a built light_mk4 target.
+# Starts an OpenOCD server, and optionally gdb, against a built light_mk5 target.
 #
 # USAGE:  scripts/debug.ps1 [-Target <name>] [-ServerOnly] [-Attach] [-NoBuild]
 #                          [-Ex <cmd>[,<cmd>...]] [-Batch] [-ProbeRs]
 #
-#     scripts/debug.ps1 -Target light_mk4_pico2 -Batch                          # load over SWD and stop
-#     scripts/debug.ps1 -Target light_mk4_pico2 -Batch -Ex 'monitor reset run'  # load and leave running
-#     scripts/debug.ps1 -Target light_mk4_pico2 -ProbeRs                        # probe-rs: flash, reset, running
+#     scripts/debug.ps1 -Target light_pico2 -Batch                          # load over SWD and stop
+#     scripts/debug.ps1 -Target light_pico2 -Batch -Ex 'monitor reset run'  # load and leave running
+#     scripts/debug.ps1 -Target light_pico2 -ProbeRs                        # probe-rs: flash, reset, running
 param(
-        [string]$Target = 'light_mk4_pico2',
+        [string]$Target = 'light_pico2',
         [string]$Preset,
         [switch]$ServerOnly,
         [switch]$Attach,

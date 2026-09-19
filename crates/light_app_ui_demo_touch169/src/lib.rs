@@ -3,7 +3,7 @@
 //! 1.69: the wiring (`board.rs`), the ST7789 over SPI, the CST816T, the IMU, the piezo,
 //! the shell ABI and the panic handler.
 //!
-//! The C shell (`module/light_mk4_shell`) brings the pico-sdk runtime up, puts TinyUSB on
+//! The C shell (`module/light_shell`) brings the pico-sdk runtime up, puts TinyUSB on
 //! core 1, and calls `light_app_main` on core 0 with the clocks it configured; it never
 //! returns. Core 1 calls `light_app_core1_service` from its USB loop. Everything the shell
 //! provides to Rust is declared in the one `extern` block below.
@@ -46,7 +46,7 @@ static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0
 static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 
 /// The demo's font, rendered by crush at build time and handed over as a path by
-/// `light_mk4_add_font` in the CMake -- a blob in flash, parsed in place, no generated C.
+/// `light_add_font` in the CMake -- a blob in flash, parsed in place, no generated C.
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel, compiled from `theme/round169.json`: the framework's default theme
 /// plus this glass's corner curvature. That screen_radius of 42 is MEASURED, not

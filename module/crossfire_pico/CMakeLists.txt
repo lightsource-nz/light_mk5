@@ -7,7 +7,7 @@
 #   the executable name matches the module directory: light-flash.ps1 and light-debug.ps1
 # resolve module/<target>/<target>.{uf2,elf}
 add_executable(crossfire_pico
-        ../light_mk4_shell/src/main.c
+        ../light_shell/src/main.c
 )
 
 #   tusb_config.h: the host stack's configuration, on the include path for the shell (which
@@ -24,7 +24,7 @@ target_link_libraries(crossfire_pico PRIVATE
 
 #   the status font: 16 px on the Pico-OLED-1.3's real geometry -- two lines
 # of ten cells across the rotated 128-pixel row
-light_mk4_add_font(crossfire_pico_font
+light_add_font(crossfire_pico_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY po13 WIDTH 64 HEIGHT 128 DIMENSION 17.2x32.3
         POINT_SIZE 12 PIXEL_SIZE 16
@@ -34,13 +34,13 @@ light_mk4_add_font(crossfire_pico_font
 #   the look-and-feel and the interface as data, shared with the Pico 2 crossfire: the framework
 # MONO default with this OLED's rounding, and the crossfire status page -- both live beside the
 # application crate, embedded by it through the two env vars
-light_mk4_add_theme(crossfire_pico_theme MONO
+light_add_theme(crossfire_pico_theme MONO
         THEME ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_crossfire/theme.json
         CRATE light_app_crossfire_pico ENV LIGHT_THEME_LTH
 )
-light_mk4_add_ui(crossfire_pico_ui
+light_add_ui(crossfire_pico_ui
         UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_crossfire/design.json
         CRATE light_app_crossfire_pico ENV LIGHT_UI_LUI
 )
 
-light_mk4_shell_configure(crossfire_pico USB_HOST)
+light_shell_configure(crossfire_pico USB_HOST)

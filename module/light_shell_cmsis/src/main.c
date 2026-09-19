@@ -105,7 +105,7 @@ int main(void)
         info.clk_apb2_hz = SystemCoreClock;
         info.clk_tim_hz = SystemCoreClock;
 #endif
-        printf("light_mk4 shell: sys %lu Hz, apb2 %lu Hz, timers %lu Hz%s\n",
+        printf("light_mk5 shell: sys %lu Hz, apb2 %lu Hz, timers %lu Hz%s\n",
                         (unsigned long) info.clk_sys_hz, (unsigned long) info.clk_apb2_hz,
                         (unsigned long) info.clk_tim_hz, light_shell_clock_status());
         light_app_main(&info);

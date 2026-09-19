@@ -3,14 +3,14 @@
     "include": ["cmake/light_presets/light_pico_presets.json"],
     "configurePresets": [
         {
-            "name": "conf-light_mk4-host-debug",
+            "name": "conf-light_mk5-host-debug",
             "description": "The host tree: registers one ctest that runs `cargo test` over the portable crates, so scripts/test.ps1 and CI reach the Rust tests the same way they reach every other project's.",
             "inherits": ["conf-light-host-debug"],
             "binaryDir": "${sourceDir}/build-host",
             "generator": "Ninja"
         },
         {
-            "name": "conf-light_mk4-pico2-debug",
+            "name": "conf-light_mk5-pico2-debug",
             "description": "The bare Pico 2 in the po13 rig's SWD dock: the same C shell with an LED-and-console Rust app, flashed and debugged over SWD. Exists to answer the debugger questions the touch169 cannot.",
             "inherits": [
                 "conf-light-pico2",
@@ -24,7 +24,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-touch169-debug",
+            "name": "conf-light_mk5-touch169-debug",
             "description": "The touch169 firmware on the Waveshare RP2350-Touch-LCD-1.69: pico-sdk C shell + Rust staticlib. Rust_CARGO_TARGET is the soft-float ABI to match pico-sdk's -mfloat-abi=softfp.",
             "inherits": [
                 "conf-light-waveshare-touch169",
@@ -38,7 +38,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-touch28-debug",
+            "name": "conf-light_mk5-touch28-debug",
             "description": "The Waveshare RP2350-Touch-LCD-2.8: the touch169's demo on the 240x320 glass, and the CST328 touch controller's first bring-up. Flashed over BOOTSEL like the 1.69.",
             "inherits": [
                 "conf-light-waveshare-touch28",
@@ -52,7 +52,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-touch349-debug",
+            "name": "conf-light_mk5-touch349-debug",
             "description": "The Waveshare RP2350-Touch-LCD-3.49: the widget demo on the 172x640 QSPI bar display (AXS15231B, PIO-driven), the first RP2350B board here. Flashed over BOOTSEL.",
             "inherits": [
                 "conf-light-waveshare-touch349",
@@ -66,7 +66,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-touch4-debug",
+            "name": "conf-light_mk5-touch4-debug",
             "description": "The Waveshare RP2350-Touch-LCD-4: the widget demo on the 480x480 RGB (DPI) panel -- the ST7701S over the pure-hardware PIO scanout engine. Flashed over BOOTSEL.",
             "inherits": [
                 "conf-light-waveshare-touch4",
@@ -80,7 +80,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-touch169-release",
+            "name": "conf-light_mk5-touch169-release",
             "description": "The touch169 firmware with cargo's release profile (opt-level s, fat LTO): Corrosion takes the profile from CMAKE_BUILD_TYPE. Separate tree, so the debug one stays warm.",
             "inherits": [
                 "conf-light-waveshare-touch169",
@@ -94,7 +94,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-pico2-riscv-debug",
+            "name": "conf-light_mk5-pico2-riscv-debug",
             "description": "The po13 rig built for the RP2350's Hazard3 RISC-V cores: LIGHT_ARCH picks the ISA and pico-sdk's own RISC-V toolchain file, Rust_CARGO_TARGET is the matching soft-float rv32imac target. PICO_TOOLCHAIN_PATH comes from light-env.ps1 (the RISC-V toolchain is kept off PATH; see screen-test's riscv preset for the whole story).",
             "inherits": [
                 "conf-light-pico2",
@@ -110,7 +110,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-touch169-riscv-debug",
+            "name": "conf-light_mk5-touch169-riscv-debug",
             "description": "The touch169 built for the Hazard3 cores; see the pico2 riscv preset.",
             "inherits": [
                 "conf-light-waveshare-touch169",
@@ -126,7 +126,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-mini-stm32h7-debug",
+            "name": "conf-light_mk5-mini-stm32h7-debug",
             "description": "WeAct MiniSTM32H7xx (STM32H743VIT6) on bare CMSIS: the CMSIS shell with the Rust app on the board's ST7735. Inherits conf-light-base rather than a Pico base, since PICO_* means nothing here; the arm-none-eabi toolchain comes from the framework's toolchain file, selected by its preinit before project(). Rust_CARGO_TARGET is the hard-float Cortex-M7 target, matching -mfloat-abi=hard.",
             "inherits": [
                 "conf-light-base",
@@ -142,7 +142,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-blackpill-debug",
+            "name": "conf-light_mk5-blackpill-debug",
             "description": "WeAct Blackpill (STM32F411CEU6) on bare CMSIS: the CMSIS shell's second chip, with the LED-key-console demo. Same Rust target as the H7 -- hard float on both.",
             "inherits": [
                 "conf-light-base",
@@ -158,7 +158,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-pico-debug",
+            "name": "conf-light_mk5-pico-debug",
             "description": "The po13 demo on an RP2040 Pico: the same app and wiring as the Pico 2 tree (the boards are pin-compatible), the RP2 port crate built with its rp2040 feature, Rust on thumbv6m-none-eabi -- the Cortex-M0+, whose missing atomics are portable-atomic's business.",
             "inherits": [
                 "conf-light-pico",
@@ -172,7 +172,7 @@
             }
         },
         {
-            "name": "conf-light_mk4-crossfire-pico-debug",
+            "name": "conf-light_mk5-crossfire-pico-debug",
             "description": "crossfire on the stock RP2040 Pico -- the product board: the native port hosting USB-MIDI instruments, the console on the UART. Flashed and debugged over SWD through a debugprobe.",
             "inherits": [
                 "conf-light-pico",
@@ -182,11 +182,11 @@
             "generator": "Ninja",
             "cacheVariables": {
                 "Rust_CARGO_TARGET": "thumbv6m-none-eabi",
-                "LIGHT_MK4_PICO2_APP": "crossfire"
+                "LIGHT_PICO2_APP": "crossfire"
             }
         },
         {
-            "name": "conf-light_mk4-crossfire-debug",
+            "name": "conf-light_mk5-crossfire-debug",
             "description": "crossfire on the po13 rig: the Pico 2's native USB port hosting USB-MIDI instruments, the OLED as the status display, the console on the UART through the debug probe. Flashed and debugged over SWD.",
             "inherits": [
                 "conf-light-pico2",
@@ -196,11 +196,11 @@
             "generator": "Ninja",
             "cacheVariables": {
                 "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "LIGHT_MK4_PICO2_APP": "crossfire"
+                "LIGHT_PICO2_APP": "crossfire"
             }
         },
         {
-            "name": "conf-light_mk4-pico2-release",
+            "name": "conf-light_mk5-pico2-release",
             "description": "The po13 rig with the release profile.",
             "inherits": [
                 "conf-light-pico2",
@@ -216,78 +216,78 @@
     ],
     "buildPresets": [
         {
-            "name": "build-light_mk4_touch349-debug",
-            "configurePreset": "conf-light_mk4-touch349-debug",
-            "targets": ["light_mk4_touch349"]
+            "name": "build-light_touch349-debug",
+            "configurePreset": "conf-light_mk5-touch349-debug",
+            "targets": ["light_touch349"]
         },
         {
-            "name": "build-light_mk4_touch4-debug",
-            "configurePreset": "conf-light_mk4-touch4-debug",
-            "targets": ["light_mk4_touch4"]
+            "name": "build-light_touch4-debug",
+            "configurePreset": "conf-light_mk5-touch4-debug",
+            "targets": ["light_touch4"]
         },
         {
-            "name": "build-light_mk4_touch28-debug",
-            "configurePreset": "conf-light_mk4-touch28-debug",
-            "targets": ["light_mk4_touch28"]
+            "name": "build-light_touch28-debug",
+            "configurePreset": "conf-light_mk5-touch28-debug",
+            "targets": ["light_touch28"]
         },
         {
-            "name": "build-light_mk4_touch169-release",
-            "configurePreset": "conf-light_mk4-touch169-release",
-            "targets": ["light_mk4_touch169"]
+            "name": "build-light_touch169-release",
+            "configurePreset": "conf-light_mk5-touch169-release",
+            "targets": ["light_touch169"]
         },
         {
-            "name": "build-light_mk4_pico2-riscv-debug",
-            "configurePreset": "conf-light_mk4-pico2-riscv-debug",
-            "targets": ["light_mk4_pico2"]
+            "name": "build-light_pico2-riscv-debug",
+            "configurePreset": "conf-light_mk5-pico2-riscv-debug",
+            "targets": ["light_pico2"]
         },
         {
-            "name": "build-light_mk4_touch169-riscv-debug",
-            "configurePreset": "conf-light_mk4-touch169-riscv-debug",
-            "targets": ["light_mk4_touch169"]
+            "name": "build-light_touch169-riscv-debug",
+            "configurePreset": "conf-light_mk5-touch169-riscv-debug",
+            "targets": ["light_touch169"]
         },
         {
-            "name": "build-light_mk4_h7-debug",
-            "configurePreset": "conf-light_mk4-mini-stm32h7-debug",
-            "targets": ["light_mk4_h7"]
+            "name": "build-light_h7-debug",
+            "configurePreset": "conf-light_mk5-mini-stm32h7-debug",
+            "targets": ["light_h7"]
         },
         {
-            "name": "build-light_mk4_f411-debug",
-            "configurePreset": "conf-light_mk4-blackpill-debug",
-            "targets": ["light_mk4_f411"]
+            "name": "build-light_f411-debug",
+            "configurePreset": "conf-light_mk5-blackpill-debug",
+            "targets": ["light_f411"]
         },
         {
-            "name": "build-light_mk4_pico-debug",
-            "configurePreset": "conf-light_mk4-pico-debug",
-            "targets": ["light_mk4_pico2"]
+            "name": "build-light_pico-debug",
+            "configurePreset": "conf-light_mk5-pico-debug",
+            "targets": ["light_pico2"]
         },
         {
-            "name": "build-light_mk4_crossfire-pico-debug",
-            "configurePreset": "conf-light_mk4-crossfire-pico-debug",
-            "targets": ["light_mk4_crossfire"]
+            "name": "build-light_crossfire-pico-debug",
+            "configurePreset": "conf-light_mk5-crossfire-pico-debug",
+            "targets": ["light_crossfire"]
         },
         {
-            "name": "build-light_mk4_crossfire-debug",
-            "configurePreset": "conf-light_mk4-crossfire-debug",
-            "targets": ["light_mk4_crossfire"]
+            "name": "build-light_crossfire-debug",
+            "configurePreset": "conf-light_mk5-crossfire-debug",
+            "targets": ["light_crossfire"]
         },
         {
-            "name": "build-light_mk4_pico2-release",
-            "configurePreset": "conf-light_mk4-pico2-release",
-            "targets": ["light_mk4_pico2"]
+            "name": "build-light_pico2-release",
+            "configurePreset": "conf-light_mk5-pico2-release",
+            "targets": ["light_pico2"]
         },
         {
-            "name": "build-light_mk4-host",
-            "configurePreset": "conf-light_mk4-host-debug"
+            "name": "build-light_host",
+            "configurePreset": "conf-light_mk5-host-debug"
         },
         {
-            "name": "build-light_mk4_pico2-debug",
-            "configurePreset": "conf-light_mk4-pico2-debug",
-            "targets": ["light_mk4_pico2"]
+            "name": "build-light_pico2-debug",
+            "configurePreset": "conf-light_mk5-pico2-debug",
+            "targets": ["light_pico2"]
         },
         {
-            "name": "build-light_mk4_touch169-debug",
-            "configurePreset": "conf-light_mk4-touch169-debug",
-            "targets": ["light_mk4_touch169"]
+            "name": "build-light_touch169-debug",
+            "configurePreset": "conf-light_mk5-touch169-debug",
+            "targets": ["light_touch169"]
         }
     ]
 }
