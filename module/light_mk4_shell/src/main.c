@@ -16,6 +16,9 @@
 #include <stdio.h>
 
 #include <hardware/clocks.h>
+#include <hardware/structs/ioqspi.h>
+#include <hardware/structs/sio.h>
+#include <hardware/sync.h>
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
@@ -41,6 +44,31 @@ static volatile bool usb_mounted_flag = false;
 bool light_shell_usb_mounted(void)
 {
         return usb_mounted_flag;
+}
+
+//   the BOOTSEL button, read at runtime as an input: the board's one button that needs no GPIO
+// wired for it. BOOTSEL shares the flash chip-select (QSPI_SS), so reading it means briefly
+// floating that pin and sampling it -- which cannot touch flash while it happens, so this routine
+// runs from RAM with interrupts off and no call into flash. The pin idles high (pulled up) and the
+// button pulls it low, so pressed is the low reading. Restores chip-select before returning, or the
+// next flash fetch would fault. Chip-independent: the QSPI_SS bit differs on RP2040 vs RP2350.
+bool __attribute__((noinline)) __not_in_flash_func(light_shell_bootsel)(void)
+{
+        const uint cs_index = 1; // QSPI_SS is the second QSPI IO
+        uint32_t flags = save_and_disable_interrupts();
+        hw_write_masked(&ioqspi_hw->io[cs_index].ctrl, GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB, IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
+        for (volatile int i = 0; i < 1000; ++i) {
+                __nop();
+        }
+#ifdef __ARM_ARCH_6M__ // RP2040 (Cortex-M0+)
+        const uint32_t cs_bit = 1u << 1;
+#else // RP2350 (Cortex-M33 / Hazard3)
+        const uint32_t cs_bit = SIO_GPIO_HI_IN_QSPI_CSN_BITS;
+#endif
+        bool pressed = (sio_hw->gpio_hi_in & cs_bit) == 0;
+        hw_write_masked(&ioqspi_hw->io[cs_index].ctrl, GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB, IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
+        restore_interrupts(flags);
+        return pressed;
 }
 
 // a line of text from Rust, formatted there, for the console. Called from core 1 only

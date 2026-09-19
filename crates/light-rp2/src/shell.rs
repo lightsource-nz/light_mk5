@@ -14,6 +14,15 @@ unsafe extern "C" {
         fn light_shell_panic(msg: *const u8, len: usize) -> !;
         fn light_shell_log(msg: *const u8, len: usize);
         fn light_shell_read_byte() -> i32;
+        fn light_shell_bootsel() -> bool;
+}
+
+/// Is the BOOTSEL button pressed right now? The shell reads it flash-safe (interrupts off, chip
+/// select briefly floated), so keep the polling rate modest -- a few times a second is plenty for a
+/// button, and each read is a short interrupts-off window that a fast poll loop should not repeat
+/// needlessly. A board with no other button uses this as its one input.
+pub fn bootsel() -> bool {
+        unsafe { light_shell_bootsel() }
 }
 
 /// What the C shell hands `light_app_main`: the resolved clock rates.

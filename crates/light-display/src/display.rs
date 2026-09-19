@@ -129,15 +129,18 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
 
         /// Opt into region (partial) buffering for the page slide: with no back buffer set, the
         /// toolkit scrolls the outgoing page off the single live buffer instead of holding a whole
-        /// second frame. RGB565 only, and only meaningful single-buffered (with a back buffer the
-        /// richer capture path is used regardless). See [`region_buffering`](Self::region_buffering).
+        /// second frame. Only meaningful single-buffered (with a back buffer the richer capture path
+        /// is used regardless). RGB565 shifts either axis; a 1 bpp (Mono1) panel only a whole-row
+        /// vertical shift -- which a 90-degree-rotated panel's horizontal page slide happens to be.
+        /// See [`region_buffering`](Self::region_buffering) and [`Canvas::shift_region`].
         pub fn set_region_buffering(&mut self, on: bool) {
                 self.region = on;
         }
 
-        /// Whether region buffering is enabled and usable here: opted in, single-buffered, RGB565.
+        /// Whether region buffering is enabled and usable here: opted in, single-buffered, and a
+        /// format [`Canvas::shift_region`] can scroll (RGB565 or Mono1).
         pub fn region_buffering(&self) -> bool {
-                self.region && self.back.is_none() && self.format.is_rgb565()
+                self.region && self.back.is_none() && (self.format.is_rgb565() || matches!(self.format, PixelFormat::Mono1))
         }
 
         pub fn is_double_buffered(&self) -> bool {

@@ -140,6 +140,8 @@ pub struct Forwarder<const N: usize> {
         last_tx_ms: u32,
         rx_shown: bool,
         tx_shown: bool,
+        /// MIDI packets received across all sources (padding code indexes excluded), for diagnostics.
+        pub received: u32,
         /// Packets dropped for a cable number past `MAX_CABLES`, for diagnostics.
         pub dropped: u32,
 }
@@ -152,7 +154,7 @@ impl<const N: usize> Default for Forwarder<N> {
 
 impl<const N: usize> Forwarder<N> {
         pub const fn new() -> Self {
-                Self { devices: [NO_DEVICE; N], table: [const { [const { Vec::new() }; MAX_CABLES] }; N], hub_addr: 0, last_rx_ms: 0, last_tx_ms: 0, rx_shown: false, tx_shown: false, dropped: 0 }
+                Self { devices: [NO_DEVICE; N], table: [const { [const { Vec::new() }; MAX_CABLES] }; N], hub_addr: 0, last_rx_ms: 0, last_tx_ms: 0, rx_shown: false, tx_shown: false, received: 0, dropped: 0 }
         }
 
         pub fn device(&self, idx: u8) -> Option<&Device> {
@@ -272,6 +274,7 @@ impl<const N: usize> Forwarder<N> {
                                 if cin < 0x2 {
                                         continue;
                                 }
+                                self.received = self.received.wrapping_add(1);
                                 let cable = usize::from(packet[0] >> 4);
                                 if cable >= MAX_CABLES {
                                         self.dropped += 1;

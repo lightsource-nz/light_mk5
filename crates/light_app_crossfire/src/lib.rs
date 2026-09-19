@@ -19,7 +19,7 @@ use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{Flip, Rotation};
 use light_font::Font;
 use light_midi::{Forwarder, Host, MidiEvent};
-use light_ui::{Fonts, Lui, LuiChild, Style, Theme, Ui};
+use light_ui::{Descent, Fonts, Lui, LuiChild, Style, Theme, Ui};
 
 /// USB device slots the engine tracks: TinyUSB's CFG_TUH_MIDI, which every hardware
 /// module's tusb_config.h sets to the same four. The engine indexes its table with the
@@ -37,6 +37,8 @@ enum AppEvent {
         /// Whether anything is mounted, for the LED.
         Mounted(bool),
         Stats,
+        /// The BOOTSEL button was pressed: move the display to the next page.
+        NavToggle,
         /// Tear the host controller down and bring it back, from the console.
         UsbReset,
         /// Whether the engine's root-port-empty verdict resets the controller by itself.
@@ -70,6 +72,16 @@ struct Status {
 }
 
 static STATUS: Mailbox<Status, 1> = Mailbox::new();
+
+/// The counters the stats page shows, published by the USB module and read by the OLED module when
+/// that page is up. Uptime is not here -- the display reads the clock directly for that.
+#[derive(Clone, Copy, Debug, Default)]
+struct StatsSnapshot {
+        received: u32,
+        forwarded: u32,
+}
+
+static STATS: Mailbox<StatsSnapshot, 1> = Mailbox::new();
 
 /// Heartbeats, one per core, for a post-mortem that reads memory without halting anything:
 /// whether each core is still executing its loop is the first question, and it should not
@@ -109,6 +121,13 @@ impl<H: Host> UsbMod<H> {
                 // the mailbox holds the latest only: a stale status is worthless
                 let _ = STATUS.pop();
                 let _ = STATUS.push(s);
+        }
+
+        fn publish_stats(&self) {
+                let s = StatsSnapshot { received: self.forwarder.received, forwarded: self.packets };
+                // latest only, like the status mailbox
+                let _ = STATS.pop();
+                let _ = STATS.push(s);
         }
 }
 
@@ -187,36 +206,56 @@ impl<H: Host> Module for UsbMod<H> {
                         let _ = EVENTS.publish(AppEvent::Indicators { rx, tx });
                         busy = true;
                 }
+                if busy {
+                        // the counters moved (a forward, a drop, a mount): refresh the stats page's data
+                        self.publish_stats();
+                }
                 if busy { Poll::Busy } else { Poll::Idle }
         }
 }
 
-/// The widgets the status page holds: the window and its two indicator labels.
-const UI_WIDGETS: usize = 4;
+/// Room for the widest page (the stats page: a window and three rows) with headroom for the page
+/// transition to build the incoming tree.
+const UI_WIDGETS: usize = 8;
+/// The pages, in design.json order.
+const PAGE_STATUS: usize = 0;
+const PAGE_STATS: usize = 1;
 /// The status page's tags, matching design.json's `tag`s.
 const TAG_RX: u8 = 2;
 const TAG_TX: u8 = 3;
+/// The stats page's tags.
+const TAG_UP: u8 = 10;
+const TAG_RECV: u8 = 11;
+const TAG_FWD: u8 = 12;
 /// The status is event-driven, but the frame layer is polled at a steady rate so a chunked
 /// push runs to completion.
 const FPS: u32 = 20;
+/// How often the stats page redraws while it is up, so its uptime ticks.
+const STATS_REFRESH_MS: u32 = 1000;
 
-/// The status display: the crossfire status page from the embedded design, on the OLED rotated so
-/// the interface runs along the long side. The title bar carries "Crossfire" and, on its subtitle
-/// row, the live device/hub line; the RX and TX labels show only while that traffic flows.
-/// Event-driven, unpaced: a mount or a burst of MIDI, not a clock. The toolkit invalidates only the
-/// widgets that changed, so a burst repaints the indicators alone rather than wiping the glass.
+/// The display: the crossfire interface from the embedded design, on the OLED rotated so it runs
+/// along the long side. Two pages the BOOTSEL button cycles between -- a status page (title bar with
+/// the live device/hub line, RX/TX labels that show only while that traffic flows) and a stats page
+/// (uptime and the forwarding counters). Event-driven, unpaced on the status page; the stats page
+/// redraws once a second so its uptime ticks. The toolkit invalidates only the widgets that changed,
+/// so a burst of MIDI repaints the indicators alone rather than wiping the glass.
 pub struct OledMod<B: SpiDisplayBus, C: Clock> {
         display: Display<'static, Sh1107<B>>,
         layer: &'static mut FrameLayer,
         font: Font<'static>,
         ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
-        /// The interface, parsed from the embedded blob; the status page is built from its root.
+        /// The interface, parsed from the embedded blob; each page is built from it on demand.
         lui: Lui<'static>,
         clock: C,
         /// The controller's RAM offset the panel sits at -- a board fact, handed in.
         display_offset: u8,
         events: Subscription,
         status: Status,
+        stats: StatsSnapshot,
+        /// Which design page is shown ([`PAGE_STATUS`]/[`PAGE_STATS`]).
+        page: usize,
+        /// When the stats page last redrew, for its once-a-second uptime tick.
+        stats_ms: u32,
         dirty: bool,
 }
 
@@ -238,12 +277,23 @@ impl<B: SpiDisplayBus, C: Clock> OledMod<B, C> {
                         Ok(l) => l,
                         Err(e) => panic!("the embedded UI does not parse: {e:?}"),
                 };
-                Self { display, layer, font, ui, lui, clock, display_offset, events: EVENTS.subscribe().expect("subscriber slot"), status: Status::default(), dirty: true }
+                Self { display, layer, font, ui, lui, clock, display_offset, events: EVENTS.subscribe().expect("subscriber slot"), status: Status::default(), stats: StatsSnapshot::default(), page: PAGE_STATUS, stats_ms: 0, dirty: true }
         }
 
-        /// Push the current status into the widget tree: the device/hub line onto the title bar's
+        /// Refresh whichever page is shown from the latest published data.
+        fn apply_page(&mut self) {
+                match self.page {
+                        PAGE_STATS => self.apply_stats(),
+                        _ => self.apply_status(),
+                }
+        }
+
+        /// Push the current status into the status page: the device/hub line onto the title bar's
         /// subtitle row, and the RX/TX labels' visibility from the indicators.
         fn apply_status(&mut self) {
+                if let Some(s) = STATUS.pop() {
+                        self.status = s;
+                }
                 if let Some(root) = self.ui.root() {
                         let s = self.status;
                         let mut line = StackString::<16>::new();
@@ -270,6 +320,50 @@ impl<B: SpiDisplayBus, C: Clock> OledMod<B, C> {
                         self.ui.set_visible(id, self.status.tx);
                 }
         }
+
+        /// Fill the stats page's rows: uptime read straight from the clock, the forwarding counters
+        /// from the latest published snapshot.
+        fn apply_stats(&mut self) {
+                if let Some(s) = STATS.pop() {
+                        self.stats = s;
+                }
+                let up_s = (log::now_us() / 1_000_000) as u32;
+                let mut line = StackString::<16>::new();
+                let _ = write!(line, "up {up_s}s");
+                if let Some(id) = self.ui.find(TAG_UP) {
+                        self.ui.set_text(id, line.as_str());
+                }
+                let mut line = StackString::<16>::new();
+                let _ = write!(line, "recv {}", self.stats.received);
+                if let Some(id) = self.ui.find(TAG_RECV) {
+                        self.ui.set_text(id, line.as_str());
+                }
+                let mut line = StackString::<16>::new();
+                let _ = write!(line, "fwd {}", self.stats.forwarded);
+                if let Some(id) = self.ui.find(TAG_FWD) {
+                        self.ui.set_text(id, line.as_str());
+                }
+        }
+
+        /// Cycle to the next page, sliding it in (forward for status->stats, back the other way), then
+        /// fill it from the current data.
+        fn show_next_page(&mut self) {
+                let target = if self.page == PAGE_STATUS { PAGE_STATS } else { PAGE_STATUS };
+                let back = target < self.page;
+                //   force one axis for both directions: the two pages have different layouts (row vs
+                // stack) whose layout-derived descents run different axes, which would slide the
+                // forward turn horizontally and the back turn vertically. A fixed descent plus the
+                // `back` flag gives a mirrored horizontal slide either way.
+                if let Some(p) = self.lui.page(target) {
+                        if let Err(e) = self.ui.navigate_lui(&p, back, Some(Descent::FromRight), |_, _: &LuiChild| None) {
+                                warn!("page {target} did not build: {e:?}");
+                                return;
+                        }
+                        self.page = target;
+                        self.stats_ms = (log::now_us() / 1000) as u32;
+                        self.apply_page();
+                }
+        }
 }
 
 impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
@@ -281,6 +375,11 @@ impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
                 self.display.init(&mut self.clock);
                 self.display.driver().clear(false);
                 self.layer.set_orientation(Rotation::R90, Flip::None);
+                //   region buffering: the forward page turn scrolls the outgoing page off this one 1 KB
+                // buffer to reveal the incoming, the back turn covers it -- a mirrored reveal/cover. The
+                // panel is 1 bpp, but under the R90 rotation the on-screen horizontal slide is a
+                // whole-row vertical buffer shift, which shift_region handles for Mono1.
+                self.display.set_region_buffering(true);
                 self.layer.set_frame_rate(FPS);
                 self.ui.fit(self.layer);
                 let root = self.lui.root();
@@ -293,7 +392,7 @@ impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
                         }
                         None => warn!("the crossfire design has no root page"),
                 }
-                self.apply_status();
+                self.apply_page();
                 self.ui.invalidate_all();
                 let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
                 self.ui.render(self.layer, &mut self.display, &style, log::now_us());
@@ -308,16 +407,23 @@ impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
                 }
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
+                                AppEvent::NavToggle => self.show_next_page(),
                                 AppEvent::Status | AppEvent::Indicators { .. } => self.dirty = true,
                                 AppEvent::Stats => info!("oled: {} frames, {} skipped, {} chunk timeouts", self.layer.frames(), self.layer.skipped, self.display.timeouts),
                                 _ => {}
                         }
                 }
-                if self.dirty {
-                        if let Some(s) = STATUS.pop() {
-                                self.status = s;
+                //   the stats page carries a live uptime, so tick it once a second; the status page is
+                // purely event-driven and never needs a periodic redraw
+                if self.page == PAGE_STATS {
+                        let now = (log::now_us() / 1000) as u32;
+                        if now.wrapping_sub(self.stats_ms) >= STATS_REFRESH_MS {
+                                self.stats_ms = now;
+                                self.dirty = true;
                         }
-                        self.apply_status();
+                }
+                if self.dirty {
+                        self.apply_page();
                         self.dirty = false;
                 }
                 let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
@@ -429,6 +535,47 @@ impl Module for ConsoleMod {
         }
 }
 
+/// The BOOTSEL button as the display's one navigation control: each press cycles the OLED to the
+/// next page. The board hands in its port's flash-safe reader (`light_rp2::shell::bootsel`) so this
+/// crate stays hardware-independent. Reading BOOTSEL briefly stops the world, so it is sampled at a
+/// modest rate rather than every pass, and a press is taken on the edge -- one page turn per push.
+pub struct NavMod {
+        pressed: fn() -> bool,
+        was_down: bool,
+        last_ms: u32,
+}
+
+impl NavMod {
+        pub fn new(pressed: fn() -> bool) -> Self {
+                Self { pressed, was_down: false, last_ms: 0 }
+        }
+}
+
+impl Module for NavMod {
+        fn name(&self) -> &'static str {
+                "nav"
+        }
+        fn poll(&mut self) -> Poll {
+                let now = (log::now_us() / 1000) as u32;
+                // ~20 Hz: a button needs no more, and each read is an interrupts-off window that a
+                // fast poll loop must not repeat needlessly while the USB host runs beside it
+                if now.wrapping_sub(self.last_ms) < 50 {
+                        return Poll::Idle;
+                }
+                self.last_ms = now;
+                let down = (self.pressed)();
+                if down && !self.was_down {
+                        self.was_down = true;
+                        let _ = EVENTS.publish(AppEvent::NavToggle);
+                        return Poll::Busy;
+                }
+                if !down {
+                        self.was_down = false;
+                }
+                Poll::Idle
+        }
+}
+
 /// Run crossfire on the parts a hardware module built, forever. The module allocates the
 /// big pieces where its memory map wants them (statics, not this core's stack) and hands
 /// in mutable borrows; this seals them into the runtime.
@@ -437,13 +584,15 @@ pub fn serve<H: Host, B: SpiDisplayBus, C: Clock, P: OutputPin>(
         oled: &mut OledMod<B, C>,
         led: &mut LedMod<P>,
         console: &mut ConsoleMod,
+        nav: &mut NavMod,
         idle: impl FnMut(),
 ) -> ! {
-        let mut rt: Runtime<4> = Runtime::new();
+        let mut rt: Runtime<5> = Runtime::new();
         rt.add(usb).expect("capacity");
         rt.add(oled).expect("capacity");
         rt.add(led).expect("capacity");
         rt.add(console).expect("capacity");
+        rt.add(nav).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; plug an instrument in");
         let result = rt.run(idle);

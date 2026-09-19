@@ -931,17 +931,20 @@ impl<'a> Canvas<'a> {
         /// Shift this buffer's OWN contents inside the physical rectangle `region` by `(dx, dy)`,
         /// in place, along exactly one axis (the other displacement zero). Content pushed past the
         /// region's far edge is dropped; the near strip the shift uncovers is left as it was, for
-        /// the caller to repaint. RGB565 only; `false` on a bad format, a region outside the
-        /// buffer, or a two-axis request.
+        /// the caller to repaint. `false` on a bad format/axis, a region outside the buffer, or a
+        /// two-axis request.
+        ///
+        /// RGB565 shifts either axis. Mono1 (1 bpp, eight pixels packed per byte along a row) shifts
+        /// only WHOLE ROWS vertically over byte-aligned columns -- a plain byte move; a horizontal
+        /// (within-row) shift is sub-byte and would need bit work (a PIO program, say), so it is
+        /// unsupported. A 90-degree-rotated panel's horizontal page slide is a vertical buffer shift,
+        /// which is exactly the case that lands here.
         ///
         /// This is what lets a page slide run on a SINGLE framebuffer: the outgoing image, already
         /// in the live buffer, is scrolled off region by region while the incoming page is painted
         /// into the uncovered strip -- the region-buffering alternative to capturing a whole second
         /// frame to blit from (see [`blit_offset`](Self::blit_offset), its two-buffer sibling).
         pub fn shift_region(&mut self, region: Region, dx: i32, dy: i32) -> bool {
-                if !self.format.is_rgb565() {
-                        return false;
-                }
                 if (dx != 0) == (dy != 0) {
                         // exactly one axis: a page slide runs one way at a time, and a two-axis
                         // in-place move would need an intermediate copy this primitive avoids
@@ -953,48 +956,75 @@ impl<'a> Canvas<'a> {
                         return false;
                 }
                 let stride = self.format.stride(self.phys_w);
-                const BPP: usize = 2;
-                if dy == 0 {
-                        //   each row shifts its own column run; copy_within is a memmove, so the
-                        // overlap between source and destination columns is handled
-                        let (cs0, cs1) = if dx > 0 { (x0, x1 - dx) } else { (x0 - dx, x1) };
-                        if cs1 < cs0 {
-                                return true; // shifted clean past the region: nothing survives
-                        }
-                        for y in y0..=y1 {
-                                let base = y as usize * stride;
-                                let s = base + cs0 as usize * BPP;
-                                let e = base + (cs1 + 1) as usize * BPP;
-                                let d = base + (cs0 + dx) as usize * BPP;
-                                self.buf.copy_within(s..e, d);
-                        }
-                } else {
-                        //   rows move whole; each copy is between two distinct rows, so the only
-                        // care is order -- write the rows nearest the destination edge first, or a
-                        // not-yet-read source row is clobbered
-                        let (rs0, rs1) = if dy > 0 { (y0, y1 - dy) } else { (y0 - dy, y1) };
-                        if rs1 < rs0 {
-                                return true;
-                        }
-                        let coloff = x0 as usize * BPP;
-                        let colbytes = (x1 - x0 + 1) as usize * BPP;
-                        let mut rows: [i32; 2] = [rs0, rs1];
-                        if dy > 0 {
-                                rows.swap(0, 1); // high row first
-                        }
-                        let step = if dy > 0 { -1 } else { 1 };
-                        let mut sy = rows[0];
-                        loop {
-                                let s = sy as usize * stride + coloff;
-                                let d = (sy + dy) as usize * stride + coloff;
-                                self.buf.copy_within(s..s + colbytes, d);
-                                if sy == rows[1] {
-                                        break;
+                match self.format {
+                        PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
+                                const BPP: usize = 2;
+                                if dy == 0 {
+                                        //   each row shifts its own column run; copy_within is a memmove, so the
+                                        // overlap between source and destination columns is handled
+                                        let (cs0, cs1) = if dx > 0 { (x0, x1 - dx) } else { (x0 - dx, x1) };
+                                        if cs1 < cs0 {
+                                                return true; // shifted clean past the region: nothing survives
+                                        }
+                                        for y in y0..=y1 {
+                                                let base = y as usize * stride;
+                                                let s = base + cs0 as usize * BPP;
+                                                let e = base + (cs1 + 1) as usize * BPP;
+                                                let d = base + (cs0 + dx) as usize * BPP;
+                                                self.buf.copy_within(s..e, d);
+                                        }
+                                } else {
+                                        //   rows move whole; each copy is between two distinct rows, so the only
+                                        // care is order -- write the rows nearest the destination edge first, or a
+                                        // not-yet-read source row is clobbered
+                                        let (rs0, rs1) = if dy > 0 { (y0, y1 - dy) } else { (y0 - dy, y1) };
+                                        if rs1 < rs0 {
+                                                return true;
+                                        }
+                                        let coloff = x0 as usize * BPP;
+                                        let colbytes = (x1 - x0 + 1) as usize * BPP;
+                                        self.shift_rows(rs0, rs1, dy, stride, coloff, colbytes);
                                 }
-                                sy += step;
+                                true
+                        }
+                        PixelFormat::Mono1 => {
+                                //   1 bpp: only a whole-row vertical shift over byte-aligned columns is a plain
+                                // byte move. A within-row (horizontal) shift is sub-byte -- unsupported here.
+                                if dy == 0 || x0 % 8 != 0 || (x1 + 1) % 8 != 0 {
+                                        return false;
+                                }
+                                let (rs0, rs1) = if dy > 0 { (y0, y1 - dy) } else { (y0 - dy, y1) };
+                                if rs1 < rs0 {
+                                        return true;
+                                }
+                                let coloff = (x0 / 8) as usize;
+                                let colbytes = ((x1 + 1) / 8 - x0 / 8) as usize;
+                                self.shift_rows(rs0, rs1, dy, stride, coloff, colbytes);
+                                true
                         }
                 }
-                true
+        }
+
+        /// Move the rows `rs0..=rs1` down by `dy` (a whole-row memmove of `colbytes` from `coloff`),
+        /// writing the rows nearest the destination edge first so a not-yet-read source row is never
+        /// clobbered. Shared by the RGB565 and Mono1 vertical shifts, which differ only in how the
+        /// column run maps to bytes.
+        fn shift_rows(&mut self, rs0: i32, rs1: i32, dy: i32, stride: usize, coloff: usize, colbytes: usize) {
+                let mut rows: [i32; 2] = [rs0, rs1];
+                if dy > 0 {
+                        rows.swap(0, 1); // high row first
+                }
+                let step = if dy > 0 { -1 } else { 1 };
+                let mut sy = rows[0];
+                loop {
+                        let s = sy as usize * stride + coloff;
+                        let d = (sy + dy) as usize * stride + coloff;
+                        self.buf.copy_within(s..s + colbytes, d);
+                        if sy == rows[1] {
+                                break;
+                        }
+                        sy += step;
+                }
         }
 
         /// Draw `text` with its cell's top-left at `origin`, ink in `fg`. Only ink is painted;
@@ -1375,6 +1405,25 @@ mod tests {
                 assert_eq!(ca.get(0, 1), 0x0100, "old row 0 -> row 1");
                 assert_eq!(ca.get(1, 2), 0x0200, "old row 1 -> row 2");
                 assert_eq!(ca.get(0, 3), 0x0300, "old row 2 -> row 3; old row 3 fell off");
+        }
+
+        #[test]
+        fn shift_region_moves_mono1_rows_vertically() {
+                //   1 bpp packs 8 px per byte along a row, so a whole-row vertical shift over
+                // byte-aligned (here full-width) columns is a plain byte move -- the case a
+                // 90-degree-rotated mono panel's horizontal page slide lands in
+                let mut buf = std::vec![0u8; PixelFormat::Mono1.buffer_len(8, 4)];
+                let mut c = Canvas::new(&mut buf, PixelFormat::Mono1, 8, 4);
+                // one lit pixel per row, a distinct column each, so a row move is legible
+                for y in 0..4u16 {
+                        c.set(i32::from(y + 2), i32::from(y), 1);
+                }
+                assert!(c.shift_region(Region::new(0, 0, 7, 3), 0, 1), "mono full-width vertical shift");
+                assert_eq!(c.get(2, 0), 1, "row 0 is the uncovered strip, unchanged");
+                assert_eq!(c.get(2, 1), 1, "old row 0 -> row 1");
+                assert_eq!(c.get(3, 2), 1, "old row 1 -> row 2");
+                assert_eq!(c.get(4, 3), 1, "old row 2 -> row 3");
+                assert_eq!(c.get(5, 3), 0, "old row 3 fell off");
         }
 
         #[test]

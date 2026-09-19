@@ -7,7 +7,7 @@
 #![no_std]
 
 use light_app_crossfire as app;
-use app::{ConsoleMod, LedMod, OledMod, UsbMod};
+use app::{ConsoleMod, LedMod, NavMod, OledMod, UsbMod};
 use light_core::{info, log, ConstStaticCell, Idle, StaticCell};
 use light_display::sh1107::Sh1107;
 use light_display::{Display, FrameLayer};
@@ -17,7 +17,7 @@ mod board;
 use board::*;
 use light_rp2::spi::Spi1Display;
 use light_rp2::tinyusb_midi::UsbMidiHost;
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{bootsel, panic_report, service_core1, ShellInfo};
 use light_rp2::{now_us, Breathe, Clocks, SysClock};
 
 /// 64x128 at 1 bpp: one kilobyte.
@@ -61,10 +61,11 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let oled_mod = OLED_MOD.init(OledMod::new(display, layer, font, THEME_BLOB, UI_BLOB, SysClock, OLED_DISPLAY_OFFSET));
         let mut led_mod = LedMod::new(p.led);
         let mut console_mod = ConsoleMod::new();
+        let mut nav_mod = NavMod::new(bootsel);
         let _ = (p.key0, p.key1);
 
         let mut idle = Breathe;
-        app::serve(usb_mod, oled_mod, &mut led_mod, &mut console_mod, move || idle.idle())
+        app::serve(usb_mod, oled_mod, &mut led_mod, &mut console_mod, &mut nav_mod, move || idle.idle())
 }
 
 #[cfg(target_os = "none")]

@@ -11,6 +11,16 @@
         { "label": "RX", "tag": 2 },
         { "label": "TX", "tag": 3 }
       ]
+    },
+    {
+      "title": "Stats",
+      "layout": "stack",
+      "gap": 1,
+      "children": [
+        { "label": "up 0s", "tag": 10 },
+        { "label": "recv 0", "tag": 11 },
+        { "label": "fwd 0", "tag": 12 }
+      ]
     }
   ]
 }
