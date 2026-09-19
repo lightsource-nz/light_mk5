@@ -22,7 +22,7 @@ against a mocked board.
 `light_core::hal` is the set of traits a port crate implements for a chip. The rest of the framework
 is written against these, never against a concrete peripheral. The core ones:
 
-- **`Clock`** — the monotonic time source: microsecond `now`, and blocking `delay_ms`. The port's
+- **`Clock`** — the monotonic time source: microsecond `now_us`, and blocking `delay_ms`. The port's
   `SysClock` implements it; a free `now_us` function is also exposed by the port for hot paths.
 - **`I2cBus`** — a byte-level I2C master (write, read, write-then-read), with an `I2cError`. A
   blanket impl for `&RefCell<B>` lets several drivers share one bus. Every I2C peripheral driver

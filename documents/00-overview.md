@@ -5,7 +5,7 @@ lightsource aotearoa. Every document here is normative: it defines the structure
 the framework's code implements. The documents are the source of truth; the code follows them.
 
 This set begins as an extraction of the **mark 4 status quo** — a faithful description of the
-framework as it exists in `light_mk4` today. It is then edited to define **mark 5**: what changes,
+predecessor (mark 4) framework as it exists today. It is then edited to define **mark 5**: what changes,
 what is added, what is removed. Where a document describes mk4 as-built, it says so; where it states
 a mk5 decision, it says so.
 
@@ -166,7 +166,7 @@ Portable crates, each depending only on those above it, never on a port:
     light-power-manager  portable idle/backlight power policy over a per-board mechanism
     light_ui_components  higher-level UI components integrating other layers (e.g. a file picker)
 
-Ports (target-only, chosen by the firmware, excluded from host tests):
+Ports (target-only, chosen by the firmware, in the firmware workspace — not host-tested):
 
     light-rp2         RP2040 (Cortex-M0+) and RP2350 (Cortex-M33 or Hazard3), one source over the pac
     light-stm32h7     STM32H743 over bare CMSIS

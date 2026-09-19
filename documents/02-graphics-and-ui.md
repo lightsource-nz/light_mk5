@@ -320,9 +320,10 @@ buffer the toolkit snaps them. mk5 keeps the slide on a **single buffer** by scr
 image off it in place, so a big panel drops the second frame without losing its slide.
 
 **The mechanism.** A board opts in with [`Display::set_region_buffering`](../crates/light-display) and
-supplies no back buffer; the toolkit's page step then runs the slide a third way beside the `Full`
-capture path (a back buffer to blit the outgoing from) and the `over` fallback (redraw the incoming at
-a shrinking offset):
+supplies no back buffer; the toolkit's page step then runs each half of the slide with a different
+single-buffer mechanic — the new in-place shift for the open reveal, and the existing `over` redraw
+(the incoming at a shrinking offset) for the close cover — rather than the `Full` capture path's
+blit-from-a-second-frame:
 
 - **A mirrored slide from two single-buffer mechanics.** A slide that reads right opens and closes as
   mirror images: on **open** the outgoing page slides *off* to reveal the child (a REVEAL); on **close**
@@ -367,18 +368,19 @@ nothing of touch controllers, buttons or IMUs), and exercisable entirely on the 
 
 ### mk5 decision — decompose the toolkit into modules
 
-*Decided for mk5 (proposal C).* mk4's toolkit is a single ~4.6k-line source file (with the LUI
-runtime and theme already split out), while `light-core` beside it is cleanly divided into focused
-modules. mk5 splits the toolkit the same way — a behaviour-preserving refactor that makes each part
-independently testable and stops the whole toolkit recompiling for a one-line change. The proposed
-modules (to be refined in the doing):
+*Decided and implemented for mk5 (proposal C).* mk4's toolkit was a single ~4.6k-line source file
+(with the LUI runtime and theme already split out), while `light-core` beside it is cleanly divided
+into focused modules. mk5 split the toolkit the same way — a behaviour-preserving, move-only refactor
+(the test suite unchanged) that makes each part independently testable. `lib.rs` keeps the `Ui`
+context, the arena/tree fundamentals, the mutation setters and the tests; the rest moved out to:
 
 - `model` — the widget types (`Widget`, `Kind`, `Window`, `Button`, `Label`, `WidgetId`, `Nav`,
   `Layout`, `Axis`, `Descent`, `Shade`, `TextSlot`, `IndicatorShape`).
 - `desc` — the declarative descriptors (`Page`, `Desc`, the `file_list!` macro).
 - `style` — `Style`/`Fonts`/`FontRole` (the theme applied at paint; the LTH parser stays in `theme`).
 - `layout` — the stack/row/linear layouts, the axis, relayout, the shared `viewport`.
-- `scroll` — scrolling and the scroll clamp.
+- `scrolling` — scrolling and the scroll clamp (named `scrolling`, not `scroll`, so it does not
+  shadow the public `scroll` flags module in `model`).
 - `input` — the tap-versus-drag state machine, swipe classification, focus, activate (the largest
   single piece today, ~800 lines).
 - `nav` — navigation (`navigate`/`_returning`/`_back`) and the parent-based back model.

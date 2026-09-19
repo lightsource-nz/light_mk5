@@ -53,10 +53,12 @@ Three rules define the boundary:
    application. A port's constructors take pin numbers and clock rates as arguments; they assume no
    pinout.
 
-3. **A port is excluded from host tests.** Its code reads real registers, so it compiles and runs
-   only for `target_os = "none"`. The register-touching modules are gated behind that `cfg` (or are
-   simply never built for the host), and `cargo test` exercises the portable crates against a mocked
-   board, never a port.
+3. **A port is not host-tested.** Its code reads real registers, so it compiles and runs only for
+   `target_os = "none"`. The register-touching modules are gated behind that `cfg` (or are simply
+   never built for the host), and — because the ports are members of the firmware workspace, not the
+   portable one (see [10-build-and-release.md](10-build-and-release.md)) — `cargo test` on the
+   portable workspace exercises the portable crates against a mocked board and never reaches a port,
+   with no exclude list to maintain.
 
 The `hal` traits a port implements are `Clock`, `Idle`, `OutputPin`, `InputPin`, `I2cBus`,
 `SpiBus`, `SpiDisplayBus`, `QspiDisplayBus`, `AudioStream` and `BlockDevice` — the exact set a given
@@ -316,10 +318,12 @@ shell does that work itself on core 1; either left on would have the SDK do it f
 a `ShellInfo` accessor, the `service_core1` pump (log drain plus console pump), `panic_report`, and
 the core-0 stack watermark — are identical for every board on a given shell. In mk4 one board's
 support crate carried them, so any other board would have to copy them. In mk5 they live in a `shell`
-module in the port crate (`light-rp2` for the RP2 shell; each STM32 port for its single-core
-analogue, which has no `service_core1`), shared by every board and app on that port. A board's
-instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry points that call
-in. See [09-application-model.md](09-application-model.md).
+module in the port crate, shared by every board and app on that port. Implemented in `light-rp2`
+(`light_rp2::shell`), which the RP2 touch boards use; the STM32 ports have no such module yet, so a
+bare-CMSIS board's instantiation crate still carries its own single-core glue (a `service_core1`-free
+analogue) — moving it into each STM32 port is the same decision, not yet applied. Where the port
+provides the module, a board's instantiation crate keeps only the thin `#[no_mangle]` /
+`#[panic_handler]` entry points that call in. See [09-application-model.md](09-application-model.md).
 
 ## The bare-CMSIS shell (`light_mk4_shell_cmsis`)
 

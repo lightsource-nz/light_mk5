@@ -84,8 +84,9 @@ path — *not* a codec/`AudioStream`) and a full card recorder (in the dictaphon
 The decision first proposed lifting a small codec-plus-`AudioStream` **player primitive** into
 `light-audio`. On inspection there is nothing clean to lift, and it would dedup nothing:
 
-- The only codec + `AudioStream` consumer is the 3.49 widget demo, and even there the `AudioMod` is a
-  player *and* recorder — the demo records too. The 1.69's audio is the PWM piezo, a different path.
+- The only codec + `AudioStream` consumer is the codec board's widget demo, and even there the
+  `AudioMod` is a player *and* recorder — the demo records too. A board with only a piezo drives the
+  PWM tone path instead, a different path.
 - The recorder is *already* a reusable generic crate: `light_dictaphone_core::AudioMod<S, B, A, P, C,
   X>` is generic over the card (`Store`), codec bus (`I2cBus`), transport (`AudioStream`), amp pin,
   clock, and board event. Any app can depend on it today.
@@ -110,8 +111,9 @@ BCLK/LRCLK as a slave data-out.
 
 ### The `AudioStream` trait (the contract)
 
-- **Output, prefetch-ring model.** `stream_free() -> usize` reports the ring's contiguous free
-  words; `stream_push(fill)` hands `fill` that free region and commits however many words it wrote;
+- **Output, prefetch-ring model.** `start()` brings the output stream up, called once at the owning
+  module's load; `stream_free() -> usize` reports the ring's contiguous free words; `stream_push(fill)`
+  hands `fill` that free region and commits however many words it wrote;
   `stream_pending() -> usize` reports words still queued but not yet drained by the transport (zero
   means the last sample has reached the DMA — how a finishing track knows its tail has played);
   `stream_clear()` discards everything queued at once, so a Stop stops now rather than after the

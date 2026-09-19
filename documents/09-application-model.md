@@ -29,10 +29,10 @@ From portable to tangible:
 
 2. **The board-support crate** — everything specific to a board but independent of which app runs on
    it: the pin map and peripheral hand-over (`board::take` yielding a taken-once `Peripherals`), the
-   default power behaviour, the shell ABI glue, and any board-generic runtime modules. It must NOT
-   depend on an application crate. A typical one holds `board` (pins, constants, `Peripherals`,
-   `take`), a `PowerManager`, the `shell` module (the ABI glue every app on that board shares), and
-   generic `TouchMod`/`ImuMod` modules over the `light_input::BoardEvent` trait.
+   board's `PowerMechanism`, and the board's coordinate/axis maps. It must NOT depend on an
+   application crate. It is board-specific *only*: the Rust shell glue lives in the port's `shell`
+   module (see [07-ports-and-shell.md](07-ports-and-shell.md)) and the generic `TouchMod`/`ImuMod`
+   modules live in `light-input`, so this crate wires drivers, not modules (the mk5 decisions below).
 
 3. **The per-board instantiation crate** — the crate the firmware executable links (a `staticlib`).
    It constructs the concrete peripherals, embeds the compiled assets, wires the portable app's
@@ -135,9 +135,10 @@ assets-as-data path a font (LGF) or theme (LTH) blob takes. See
   differs — one shared design takes per-board overrides (device size, titles, touch-target metrics).
   The widget demo's four boards share one `light_app_ui_demo/design.json` with a small per-board
   override each.
-- The toolkit exposes both paths behind a `UiSource` (`Const` — a hand-written page tree — or `Blob`
-  — an LUI design). An app can run either; the const path remains for interfaces not yet expressed
-  as data.
+- Every interface is authored as data: an app hands the display module a parsed LUI `Blob`. The
+  toolkit's hand-written page-tree API (`Page`/`Desc`/`navigate`/`build`) is retired as an app-facing
+  construction path — no app uses it — but stays available as the machinery behind the `file_list!`
+  list helper and the toolkit's own tests (the mk5 decision below).
 
 An app maps a design's event ids to its own events with a small `ui_event`/`map_child` function; the
 navigation (`goto`/`back`) and the transition (`descent`) come from the blob. The design's event ids
@@ -167,12 +168,15 @@ uses against `light_app_ui_demo`. Every interface is authored as data.
 ## The board-generic modules seam
 
 Runtime modules that read board hardware but produce app-generic events — the touch and IMU modules —
-live in the board-support crate, generic over the app's event type through the `light_input::BoardEvent`
-trait (touch/gesture/orientation constructors, `is_stats`/`drag_consumed` inspectors, see
-[03-input.md](03-input.md)). On a board that shares them, several apps (for example a dictaphone and
-the widget demo) use the same `TouchMod`/`ImuMod`. Modules that consume app-specific extension events
-(the RTC, the audio, the power/board module) stay in the app or the shared app-board crate, since
-they are app-coupled.
+are the generic `TouchMod`/`ImuMod` in `light-input`, instantiated in the board-support crate over
+that board's drivers, clock and axis map. They are generic over the app's event type through the
+`light_input::BoardEvent` trait (touch/gesture/orientation constructors, `is_stats`/`drag_consumed`
+inspectors, see [03-input.md](03-input.md)), so on a board that shares them several apps (for example
+a dictaphone and the widget demo) use the same modules. Modules that consume app-specific extension
+events (the RTC, the audio, the power module) stay in the app or the shared app-board crate, since
+they are app-coupled — and read those events through recognizer functions, not a trait, because the
+orphan rule forbids implementing a framework trait on the app's extension type (see
+[06-power-and-time.md](06-power-and-time.md)).
 
 ### mk5 decision — the reusable runtime modules are framework, not per-app
 

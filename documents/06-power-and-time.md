@@ -261,16 +261,19 @@ only behaviour gated on "on external power", the single yes/no question the boar
 
 ### mk5 decision — the power lifecycle is a framework runtime module
 
-*Decided for mk5 (proposal B).* mk4 wrapped `PowerManager` in a per-app "board" module and copied it
-into every app (five near-identical copies), fused with unrelated storage and PSRAM diagnostic
-console commands. mk5 promotes the power lifecycle to a framework runtime module — a
-`PowerMod<M: PowerMechanism, C: Clock, …>` in `light-power-manager` that runs `on_load` / `tick` /
+*Decided and implemented for mk5 (proposal B).* mk4 wrapped `PowerManager` in a per-app "board" module
+and copied it into every app (five near-identical copies), fused with unrelated storage and PSRAM
+diagnostic console commands. mk5 promotes the power lifecycle to a framework runtime module — a
+`PowerMod<M: PowerMechanism, C: Clock, A>` in `light-power-manager` that runs `on_load` / `tick` /
 `on_unload`, applies backlight commands, and reports battery and external-power stats — generic over
-the board's mechanism, a clock, and the app event through a small power-event trait (the
-backlight/stats recognisers), the same pattern [`BoardEvent`](03-input.md) established for input. The
-storage and PSRAM diagnostics that mk4 fused into that module are a separate concern and are
-**unfused** — they move to where storage lives, or remain app console commands. An app then adds the
-module, not a hand-written copy.
+the board's mechanism, a clock, and the app event. It reads that event through three **recognizer
+functions**, not a trait — `backlight_of: fn(&A) -> Option<u16>`, `is_stats: fn(&A) -> bool`, and
+`busy_of: fn(&A) -> Option<bool>` (the last defers the on-battery power-off while audio is in flight)
+— for the same reason the RTC does (see the implementation note below): the events live in the app's
+extension type, which the orphan rule forbids implementing a framework trait on. The storage and
+PSRAM diagnostics that mk4 fused into that module are a separate concern and are **unfused** — they
+move to where storage lives, or remain app console commands. An app then adds the module, not a
+hand-written copy.
 
 ## `light-rtc` — real-time clock
 

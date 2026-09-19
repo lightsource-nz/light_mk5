@@ -6,8 +6,9 @@
 //! Data is fed by PING-PONG DMA, never by polled FIFO writes: the four-word TX FIFO holds
 //! 83 us of audio at 24 kHz and a single display draw is two hundred times that, which on
 //! hardware was perfectly audible as chop. Two buffers chained through two DMA channels
-//! carry ~21 ms each; the application refills whichever one completed on its own schedule,
-//! and a stream that starves anyway is counted, not guessed about.
+//! carry ~85 ms each (STREAM_WORDS frames), refilled from the DMA-completion interrupt out of
+//! a larger prefetch ring the poll loop tops up; a stream that starves the ring is counted,
+//! not guessed about.
 //!
 //! Two hand-assembled programs on PIO1 (the C shell owns pioasm; this crate owns registers):
 //!

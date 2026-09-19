@@ -13,14 +13,18 @@ instantiate against, so they come first.
 
 ---
 
-## A. Generalize the board-support layer to every board — *decided*
+## A. Generalize the board-support layer to every board — *implemented (touch boards)*
 
-> **Decided (mk5), design recorded** in [09](09-application-model.md#) (required board layering),
-> [07](07-ports-and-shell.md#) (shell glue as a `shell` module in the port), and
-> [03](03-input.md#) (generic input runtime modules + a `TouchController` trait). Per the A/B split
-> decision, A also folds in the generic input-module extraction, so board crates become
-> board-specific-only immediately; B covers the remaining app-coupled modules (RTC, audio, power).
-> **Not yet applied to code.**
+> **Implemented (mk5) for the touch/RP2 boards**, design in [09](09-application-model.md#) (required
+> board layering), [07](07-ports-and-shell.md#) (shell glue as a `shell` module in the port), and
+> [03](03-input.md#) (generic input runtime modules + a `TouchController` trait). Shipped: four
+> `light-board-<board>` crates (board-specific only — pins, `Peripherals`/`take`, the board's
+> `PowerMechanism`, coord/axis maps); the generic `TouchMod`/`ImuMod` in `light-input` over a new
+> `TouchController` trait; and the Rust shell glue as `light_rp2::shell`. Per the A/B split, A also
+> folded in the generic input-module extraction (board crates became board-specific-only at once); B
+> covered the remaining app-coupled modules (RTC, audio, power). **Rolled out to the touch boards
+> only** — the non-touch RP2/STM32 boards keep the old inline pattern, and the STM32 ports have no
+> `shell` module yet (their instantiation crates still carry the glue). Those are a later pass.
 
 - **Status quo (mk4).** The app-agnostic board-support crate — pin map and peripheral hand-over,
   shell ABI glue, and board-generic input modules — exists for a *single* board. Every other board
@@ -53,7 +57,9 @@ instantiate against, so they come first.
 > trait in `light-rtc`), [04](04-audio-and-midi.md#) (a framework audio-*player* primitive in
 > `light-audio`; the card recorder stays a reusable app-level engine), and [09](09-application-model.md#)
 > (the seam). Each module is generic over its driver/mechanism, a clock, and the app event via a small
-> per-subsystem event trait, extending the `BoardEvent` pattern. **Not yet applied to code.**
+> per-subsystem event trait, extending the `BoardEvent` pattern. *(Original design — superseded by
+> the implementation notes above: recognition is by function pointer, not a trait, and the audio
+> player was not extracted.)*
 
 - **Status quo (mk4).** The generic input modules are shared but live in one board crate; the
   RTC, audio, and power modules are app-coupled and re-implemented per application.
@@ -66,11 +72,14 @@ instantiate against, so they come first.
   [06-power-and-time.md](06-power-and-time.md), [04-audio-and-midi.md](04-audio-and-midi.md),
   [01-core-runtime.md](01-core-runtime.md) (module model).
 
-## C. Decompose `light-ui` — *decided*
+## C. Decompose `light-ui` — *implemented*
 
-> **Decided (mk5), design recorded** in [02](02-graphics-and-ui.md#) — split the ~4.6k-line toolkit
-> into focused modules (model, desc, style, layout, scroll, input, nav, anim, render; lui/theme
-> already separate), mirroring `light-core`. Behaviour-preserving refactor. **Not yet applied to code.**
+> **Implemented (mk5)**, design in [02](02-graphics-and-ui.md#). The ~4.6k-line toolkit `lib.rs` was
+> split into nine focused sibling modules — `model`, `desc`, `style`, `layout`, `scrolling`, `input`,
+> `nav`, `anim`, `render` (`lui`/`theme` already separate) — mirroring `light-core`; `lib.rs` keeps the
+> `Ui` context, arena/tree fundamentals and tests. Behaviour-preserving (verified move-only, the
+> 39-test suite unchanged). The scroll-*methods* module is `scrolling` so it does not shadow the public
+> `scroll` flags module.
 
 - **Status quo (mk4).** The widget toolkit is a single ~4.6k-line source file (plus the LUI runtime
   and theme). By contrast `light-core` is cleanly split into focused ~100–400-line modules.

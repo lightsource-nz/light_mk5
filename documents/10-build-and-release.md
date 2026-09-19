@@ -127,8 +127,9 @@ in only that firmware's one port) — the shape Corrosion uses.
 
 ## Versioning and releases
 
-- One version for the whole workspace (`[workspace.package].version`), bumped in the commit a
-  release tags. Every crate carries `license = "MIT"` and the workspace version.
+- One version across both workspaces: each carries the same `[workspace.package].version` literal
+  (cargo cannot inherit one across workspaces), bumped together in the commit a release tags. Every
+  crate carries `license = "MIT"` and its workspace's version.
 - The project derives its version from git, and can require a framework version that has the
   features it uses (`light_project_version()` / `light_require_project_version()`); the floor is the
   higher of the C and CMake needs.
@@ -143,4 +144,6 @@ in only that firmware's one port) — the shape Corrosion uses.
   separate asset build, no checked-in blobs, and editing a design rebuilds exactly the firmware that
   embeds it.
 - **The host test surface is the portable crates only**, by construction: the ports and the
-  board-linked crates are excluded so a single `cargo test` invocation has one coherent feature set.
+  board-linked crates are not members of the portable workspace — they live in the firmware workspace
+  — so a single `cargo test` invocation over the portable root has one coherent feature set, with no
+  port to exclude (only the two desktop GUI tools, which have no tests).

@@ -1,6 +1,6 @@
 # Storage — `light-sd`, `light-fs`
 
-This document extracts the **mark 4 status quo**: the storage stack as `light_mk4` builds it today.
+This document extracts the **mark 4 status quo**: the storage stack as the mark-4 framework builds it today.
 
 The stack is two portable crates joined by one HAL trait. `light-sd` brings up an SD/TF card in
 SPI mode and presents it as blocks; `light-fs` reads and writes a FAT16/FAT32 filesystem over any

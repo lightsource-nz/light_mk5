@@ -29,21 +29,24 @@ This document describes the crate as built in mk4.
 
 ## Public surface
 
-- `TouchSample` — the canonical raw touch sample, `pub use cst816t::Event`. Every touch driver
-  re-exports this one type, so gesture tracking and the `BoardEvent` contract are
-  controller-independent.
-- `touch::{Gesture, Swipe, Tracker, HardwareGestures}` — the swipe directions, the settled gesture
-  record, the software tracker, and the trait a controller with its own gesture engine implements.
-- `cst816t::{Cst816t, Event, I2C_ADDR, CHIP_ID, …}`, `cst328::Cst328`, `gt911::{Gt911, CoordMap}`,
-  `axs15231b::{Axs15231bTouch, CoordMap}` — the touch-controller drivers and their coordinate maps.
+- `TouchSample` — the canonical raw touch sample, defined in `touch` and re-exported at the crate
+  root. Every touch driver re-exports this one type as its own `Event`, so gesture tracking and the
+  `BoardEvent` contract are controller-independent.
+- `touch::{Gesture, Swipe, Tracker, HardwareGestures, TouchController, TouchDiagnostics}` — the swipe
+  directions, the settled gesture record, the software tracker, the trait a controller with its own
+  gesture engine implements, the trait every driver implements (`probe`/`poll`/`diagnostics` plus a
+  default-no-op `reset`), and its diagnostics record.
+- `drivers::{cst816t::{Cst816t, Event, I2C_ADDR, CHIP_ID, …}, cst328::Cst328, gt911::{Gt911, CoordMap},
+  axs15231b::{Axs15231bTouch, CoordMap}}` — the touch-controller drivers and their coordinate maps,
+  grouped under `drivers`.
 - `imu::{Imu, ImuDriver, Sample, AxisMap, Orientation, scale_sample, AXES, X, Y, Z}` — the IMU model,
   the driver trait it wraps, the sample and axis-map types, the orientation enum, and the shared
   fixed-point scaling helper.
-- `qmi8658::Qmi8658` — the QMI8658C driver, an `ImuDriver` implementation.
+- `drivers::qmi8658::Qmi8658` — the QMI8658C driver, an `ImuDriver` implementation.
 - `BoardEvent` — the HAL trait an application's event enum implements so a board's generic input
   modules can raise events on its bus.
 
-## The canonical touch sample — `cst816t::Event`
+## The canonical touch sample — `TouchSample`
 
 Every touch controller, whatever its wire protocol, reports the same four-variant event, and the
 rest of the crate is written against it:
@@ -63,8 +66,9 @@ each driver tracks only the first contact and reports one finger's life as `Down
 `Move`s, then `Up`. `Reset` is not a finger event; it surfaces the recovery reset (where a driver has
 one) so the caller can count it and re-probe the chip.
 
-The type lives in `cst816t` for historical reasons and is re-exported as `TouchSample` at the crate
-root and as `Event` by each of the other three drivers; they are all the same type.
+The type is `TouchSample`, defined in `touch` and re-exported at the crate root; each of the four
+drivers re-exports it as its own `Event` (`pub use crate::TouchSample as Event`), so they are all the
+same type.
 
 ## The gesture tracker — `touch::Tracker`
 
@@ -334,18 +338,20 @@ which the tracker's `suppress` (via `drag_consumed`) and the drivers' `stats` di
 
 ## mk5 decision — generic input runtime modules, and a `TouchController` trait
 
-*Decided for mk5.* The touch and IMU **runtime modules** (`TouchMod`/`ImuMod` — the `Module`
-implementations that poll the hardware each pass and publish `BoardEvent`s on the app's bus) become
-part of `light-input`, so a board wires *drivers*, not *modules*. In mk4 they lived in a
-board-support crate and, though generic over the app event, hardcoded the concrete drivers, the
-port's clock, and the board's axis map. mk5 makes them generic over:
+*Decided and implemented for mk5.* The touch and IMU **runtime modules** (`TouchMod`/`ImuMod` — the
+`Module` implementations that poll the hardware each pass and publish `BoardEvent`s on the app's bus)
+now live in `light-input` (`light_input::module`), so a board wires *drivers*, not *modules*. In mk4
+they lived in a board-support crate and, though generic over the app event, hardcoded the concrete
+drivers, the port's clock, and the board's axis map. mk5 makes them generic over:
 
-- the **touch controller**, through a new **`TouchController` trait** — `poll(now_ms) -> Option<TouchSample>`,
-  `probe`, the diagnostic failure counters, and `HardwareGestures` — which the four reference touch
-  drivers implement (mirroring the existing `ImuDriver` on the IMU side); a consumer's own controller
-  implements the same trait and drops straight into `TouchMod`;
-- the **IMU driver**, through the existing `ImuDriver` (`ImuMod<A, D: ImuDriver>`);
-- the **clock**, through `light_core::hal::Clock` rather than a port's free function;
+- the **touch controller**, through a **`TouchController` trait** — `poll(now_ms) -> Option<TouchSample>`,
+  `probe`, `diagnostics` (the failure counters), and a default-no-op `reset(clock)` a reset-capable
+  part overrides — which the four reference touch drivers implement (mirroring the existing
+  `ImuDriver` on the IMU side); a consumer's own controller implements the same trait and drops
+  straight into `TouchMod<A, T, C>`;
+- the **IMU driver**, through the existing `ImuDriver` (`ImuMod<A, D, C>`);
+- the **clock**, through `light_core::hal::Clock` rather than a port's free function (the `C`
+  parameter above);
 - the **app event**, through `BoardEvent`, as before.
 
 The board supplies the constructed driver, the axis map, and the clock; the module names no board and
