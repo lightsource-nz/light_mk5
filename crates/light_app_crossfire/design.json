@@ -1,0 +1,16 @@
+{
+  "device": { "width": 128, "height": 64, "corner_radius": 6 },
+  "root": 0,
+  "pages": [
+    {
+      "title": "Crossfire",
+      "subtitle": true,
+      "layout": "row",
+      "gap": 6,
+      "children": [
+        { "label": "RX", "tag": 2 },
+        { "label": "TX", "tag": 3 }
+      ]
+    }
+  ]
+}

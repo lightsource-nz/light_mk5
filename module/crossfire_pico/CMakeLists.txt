@@ -31,4 +31,16 @@ light_mk4_add_font(crossfire_pico_font
         CRATE light_app_crossfire_pico ENV LIGHT_FONT_LGF
 )
 
+#   the look-and-feel and the interface as data, shared with the Pico 2 crossfire: the framework
+# MONO default with this OLED's rounding, and the crossfire status page -- both live beside the
+# application crate, embedded by it through the two env vars
+light_mk4_add_theme(crossfire_pico_theme MONO
+        THEME ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_crossfire/theme.json
+        CRATE light_app_crossfire_pico ENV LIGHT_THEME_LTH
+)
+light_mk4_add_ui(crossfire_pico_ui
+        UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_crossfire/design.json
+        CRATE light_app_crossfire_pico ENV LIGHT_UI_LUI
+)
+
 light_mk4_shell_configure(crossfire_pico USB_HOST)

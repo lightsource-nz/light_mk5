@@ -13,12 +13,13 @@
 
 use core::fmt::Write;
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
-use light_core::{info, log, warn, Clock, EventBus, LineReader, Mailbox, Module, OutputPin, Poll, Runtime, SpiDisplayBus, Subscription};
+use light_core::{info, log, warn, Clock, ConstStaticCell, EventBus, LineReader, Mailbox, Module, OutputPin, Poll, Runtime, SpiDisplayBus, Subscription};
 use light_display::sh1107::Sh1107;
-use light_display::{Display, FrameLayer, LogicalRegion, UpdateError};
-use light_draw::{Flip, Point, Rotation};
+use light_display::{Display, FrameLayer, UpdateError};
+use light_draw::{Flip, Rotation};
 use light_font::Font;
 use light_midi::{Forwarder, Host, MidiEvent};
+use light_ui::{Fonts, Lui, LuiChild, Style, Theme, Ui};
 
 /// USB device slots the engine tracks: TinyUSB's CFG_TUH_MIDI, which every hardware
 /// module's tusb_config.h sets to the same four. The engine indexes its table with the
@@ -190,70 +191,84 @@ impl<H: Host> Module for UsbMod<H> {
         }
 }
 
-/// The status display: two lines of text and the RX/TX indicators, on the OLED rotated so the
-/// text runs along the long side. Event-driven, unpaced: a mount or a burst of MIDI, not a clock.
-/// The indicator band is pushed on its own when only an indicator changed -- under the rotation
-/// it is a handful of the panel's columns, and pushing the whole panel for it would visibly wipe
-/// across the glass on every burst.
+/// The widgets the status page holds: the window and its two indicator labels.
+const UI_WIDGETS: usize = 4;
+/// The status page's tags, matching design.json's `tag`s.
+const TAG_RX: u8 = 2;
+const TAG_TX: u8 = 3;
+/// The status is event-driven, but the frame layer is polled at a steady rate so a chunked
+/// push runs to completion.
+const FPS: u32 = 20;
+
+/// The status display: the crossfire status page from the embedded design, on the OLED rotated so
+/// the interface runs along the long side. The title bar carries "Crossfire" and, on its subtitle
+/// row, the live device/hub line; the RX and TX labels show only while that traffic flows.
+/// Event-driven, unpaced: a mount or a burst of MIDI, not a clock. The toolkit invalidates only the
+/// widgets that changed, so a burst repaints the indicators alone rather than wiping the glass.
 pub struct OledMod<B: SpiDisplayBus, C: Clock> {
         display: Display<'static, Sh1107<B>>,
         layer: &'static mut FrameLayer,
         font: Font<'static>,
+        ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
+        /// The interface, parsed from the embedded blob; the status page is built from its root.
+        lui: Lui<'static>,
         clock: C,
         /// The controller's RAM offset the panel sits at -- a board fact, handed in.
         display_offset: u8,
         events: Subscription,
         status: Status,
         dirty: bool,
-        indicators_only: bool,
 }
 
-const INDICATOR_SIZE: i32 = 12;
-const INDICATOR_TX_X: i32 = 20;
-
 impl<B: SpiDisplayBus, C: Clock> OledMod<B, C> {
-        pub fn new(display: Display<'static, Sh1107<B>>, layer: &'static mut FrameLayer, font: Font<'static>, clock: C, display_offset: u8) -> Self {
-                Self { display, layer, font, clock, display_offset, events: EVENTS.subscribe().expect("subscriber slot"), status: Status::default(), dirty: true, indicators_only: false }
+        /// Build the status module from the board's display parts and the embedded asset blobs. The
+        /// theme and interface blobs are parsed here: a bad blob is a build-system bug worth halting
+        /// on, like the font the hardware module parses.
+        pub fn new(display: Display<'static, Sh1107<B>>, layer: &'static mut FrameLayer, font: Font<'static>, theme_blob: &'static [u8], ui_blob: &'static [u8], clock: C, display_offset: u8) -> Self {
+                // in .bss, built in place: the widget arena is a good part of core 0's small stack
+                static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+                let ui = UI.take();
+                let theme = match Theme::parse(theme_blob) {
+                        Ok(t) => t,
+                        Err(e) => panic!("the embedded theme does not parse: {e:?}"),
+                };
+                layer.bg = theme.bg;
+                ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
+                let lui = match Lui::parse(ui_blob) {
+                        Ok(l) => l,
+                        Err(e) => panic!("the embedded UI does not parse: {e:?}"),
+                };
+                Self { display, layer, font, ui, lui, clock, display_offset, events: EVENTS.subscribe().expect("subscriber slot"), status: Status::default(), dirty: true }
         }
 
-        fn indicator_y(&self) -> i32 {
-                2 * i32::from(self.font.cell_height()) + 4
-        }
-
-        fn frame(&mut self) -> bool {
-                let font = self.font;
-                let s = self.status;
-                let y = self.indicator_y();
-                let Some(mut c) = self.layer.frame_begin(&mut self.display, log::now_us()) else { return false };
-                c.text(&font, Point::new(0, 0), "Crossfire");
-                let mut line = StackString::<16>::new();
-                if s.hub_addr != 0 {
-                        // which ports are occupied rather than how many devices: with four
-                        // sockets in front of you that is the question you have
-                        let _ = line.write_str("hub ");
-                        for (i, p) in s.ports.iter().enumerate() {
-                                let _ = line.write_char(if *p { (b'1' + i as u8) as char } else { '-' });
+        /// Push the current status into the widget tree: the device/hub line onto the title bar's
+        /// subtitle row, and the RX/TX labels' visibility from the indicators.
+        fn apply_status(&mut self) {
+                if let Some(root) = self.ui.root() {
+                        let s = self.status;
+                        let mut line = StackString::<16>::new();
+                        if s.hub_addr != 0 {
+                                // which ports are occupied rather than how many devices: with four
+                                // sockets in front of you that is the question you have
+                                let _ = line.write_str("hub ");
+                                for (i, p) in s.ports.iter().enumerate() {
+                                        let _ = line.write_char(if *p { (b'1' + i as u8) as char } else { '-' });
+                                }
+                        } else {
+                                // no space after the colon: the framed header fits nine cells of
+                                // this font, and "devices: N" is ten -- the last cell (the count)
+                                // falls off the rounded corner's inset. Dropping the space keeps
+                                // the word, the colon and the count.
+                                let _ = write!(line, "devices:{}", s.mounted);
                         }
-                } else {
-                        let _ = write!(line, "devices: {}", s.mounted);
+                        self.ui.set_subtitle(root, line.as_str());
                 }
-                c.text(&font, Point::new(0, i32::from(font.cell_height())), line.as_str());
-                if s.rx {
-                        c.rect(Point::new(0, y), Point::new(INDICATOR_SIZE, y + INDICATOR_SIZE), true);
+                if let Some(id) = self.ui.find(TAG_RX) {
+                        self.ui.set_visible(id, self.status.rx);
                 }
-                if s.tx {
-                        c.rect(Point::new(INDICATOR_TX_X, y), Point::new(INDICATOR_TX_X + INDICATOR_SIZE, y + INDICATOR_SIZE), true);
+                if let Some(id) = self.ui.find(TAG_TX) {
+                        self.ui.set_visible(id, self.status.tx);
                 }
-                drop(c);
-                if self.indicators_only {
-                        self.layer.invalidate(LogicalRegion::new(0, y, INDICATOR_TX_X + INDICATOR_SIZE, y + INDICATOR_SIZE));
-                } else {
-                        self.layer.invalidate_all();
-                }
-                self.layer.frame_end(&mut self.display);
-                self.dirty = false;
-                self.indicators_only = true;
-                true
         }
 }
 
@@ -266,9 +281,22 @@ impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
                 self.display.init(&mut self.clock);
                 self.display.driver().clear(false);
                 self.layer.set_orientation(Rotation::R90, Flip::None);
-                self.dirty = true;
-                self.indicators_only = false;
-                self.frame();
+                self.layer.set_frame_rate(FPS);
+                self.ui.fit(self.layer);
+                let root = self.lui.root();
+                match self.lui.page(root) {
+                        Some(p) => {
+                                // a status readout: the design carries no actions, so no child emits
+                                if let Err(e) = self.ui.build_lui_with(&p, |_, _: &LuiChild| None) {
+                                        warn!("the status page did not build: {e:?}");
+                                }
+                        }
+                        None => warn!("the crossfire design has no root page"),
+                }
+                self.apply_status();
+                self.ui.invalidate_all();
+                let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
+                self.ui.render(self.layer, &mut self.display, &style, log::now_us());
                 info!("status display up: {}px font", self.font.pixel_size());
                 Ok(())
         }
@@ -280,11 +308,7 @@ impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
                 }
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                AppEvent::Status => {
-                                        self.dirty = true;
-                                        self.indicators_only = false;
-                                }
-                                AppEvent::Indicators { .. } => self.dirty = true,
+                                AppEvent::Status | AppEvent::Indicators { .. } => self.dirty = true,
                                 AppEvent::Stats => info!("oled: {} frames, {} skipped, {} chunk timeouts", self.layer.frames(), self.layer.skipped, self.display.timeouts),
                                 _ => {}
                         }
@@ -293,9 +317,12 @@ impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
                         if let Some(s) = STATUS.pop() {
                                 self.status = s;
                         }
-                        self.frame();
+                        self.apply_status();
+                        self.dirty = false;
                 }
-                if self.dirty || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
+                let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
+                self.ui.render(self.layer, &mut self.display, &style, log::now_us());
+                if self.ui.is_dirty() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();

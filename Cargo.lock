@@ -2018,6 +2018,7 @@ dependencies = [
  "light-draw",
  "light-font",
  "light-midi",
+ "light-ui",
 ]
 
 [[package]]

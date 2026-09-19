@@ -23,6 +23,10 @@ use light_rp2::{now_us, Breathe, Clocks, SysClock};
 /// 64x128 at 1 bpp: one kilobyte.
 static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
+/// The look-and-feel and the interface, as data: the framework MONO default with this board's
+/// rounding, and the crossfire status page -- both compiled to blobs the app embeds.
+static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
+static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
 /// Core 1: the app heartbeat, then the shell's log drain and console read (no USB here -- the
 /// host stack is core 0's).
@@ -54,7 +58,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         static USB_MOD: StaticCell<UsbMod<UsbMidiHost>> = StaticCell::new();
         let usb_mod = USB_MOD.init(UsbMod::new(host));
         static OLED_MOD: StaticCell<OledMod<Spi1Display, SysClock>> = StaticCell::new();
-        let oled_mod = OLED_MOD.init(OledMod::new(display, layer, font, SysClock, OLED_DISPLAY_OFFSET));
+        let oled_mod = OLED_MOD.init(OledMod::new(display, layer, font, THEME_BLOB, UI_BLOB, SysClock, OLED_DISPLAY_OFFSET));
         let mut led_mod = LedMod::new(p.led);
         let mut console_mod = ConsoleMod::new();
         let _ = (p.key0, p.key1);
