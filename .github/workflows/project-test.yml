@@ -77,31 +77,31 @@ jobs:
     steps:
       #   no `repository:`, so this checks out the CALLING repository -- inside a reusable
       # workflow, github.repository is still the caller's
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: ${{ inputs.project }}
           submodules: recursive
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: lightsource-nz/light_mk5
           ref: ${{ inputs.framework_ref }}
           path: light_mk5
           submodules: recursive
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.light_display
         with:
           repository: lightsource-nz/light_display
           path: light_display
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.light_ui
         with:
           repository: lightsource-nz/light_ui
           path: light_ui
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.light_usb
         with:
           repository: lightsource-nz/light_usb
@@ -110,7 +110,7 @@ jobs:
       #   font-crusher is worth checking out even where it looks optional: rend's Findcrush.cmake
       # FetchContent-fetches a copy from GitHub when it cannot find one locally, so leaving it out
       # does not fail -- it silently tests a different crush
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.font_crusher
         with:
           repository: lightsource-nz/font-crusher
@@ -120,7 +120,7 @@ jobs:
       #   the vendored fork, not raspberrypi/pico-sdk: it carries local patches these projects
       # depend on. Non-recursive -- that fetches tinyusb, which the USB stacks need, without
       # tinyusb's own tree, which nothing here uses
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: inputs.pico_sdk
         with:
           repository: lightsource-nz/pico-sdk
