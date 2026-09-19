@@ -7,7 +7,6 @@
 
 #![no_std]
 
-use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::sh1107::Sh1107;
 use light_ui::lui::code;
@@ -21,19 +20,8 @@ mod board;
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::spi::Spi1Display;
+use light_rp2::shell::{panic_report, service_core1, ShellInfo};
 use light_rp2::{now_us, Breathe, Clocks, SysClock};
-
-unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
-}
-
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
-}
 
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
@@ -68,22 +56,11 @@ static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 /// design.json and light_mk4_add_ui.
 static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
-fn log_sink(record: &log::Record) {
-        let mut line = StackBuf::<160> { buf: [0; 160], len: 0 };
-        let _ = write!(line, "{record}");
-        unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
-        log::drain(4, log_sink);
-        for _ in 0..32 {
-                let b = unsafe { light_shell_read_byte() };
-                if b < 0 {
-                        break;
-                }
-                let _ = CONSOLE_BYTES.push(b as u8);
-        }
+        service_core1(|b| {
+                let _ = CONSOLE_BYTES.push(b);
+        });
 }
 
 // --- the interface, as data ---------------------------------------------------------------
@@ -429,24 +406,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         }
 }
 
-struct StackBuf<const N: usize> {
-        buf: [u8; N],
-        len: usize,
-}
-
-impl<const N: usize> Write for StackBuf<N> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let take = s.len().min(N - self.len);
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
-        }
-}
-
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackBuf::<160> { buf: [0; 160], len: 0 };
-        let _ = write!(msg, "{info}");
-        unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
+        panic_report(info)
 }

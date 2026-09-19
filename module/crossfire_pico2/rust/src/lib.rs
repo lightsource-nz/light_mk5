@@ -6,9 +6,8 @@
 
 #![no_std]
 
-use core::fmt::Write;
 use light_app_crossfire as app;
-use app::{ConsoleMod, LedMod, OledMod, StackString, UsbMod};
+use app::{ConsoleMod, LedMod, OledMod, UsbMod};
 use light_core::{info, log, ConstStaticCell, Idle, StaticCell};
 use light_display::sh1107::Sh1107;
 use light_display::{Display, FrameLayer};
@@ -18,43 +17,19 @@ mod board;
 use board::*;
 use light_rp2::spi::Spi1Display;
 use light_rp2::tinyusb_midi::UsbMidiHost;
+use light_rp2::shell::{panic_report, service_core1, ShellInfo};
 use light_rp2::{now_us, Breathe, Clocks, SysClock};
-
-unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
-}
-
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
-}
 
 /// 64x128 at 1 bpp: one kilobyte.
 static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        let b = line.as_bytes();
-        unsafe { light_shell_log(b.as_ptr(), b.len()) }
-}
-
-/// Core 1: the UART log drain and console read. No USB here -- the host stack is core 0's.
+/// Core 1: the app heartbeat, then the shell's log drain and console read (no USB here -- the
+/// host stack is core 0's).
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
         app::core1_heartbeat();
-        log::drain(4, log_sink);
-        for _ in 0..32 {
-                let b = unsafe { light_shell_read_byte() };
-                if b < 0 {
-                        break;
-                }
-                app::push_console_byte(b as u8);
-        }
+        service_core1(app::push_console_byte);
 }
 
 #[unsafe(no_mangle)]
@@ -91,8 +66,5 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        let b = msg.as_bytes();
-        unsafe { light_shell_panic(b.as_ptr(), b.len()) }
+        panic_report(info)
 }
