@@ -319,11 +319,12 @@ a `ShellInfo` accessor, the `service_core1` pump (log drain plus console pump), 
 the core-0 stack watermark — are identical for every board on a given shell. In mk4 one board's
 support crate carried them, so any other board would have to copy them. In mk5 they live in a `shell`
 module in the port crate, shared by every board and app on that port. Implemented in `light-rp2`
-(`light_rp2::shell`), which the RP2 touch boards use; the STM32 ports have no such module yet, so a
-bare-CMSIS board's instantiation crate still carries its own single-core glue (a `service_core1`-free
-analogue) — moving it into each STM32 port is the same decision, not yet applied. Where the port
-provides the module, a board's instantiation crate keeps only the thin `#[no_mangle]` /
-`#[panic_handler]` entry points that call in. See [09-application-model.md](09-application-model.md).
+(`light_rp2::shell`), which the RP2 touch boards use. The bare-CMSIS glue is single-core (no
+`service_core1`) *and* chip-independent — the handshake is the same for the h7 and the f411 — so it
+does not belong in one STM32 port crate; it lives in a shared `light-shell-cmsis` crate
+(`drain_log`, `read_console`, `panic_report`, `ShellInfo`) that every bare-CMSIS board uses. Either
+way, a board's instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry
+points that call in. See [09-application-model.md](09-application-model.md).
 
 ## The bare-CMSIS shell (`light_mk4_shell_cmsis`)
 

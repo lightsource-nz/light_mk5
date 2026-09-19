@@ -22,9 +22,12 @@ instantiate against, so they come first.
 > `PowerMechanism`, coord/axis maps); the generic `TouchMod`/`ImuMod` in `light-input` over a new
 > `TouchController` trait; and the Rust shell glue as `light_rp2::shell`. Per the A/B split, A also
 > folded in the generic input-module extraction (board crates became board-specific-only at once); B
-> covered the remaining app-coupled modules (RTC, audio, power). **Rolled out to the touch boards
-> only** — the non-touch RP2/STM32 boards keep the old inline pattern, and the STM32 ports have no
-> `shell` module yet (their instantiation crates still carry the glue). Those are a later pass.
+> covered the remaining app-coupled modules (RTC, audio, power). **Shell-glue dedup since rolled out
+> to the non-touch boards too**: the non-touch RP2 boards (`light_mk4_pico2`, both `crossfire_*`)
+> adopted `light_rp2::shell`, and the STM32 boards (h7, f411) adopted a shared `light-shell-cmsis`
+> crate (the chip-independent bare-CMSIS analogue — see [07](07-ports-and-shell.md#)). The non-touch
+> boards have no touch/IMU/battery/RTC and a single consumer each, so shell glue was the only
+> applicable A/B piece; no board-support crate was warranted for them.
 
 - **Status quo (mk4).** The app-agnostic board-support crate — pin map and peripheral hand-over,
   shell ABI glue, and board-generic input modules — exists for a *single* board. Every other board
