@@ -13,6 +13,8 @@ members = [
         "../crates/light-rp2",
         "../crates/light-stm32h7",
         "../crates/light-stm32f4",
+        # the bare-CMSIS shell glue, shared by the STM32 boards
+        "../crates/light-shell-cmsis",
         # board-support layers
         "../crates/light-board-touch169",
         "../crates/light-board-touch28",

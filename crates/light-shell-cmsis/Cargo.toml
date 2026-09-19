@@ -1,0 +1,10 @@
+[package]
+name = "light-shell-cmsis"
+workspace = "../../firmware"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the Rust side of the bare-CMSIS shell ABI: clocks, log/console pump and panic, shared by every STM32/CMSIS board"
+
+[dependencies]
+light-core = { path = "../light-core" }

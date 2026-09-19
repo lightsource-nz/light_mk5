@@ -224,6 +224,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-shell-cmsis"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+]
+
+[[package]]
 name = "light-stm32f4"
 version = "0.1.0"
 dependencies = [
@@ -312,6 +319,7 @@ name = "light_app_f411"
 version = "0.1.0"
 dependencies = [
  "light-core",
+ "light-shell-cmsis",
  "light-stm32f4",
 ]
 
@@ -323,6 +331,7 @@ dependencies = [
  "light-display",
  "light-draw",
  "light-font",
+ "light-shell-cmsis",
  "light-stm32h7",
  "light-ui",
 ]

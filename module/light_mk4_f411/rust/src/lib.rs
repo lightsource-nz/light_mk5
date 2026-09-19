@@ -4,27 +4,14 @@
 
 #![no_std]
 
-use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
 mod board;
 use board::*;
+use light_shell_cmsis::{drain_log, panic_report, read_console, ShellInfo};
 use light_stm32f4::gpio::{Input, Output};
 use light_stm32f4::{now_us, Breathe, Clocks, SysClock};
-
-unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
-}
-
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_apb2_hz: u32,
-        clk_tim_hz: u32,
-}
 
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
@@ -36,12 +23,6 @@ enum AppEvent {
 
 static EVENTS: EventBus<AppEvent, 8, 2> = EventBus::new();
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
-
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
-}
 
 /// The LED is active low: the blinker's "on" is a low pin.
 struct ActiveLow<'a>(&'a mut Output);
@@ -164,14 +145,10 @@ impl Module for ConsoleMod {
                 "console"
         }
         fn poll(&mut self) -> Poll {
-                let drained = log::drain(4, log_sink);
-                for _ in 0..32 {
-                        let b = unsafe { light_shell_read_byte() };
-                        if b < 0 {
-                                break;
-                        }
-                        let _ = CONSOLE_BYTES.push(b as u8);
-                }
+                let drained = drain_log(4);
+                read_console(|b| {
+                        let _ = CONSOLE_BYTES.push(b);
+                });
                 let mut result = if drained > 0 { Poll::Busy } else { Poll::Idle };
                 while let Some(b) = CONSOLE_BYTES.pop() {
                         if let Some(line) = self.reader.push(b) {
@@ -205,41 +182,19 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         info!("runtime started; the key toggles the blink, type 'help' on the console");
         let mut idle = Breathe;
         let result = rt.run(|| light_core::Idle::idle(&mut idle));
-        log::drain(64, log_sink);
+        drain_log(64);
         match result {
                 Ok(()) => info!("runtime stopped cleanly"),
                 Err(e) => warn!("runtime stopped with {e:?}"),
         }
-        log::drain(64, log_sink);
+        drain_log(64);
         loop {
                 core::hint::spin_loop();
-        }
-}
-
-struct StackString<const N: usize> {
-        buf: [u8; N],
-        len: usize,
-}
-
-impl<const N: usize> StackString<N> {
-        const fn new() -> Self {
-                Self { buf: [0; N], len: 0 }
-        }
-}
-
-impl<const N: usize> Write for StackString<N> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let take = s.len().min(N - self.len);
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
         }
 }
 
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
+        panic_report(info)
 }

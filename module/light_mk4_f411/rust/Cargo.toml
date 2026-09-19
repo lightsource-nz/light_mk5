@@ -12,3 +12,4 @@ crate-type = ["staticlib"]
 [dependencies]
 light-core = { path = "../../../crates/light-core" }
 light-stm32f4 = { path = "../../../crates/light-stm32f4" }
+light-shell-cmsis = { path = "../../../crates/light-shell-cmsis" }

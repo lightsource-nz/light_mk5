@@ -15,4 +15,5 @@ light-draw = { path = "../../../crates/light-draw" }
 light-display = { path = "../../../crates/light-display" }
 light-ui = { path = "../../../crates/light-ui" }
 light-stm32h7 = { path = "../../../crates/light-stm32h7" }
+light-shell-cmsis = { path = "../../../crates/light-shell-cmsis" }
 light-font = { path = "../../../crates/light-font" }
