@@ -26,9 +26,9 @@ how an application is built on it.
 
 1. **Rust above a C shell.** The framework code is a `no_std` Rust staticlib linked into a firmware
    executable that the platform SDK's build still owns. On the RP2 chips that SDK is pico-sdk; the C
-   shell keeps `crt0`, `boot2`, the linker script, multicore launch, PIO and TinyUSB. Rust owns
-   everything above the runtime. The same shape carries the bare-CMSIS STM32 ports, where a small C
-   shell stands in for the SDK. See [07-ports-and-shell.md](07-ports-and-shell.md).
+   shell keeps `crt0`, `boot2`, the linker script, multicore launch, PIO and, in the USB-host role,
+   TinyUSB's host stack. Rust owns everything above the runtime, the USB device stack included. The
+   same shape carries the bare-CMSIS STM32 ports, where a small C shell stands in for the SDK. See [07-ports-and-shell.md](07-ports-and-shell.md).
 
 2. **Host-first, made structural.** Nothing in the portable crates touches hardware directly;
    everything reaches the world through the traits of `light_core::hal`, which a *port* crate
@@ -104,13 +104,14 @@ then hands control to Rust through a small ABI:
 - `light_app_main(&ShellInfo) -> !` — the Rust entry. The shell calls it once with the resolved
   clock rates; it never returns. It constructs the peripherals, builds the modules, and runs the
   runtime loop forever on the application core.
-- `light_app_core1_service()` — on a **multi-core** chip, called repeatedly on the second core: it
-  drains the log queue to the shell's output and pumps console input bytes into the app, so the
-  application core never touches stdio and a busy render loop cannot stall the console. A
-  **single-core** chip has no second core to call this; the same housekeeping runs inline on the
-  application core (see [07-ports-and-shell.md](07-ports-and-shell.md)).
-- The Rust side calls back into the shell for the few things the SDK owns: `light_shell_log`,
-  `light_shell_read_byte`, `light_shell_panic`.
+- `light_app_core1_main() -> !` — on a **multi-core** chip, the Rust entry for the second core,
+  called once: it owns that core, bringing up the console transports and running the housekeeping
+  loop forever — polling the USB device, draining the log queue to the console and pumping console
+  input into the app — so the application core never touches the console and a busy render loop
+  cannot stall it. A **single-core** chip has no second core; the same housekeeping runs inline on
+  the application core (see [07-ports-and-shell.md](07-ports-and-shell.md)).
+- The Rust side calls back into the shell only for what the SDK alone can do — entering the
+  bootloader, reading the BOOTSEL button — and the shell hands its own panics to Rust's relay.
 
 The framework runs on both single-core and multi-core targets. The application — its modules and the
 runtime loop — always occupies one application core, and that single-core cooperative model is the
@@ -128,16 +129,18 @@ sequenceDiagram
     H-->>B: ready
     B->>R: light_app_main(ShellInfo)
     Note over R: build modules,<br/>run the runtime loop forever
-    R->>B: light_shell_log / read_byte / panic
+    B->>H: light_app_core1_main()
+    R->>B: reset_to_bootsel / bootsel
     loop each pass, multi-core only
-        H->>H: light_app_core1_service()<br/>drain log · pump console · USB
+        H->>H: poll USB · drain log · pump console
     end
     Note over R,H: single-core target — no core 1,<br/>housekeeping folds into the runtime loop
 ```
 
-*The shell owns boot and clocks, then hands control to Rust through `light_app_main`, which never
-returns. On a multi-core chip the second core runs the console/USB housekeeping in parallel; on a
-single-core chip the same work runs inline in the runtime loop.*
+*The shell owns boot and clocks, then hands each core to Rust — `light_app_main` and, on a two-core
+chip, `light_app_core1_main` — and neither returns. The second core runs the console (the USB device
+stack and the log drain) in parallel; on a single-core chip the same work runs inline in the runtime
+loop.*
 
 Above that ABI, the app is a set of **modules** driven by a cooperative **runtime**. A module is
 polled each pass and reports whether it is busy or idle; the runtime idles the core when all are

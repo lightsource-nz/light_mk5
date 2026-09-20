@@ -37,7 +37,7 @@ From portable to tangible:
 3. **The per-board instantiation crate** — the crate the firmware executable links (a `staticlib`).
    It constructs the concrete peripherals, embeds the compiled assets, wires the portable app's
    modules to the board's hardware, and provides the thin shell entry points (`light_app_main`,
-   `light_app_core1_service`, the `#[panic_handler]`). It depends on the portable app crate + the
+   `light_app_core1_main`, the `#[panic_handler]`). It depends on the portable app crate + the
    board-support crate + the ports it needs.
 
    Where several executables share one board's wiring, that wiring is itself a shared crate. For

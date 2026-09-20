@@ -22,8 +22,8 @@ graph TB
     app -->|selects + depends on| port
     libs -->|depend on| core
     port -. implements .-> core
-    shell ==>|calls light_app_main| app
-    app -.->|light_shell_log / read_byte / panic| shell
+    shell ==>|light_app_main · light_app_core1_main| app
+    app -.->|light_shell_reset_to_bootsel / bootsel| shell
 ```
 
 *The portable stack depends only downward and never names a port; a port implements `light-core`'s
@@ -76,7 +76,8 @@ Hazard3) — driven through the chip's `pac` register definitions, not through p
 pico-sdk's peripheral API is almost all `static inline` in headers, which no binding generator can
 export; every SDK call from Rust would need a hand-written C shim, whereas the pac reaches
 everything the framework needs directly. pico-sdk stays in charge of the *runtime* — `crt0`,
-`boot2`, clock configuration, timer start, multicore, USB — in the C shell that links this crate.
+`boot2`, clock configuration, timer start, multicore, and in the host role the USB host stack — in
+the C shell that links this crate.
 
 ### One crate for both chips
 
@@ -119,7 +120,11 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
   - `adc` — `Adc`, one-shot analog reads;
   - `rgb` (RP2350 only) — a continuous RGB/DPI scanout engine on four PIO state machines, for
     GDDRAM-less panels;
+  - `usb` — `UsbBus`, the USB device controller as a `usb_device::bus::UsbBus`, polled (below);
+  - `uart` — `Uart`, a UART as a console transport (the debug-probe path, and the host role's only
+    console);
   - `tinyusb_midi` (feature `usb-host`) — the USB-MIDI host transport behind `light_midi::Transport`.
+- `shell` — the Rust side of the C shell's ABI, shared by every RP2 board (see the shell below).
 - Its own `critical-section` implementation (target builds only).
 
 ### Behaviour and invariants
@@ -152,6 +157,34 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
   hundred times that. The RGB engine is a two-channel hardware loop with no interrupt in the frame
   path: the data channel streams a whole frame and chains to a reprogram channel that reloads its
   read address, so a buffer flip is one store that takes effect at the next frame.
+
+### The USB device controller — `usb` (reference driver)
+
+The port owns the chip's USB device controller and presents it as a `usb_device::bus::UsbBus`, so
+the device side of USB is Rust from the register up, with the class layer (`usbd-serial` for the
+console) reused from the `usb-device` ecosystem rather than written here. The controller is one
+source for both chips over the pac, under the same feature split as the rest of the crate.
+
+- **The trait is the whole contract.** `alloc_ep` assigns an endpoint its dual-port-RAM buffer and
+  endpoint-control word; `enable` connects the pull-up; `reset` and `set_device_address` follow the
+  bus; `write`/`read` drive the per-endpoint buffer-control word (the data-PID toggle and the
+  AVAILABLE/FULL handshake, double-buffered where the class asks for it); `set_stalled`/`is_stalled`,
+  `suspend`/`resume`; and `poll` reads the SIE and buffer status into a `PollResult` — bus reset,
+  setup, IN complete, OUT ready, suspend, resume. Nothing above the trait names the chip.
+- **Polled, never interrupt-driven.** The controller's interrupt stays masked and the stack is
+  advanced by calling `poll` from the console loop on core 1. This is what lets USB live on one
+  core without a per-core interrupt-enable question, and what keeps a busy application core from
+  ever affecting the console.
+- **The device's identity is a constant of this module** — vendor and product ids and the strings.
+  The framework's scripts find a board by it, so it is stable; the reference port presents the same
+  identity the SDK's console presented, and the tooling's detection is unchanged.
+- **The 1200-baud trigger.** The CDC class reports the host's line coding; when the host sets 1200
+  baud the console enters the BOOTSEL bootloader through the shell (`light_shell_reset_to_bootsel`).
+  This is the reflash path for a board with no debug pads, so it is part of the contract, not a
+  convenience.
+- **Enumeration state is exposed, not consumed here.** The loop publishes whether the device is
+  configured (`shell::usb_mounted`); the power manager reads it as the "on external power" signal on
+  boards with no VBUS-sense pin.
 
 ### Its `critical-section` implementation
 
@@ -231,11 +264,16 @@ crate the linker drops.
 ### Responsibility
 
 The C shell is the thin C layer that owns everything pico-sdk must own and nothing else. The runtime
-comes up through the SDK's `crt0` and `runtime_init` exactly as for any SDK program; then control
-passes to Rust on core 0 and does not come back. Keeping the shell to one `main.c` makes the size of
-the Rust↔C boundary visible. It is built as a CMake *function*
-(`light_shell_configure(<target> [USB_HOST])`) rather than a library, because
-`pico_enable_stdio_*` and the panic hook are per-executable settings.
+comes up through the SDK's `crt0` and `runtime_init` exactly as for any SDK program; the shell
+launches the second core, reads the resolved clocks, and hands control to Rust — core 0 through
+`light_app_main`, core 1 through `light_app_core1_main` — and does not get it back. It has **no
+stdio and no USB device stack**: the console, on both its transports, is the port's, in Rust (the
+`usb` and `uart` modules above, driven by the core-1 loop below). What stays in C is what only the
+SDK can do — boot, clocks, multicore launch, the bootrom (BOOTSEL entry and the BOOTSEL button read),
+the SDK's own panic hook, and, in the host role only, the TinyUSB host stack. Keeping the shell to
+one `main.c` makes the size of the Rust↔C boundary visible. It is built as a CMake *function*
+(`light_shell_configure(<target> [USB_HOST])`) rather than a library, because the panic hook and
+the host-role stack are per-executable settings.
 
 ### The ABI
 
@@ -246,21 +284,19 @@ The whole boundary is a handful of functions.
 - `light_app_main(const struct light_shell_info *info) -> !` — the Rust entry, called once on core 0
   with the resolved clock rates (`clk_sys_hz`, `clk_peri_hz`). It never returns: it constructs the
   peripherals, builds the modules, and runs the runtime loop forever.
-- `light_app_core1_service(void)` — called repeatedly on core 1. It drains the log queue to stdio
-  and pumps console input bytes into the app.
+- `light_app_core1_main(void) -> !` — the Rust entry for core 1, called once after launch. It owns
+  the whole of core 1: it brings up the console transports and runs the housekeeping loop forever
+  (below).
+- `light_app_panic(const char *msg, size_t len) -> !` — the SDK's own panics (assertions, spinlock
+  misuse), formatted by the shell's `PICO_PANIC_FUNCTION` hook, hand their message to the Rust
+  panic relay, which prints it and finishes the panic (below). Rust's own panics take the same relay
+  directly, so every panic on the board — whichever side and core raises it — ends the same way.
 
 **Rust → shell** (Rust calls these; the SDK owns what they do):
 
-- `light_shell_log(const char *msg, size_t len)` — a line already formatted on the Rust side, out to
-  the console.
-- `light_shell_read_byte(void) -> int` — one console input byte, or `-1` when none is waiting.
-- `light_shell_panic(const char *msg, size_t len) -> !` — a Rust panic, already formatted, for the
-  shell to print and then halt.
-
-**Additional shell surface:**
-
-- `light_shell_usb_mounted(void) -> bool` — the USB device enumeration state, the board's only "on
-  external power" signal on parts with no VBUS-sense pin.
+- `light_shell_reset_to_bootsel(void) -> !` — enter the BOOTSEL bootloader through the bootrom, so a
+  reflash needs no button. The panic relay calls it on a device-role board, and the console calls it
+  when the host asks (the 1200-baud trigger).
 - `light_shell_bootsel(void) -> bool` — whether the BOOTSEL button is pressed, read at runtime. The
   button shares the flash chip-select (QSPI_SS), so the read is flash-safe: it runs from RAM with
   interrupts off, floats the chip-select, samples the pin (pressed is low), and restores it before
@@ -268,8 +304,6 @@ The whole boundary is a handful of functions.
   lives in the shell and not above it. Each read is a short interrupts-off window, so a caller
   samples it at a modest rate (a few times a second), never every pass beside a USB host. A board
   with no other button uses it as its one input.
-- `light_shell_panic_sdk(const char *fmt, ...)` — installed as `PICO_PANIC_FUNCTION` so the SDK's own
-  panics (assertions, spinlock misuse) go through the same hand-off as Rust's.
 - Host-role only (`LIGHT_SHELL_USB_HOST`): `light_shell_usb_host_init` / `_task` / `_reset`, which
   the `tinyusb_midi` transport calls to drive the host stack.
 
@@ -278,34 +312,47 @@ runtime configured (pico-sdk's defaults are 125 MHz sys on the RP2040, 150 MHz o
 
 ### The two-core division
 
-The shell's defining arrangement is that **USB lives on core 1 and core 0 never touches stdio.**
+The shell's defining arrangement is that **the console lives on core 1 and core 0 never touches
+it.** Core 1 is a Rust loop; the C shell only launches it.
 
 - `main` launches core 1 first (resetting it before launch, or a warm restart of core 0 hangs in the
-  FIFO handshake) and waits for it to signal ready before calling `stdio_init_all` and
-  `light_app_main`.
-- In the default **device role**, core 1 runs `tusb_init()` and pumps `tud_task()` — because
-  `dcd_int_enable()` enables `USBCTRL_IRQ` on the calling core and TinyUSB guards its queues with
-  per-core IRQ-disable sections that are not cross-core safe. Every stdio write and read therefore
-  happens from core 1, in `light_app_core1_service()`. Core 0 runs the render/runtime loop and can
-  be arbitrarily busy without ever stalling the console.
-- In the **host role**, the native port is a USB *host* for MIDI instruments, so there
-  is no CDC console — stdio is the UART. The whole host stack runs on **core 0**, driven from the
-  Rust runtime through `light_shell_usb_host_*`, so the class callbacks (implemented on the Rust
-  side) fire in the same context as the packet reads. Core 1 keeps only the log drain and console
-  read, which the UART serves from either core with no USB stack to protect.
+  FIFO handshake) and waits for the launch handshake before calling `light_app_main`.
+- In the default **device role**, core 1 brings up the port's USB device stack — the `UsbBus`
+  controller driver with a CDC-ACM class on it — and the UART, then each pass polls the USB device,
+  drains the log queue to both transports, pumps input bytes from either into the app, and publishes
+  the enumeration state. The stack is polled, never interrupt-driven, so core 0 can be arbitrarily
+  busy without ever stalling the console.
+- In the **host role**, the native port is a USB *host* for MIDI instruments, so there is no CDC
+  console: the console is the UART alone. The whole host stack (TinyUSB, in C) runs on **core 0**,
+  driven from the Rust runtime through `light_shell_usb_host_*`, so the class callbacks (implemented
+  on the Rust side) fire in the same context as the packet reads. Core 1 keeps the UART console pump
+  and the panic relay.
 
 ### Behaviour and invariants
 
-- **Logging never blocks the loop.** stdout is non-blocking (`PICO_STDIO_USB_STDOUT_TIMEOUT_US=0`):
-  a write drops when the host is not reading rather than stalling core 1's drain. A blocking write
-  here is a latent deadlock — while core 1 waits for CDC TX space it is not pumping `tud_task`, so
-  the host's next write times out. Dropping matches the log queue's own push-side policy.
+- **Logging never blocks the loop.** A console write that finds no room — the host not reading the
+  CDC, the UART FIFO full — **drops** the line rather than waiting. A blocking write here is a latent
+  deadlock: while core 1 waits for CDC TX space it is not polling the device, so the host's next
+  transfer times out. Dropping matches the log queue's own push-side policy.
+- **Boot-time lines wait in the queue, not the loop.** The application starts as soon as core 1 is
+  running; there is no wait for a host to open the console. Lines logged before the host connects sit
+  in the bounded log queue and are drained when it does; beyond the queue's depth they are dropped, as
+  at any other time.
+- **The 1200-baud trigger enters BOOTSEL.** When the host sets the CDC line coding to 1200 baud the
+  console calls `light_shell_reset_to_bootsel`. This is how the flash script reflashes a board with
+  no debug pads — open the console at 1200 baud, then write the UF2 to the volume that appears — so a
+  device-role board is always reflashable while its console enumerates.
 - **The panic hand-off keeps the board flashable.** A panic is formatted (memory only) on the dying
-  core and printed by the core that owns USB; core 0 sets `panic_pending` and busy-waits (never
-  sleeps, so a panic raised inside an IRQ does not re-enter the SDK's "sleep in exception handler"
-  panic) for core 1 to relay it. Afterwards the device-role board drops into BOOTSEL
-  (`reset_usb_boot`) so a halted board still takes a reflash; the host-role board, flashed over SWD
-  with no CDC, halts at a breakpoint where a debugger can read the message.
+  core and printed by core 1, which owns the console: the raising side stores the message, sets a
+  pending flag, and busy-waits (never sleeps, so a panic raised inside an interrupt does not re-enter
+  the SDK's "sleep in exception handler" panic) for core 1 to relay it; core 1 prints it and keeps
+  polling the device so the bytes actually leave. Afterwards a device-role board drops into BOOTSEL so
+  a halted board still takes a reflash; the host-role board, flashed over SWD with no CDC, halts at a
+  breakpoint where a debugger can read the message. If core 1 never relays it — blocked on a lock the
+  dying core held, typically — the message stays in memory for a debugger.
+- **The enumeration state is the "on external power" signal.** `light_rp2::shell::usb_mounted()`
+  reports whether the device is configured — the only such signal on boards with no VBUS-sense pin,
+  which the power manager gates power-off on.
 - **Stack placement is load-bearing.** Core 1's stack is a static array in ordinary RAM, not the
   linker's `SCRATCH_X` default that sits directly below core 0's stack: a deep core-0 call chain was
   found landing on core 1's live frames, killing core 1 (the console) alone while the application ran
@@ -313,24 +360,25 @@ The shell's defining arrangement is that **USB lives on core 1 and core 0 never 
   at the offending instruction rather than a silent overwrite. Module state lives in `.bss`, not on
   the stack.
 
-The shell also disables the SDK's own TinyUSB init and IRQ background task
-(`PICO_STDIO_USB_ENABLE_TINYUSB_INIT=0`, `PICO_STDIO_USB_ENABLE_IRQ_BACKGROUND_TASK=0`), since the
-shell does that work itself on core 1; either left on would have the SDK do it from core 0.
+The device-role build links **no SDK stdio and no TinyUSB device stack**: `pico_stdio_usb`,
+`pico_stdio_uart` and their knobs are absent, and the application supplies no `tusb_config.h`. Only
+the host-role build links TinyUSB, and only its host half.
 
 ---
 
 ### The Rust-side shell glue is shared, not per-board
 
-The ABI above is the C↔Rust contract. The small **Rust** helpers layered on it — a `ShellInfo`
-accessor, the `service_core1` pump (log drain plus console pump), `panic_report`, the core-0 stack
-watermark, and the `bootsel` reader — are identical for every board on a given shell, so they are
-owned once and shared, never copied into a board. On the RP2 port they are the `shell` module of the
-port crate (`light_rp2::shell`), used by every RP2 board and app. The bare-CMSIS glue is single-core
-(no `service_core1`) *and* chip-independent — the handshake is the same on every STM32 chip — so it
-does not belong in one STM32 port crate; it is the shared `light-shell-cmsis` crate (`drain_log`,
-`read_console`, `panic_report`, `ShellInfo`) that every bare-CMSIS board uses. Either way, a board's
-instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry points that call
-in. See [09-application-model.md](09-application-model.md).
+The ABI above is the C↔Rust contract. The **Rust** side of the shell on the RP2 port is the `shell`
+module of the port crate (`light_rp2::shell`), used by every RP2 board and app and never copied into
+one: the `ShellInfo` accessor; the core-1 loop itself (`core1_main`, the body of
+`light_app_core1_main`) and the console transports it drives — the CDC class over the `usb` module
+and the `uart` module; the panic relay (`panic_report`, and the `light_app_panic` entry the C hook
+calls); `usb_mounted()`; the core-0 stack watermark; and the `bootsel` reader. The bare-CMSIS glue is
+single-core (no core-1 loop) *and* chip-independent — the handshake is the same on every STM32 chip
+— so it does not belong in one STM32 port crate; it is the shared `light-shell-cmsis` crate
+(`drain_log`, `read_console`, `panic_report`, `ShellInfo`) that every bare-CMSIS board uses. Either
+way, a board's instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry
+points that call in. See [09-application-model.md](09-application-model.md).
 
 ## The bare-CMSIS shell (`light_shell_cmsis`)
 
@@ -352,11 +400,13 @@ The same boundary crosses, minus the second core:
 
 - `light_app_main(const struct light_shell_info *info) -> !` — the Rust entry, with
   `ShellInfo { clk_sys_hz, clk_apb2_hz, clk_tim_hz }`.
-- `light_shell_log` and `light_shell_read_byte` — as on the RP2 shell.
-- `light_shell_panic` — prints and halts at a breakpoint; there is no BOOTSEL to fall into, and an
-  ST-Link reflashes a halted part.
+- `light_shell_log(msg, len)` and `light_shell_read_byte() -> int` — the console: a formatted line
+  out, one input byte or `-1` in, driven from C over the USART or the ITM port. This shell keeps a C
+  console (its ports have no USB device driver); the RP2 shell's console is Rust's.
+- `light_shell_panic(msg, len) -> !` — prints and halts at a breakpoint; there is no BOOTSEL to fall
+  into, and an ST-Link reflashes a halted part.
 
-There is **no `light_app_core1_service`**: with one core, the log drain the RP2 shell runs on core 1
+There is **no `light_app_core1_main`**: with one core, the log drain the RP2 shell runs on core 1
 is the Rust side's own job, called from within its runtime loop.
 
 Internal to the shell (not Rust-facing): `light_shell_clock_init` / `_status` and
@@ -402,12 +452,13 @@ Internal to the shell (not Rust-facing): `light_shell_clock_init` / `_status` an
   workspace, so this property never constrains the host-test build (see
   [10-build-and-release.md](10-build-and-release.md)).
 - **The shell owns the runtime; Rust owns everything above it.** `crt0`, `boot2`/startup, the linker
-  script, the clock tree, multicore launch, PIO assembly and the USB stack live in C. Rust is handed
+  script, the clock tree, multicore launch, PIO assembly and, in the host role, the USB host stack
+  live in C. USB in the device role is Rust's, from the port's controller driver up. Rust is handed
   the measured clock rates and a tiny callback surface, and runs the application forever from
-  `light_app_main`.
+  `light_app_main` (and, on a two-core chip, the console forever from `light_app_core1_main`).
 - **The framework runs single-core or multi-core; the application always occupies one core.** On a
   two-core chip the console and USB live on the second core so a busy render loop cannot stall them
   (and logging is non-blocking end to end so it can never deadlock the loop); on a single-core chip
-  the same housekeeping folds into the runtime loop, with no `light_app_core1_service`. The
+  the same housekeeping folds into the runtime loop, with no `light_app_core1_main`. The
   application, its modules and its event bus are identical either way — the second core is used where
   it exists, never required.

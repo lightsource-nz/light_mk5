@@ -81,13 +81,15 @@ core*. That is the whole of the concurrency model an application author reasons 
 same on every target, from a single-core chip to a dual-core one.
 
 What differs is where the framework's *housekeeping* runs — draining the log queue to the console and
-pumping console input (and, on the RP2 device role, servicing USB):
+pumping console input (and, on a port with a USB device controller, polling the USB device stack that
+carries the console):
 
-- On a **multi-core** target the framework actively uses the second core for that housekeeping. The
-  shell drives `light_app_core1_service` on it (see the shell ABI in
-  [07-ports-and-shell.md](07-ports-and-shell.md)), so an arbitrarily busy render loop on the
-  application core can never stall the console, and vice versa.
-- On a **single-core** target there is no `light_app_core1_service`; the identical housekeeping runs
+- On a **multi-core** target the framework actively uses the second core for that housekeeping: the
+  shell hands the core to Rust once, through `light_app_core1_main` (see the shell ABI in
+  [07-ports-and-shell.md](07-ports-and-shell.md)), and the port's shell module runs the loop there,
+  so an arbitrarily busy render loop on the application core can never stall the console, and vice
+  versa.
+- On a **single-core** target there is no `light_app_core1_main`; the identical housekeeping runs
   inline on the application core, folded into the runtime loop. Behaviour is the same — the only thing
   lost is the isolation between a busy loop and the console, which single-core code accounts for by
   keeping the housekeeping cheap and non-blocking.
@@ -132,8 +134,8 @@ through the `Ext(X)` variant.*
   full mailbox drops, and the drop is counted.
 - **`log`** — a bounded log queue with the usual levels (`debug`/`info`/`warn` macros). Records are
   enqueued on the application core and drained to the console by whoever runs the framework's
-  housekeeping: a **second core** where the chip has one (`light_app_core1_service`, so formatting and
-  output never stall the render loop), or the application core inline on a single-core target. Either
+  housekeeping: a **second core** where the chip has one (the `light_app_core1_main` loop, so
+  formatting and output never stall the render loop), or the application core inline on a single-core target. Either
   way the enqueue side is cheap and the drain is off the hot path of a module's `poll`. `log::set_clock`
   gives records timestamps; `log::drain(n, sink)` empties up to `n` records to a sink.
 
