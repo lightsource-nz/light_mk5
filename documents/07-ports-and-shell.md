@@ -4,7 +4,7 @@ This document describes the **ports** — the target-only crates that implement 
 traits for a specific chip — and the **C shells** that own the boot path and hand control to Rust.
 A port is the extension point by which any consumer adds support for their own chip: implement the
 `hal` traits their boards need and supply one `critical-section`. The ports and shells described here
-are the reference ones that ship, an extraction of the mk4 status quo: the ports are `light-rp2`,
+are the reference ones that ship: the ports are `light-rp2`,
 `light-stm32h7` and `light-stm32f4`; the shells are `light_shell` (the pico-sdk shell for the RP2
 boards) and `light_shell_cmsis` (the bare-CMSIS shell for the STM32 boards).
 
@@ -261,6 +261,13 @@ The whole boundary is a handful of functions.
 
 - `light_shell_usb_mounted(void) -> bool` — the USB device enumeration state, the board's only "on
   external power" signal on parts with no VBUS-sense pin.
+- `light_shell_bootsel(void) -> bool` — whether the BOOTSEL button is pressed, read at runtime. The
+  button shares the flash chip-select (QSPI_SS), so the read is flash-safe: it runs from RAM with
+  interrupts off, floats the chip-select, samples the pin (pressed is low), and restores it before
+  returning. The chip-select bit differs between the RP2040 and the RP2350, which is why the read
+  lives in the shell and not above it. Each read is a short interrupts-off window, so a caller
+  samples it at a modest rate (a few times a second), never every pass beside a USB host. A board
+  with no other button uses it as its one input.
 - `light_shell_panic_sdk(const char *fmt, ...)` — installed as `PICO_PANIC_FUNCTION` so the SDK's own
   panics (assertions, spinlock misuse) go through the same hand-off as Rust's.
 - Host-role only (`LIGHT_SHELL_USB_HOST`): `light_shell_usb_host_init` / `_task` / `_reset`, which
@@ -312,19 +319,18 @@ shell does that work itself on core 1; either left on would have the SDK do it f
 
 ---
 
-### mk5 decision — the Rust-side shell glue is a `shell` module in the port
+### The Rust-side shell glue is shared, not per-board
 
-*Decided for mk5.* The ABI above is the C↔Rust contract; the small **Rust** helpers layered on it —
-a `ShellInfo` accessor, the `service_core1` pump (log drain plus console pump), `panic_report`, and
-the core-0 stack watermark — are identical for every board on a given shell. In mk4 one board's
-support crate carried them, so any other board would have to copy them. In mk5 they live in a `shell`
-module in the port crate, shared by every board and app on that port. Implemented in `light-rp2`
-(`light_rp2::shell`), which the RP2 touch boards use. The bare-CMSIS glue is single-core (no
-`service_core1`) *and* chip-independent — the handshake is the same for the h7 and the f411 — so it
-does not belong in one STM32 port crate; it lives in a shared `light-shell-cmsis` crate
-(`drain_log`, `read_console`, `panic_report`, `ShellInfo`) that every bare-CMSIS board uses. Either
-way, a board's instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry
-points that call in. See [09-application-model.md](09-application-model.md).
+The ABI above is the C↔Rust contract. The small **Rust** helpers layered on it — a `ShellInfo`
+accessor, the `service_core1` pump (log drain plus console pump), `panic_report`, the core-0 stack
+watermark, and the `bootsel` reader — are identical for every board on a given shell, so they are
+owned once and shared, never copied into a board. On the RP2 port they are the `shell` module of the
+port crate (`light_rp2::shell`), used by every RP2 board and app. The bare-CMSIS glue is single-core
+(no `service_core1`) *and* chip-independent — the handshake is the same on every STM32 chip — so it
+does not belong in one STM32 port crate; it is the shared `light-shell-cmsis` crate (`drain_log`,
+`read_console`, `panic_report`, `ShellInfo`) that every bare-CMSIS board uses. Either way, a board's
+instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry points that call
+in. See [09-application-model.md](09-application-model.md).
 
 ## The bare-CMSIS shell (`light_shell_cmsis`)
 
@@ -392,9 +398,9 @@ Internal to the shell (not Rust-facing): `light_shell_clock_init` / `_status` an
 - **One critical-section per firmware.** `critical-section` allows a single global implementation, so
   each firmware links exactly one port. The RP2 port supplies a nesting-aware dual-core section; the
   STM32 ports use `cortex-m`'s single-core PRIMASK section. The two cannot coexist in one binary, and
-  that is by design — the port is a per-firmware choice. *(mk5 keeps this per-firmware property but
-  moves the ports into a separate firmware workspace so it never constrains the host-test build — see
-  proposal F in [mk5-proposals.md](mk5-proposals.md) and [10-build-and-release.md](10-build-and-release.md).)*
+  that is by design — the port is a per-firmware choice. The ports live in the separate firmware
+  workspace, so this property never constrains the host-test build (see
+  [10-build-and-release.md](10-build-and-release.md)).
 - **The shell owns the runtime; Rust owns everything above it.** `crt0`, `boot2`/startup, the linker
   script, the clock tree, multicore launch, PIO assembly and the USB stack live in C. Rust is handed
   the measured clock rates and a tiny callback surface, and runs the application forever from

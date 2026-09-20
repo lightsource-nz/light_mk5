@@ -7,13 +7,9 @@ touch and IMU modules publish onto an application's event bus without naming the
 
 The crate is `no_std` and portable. Nothing in it touches hardware directly: every controller and
 sensor reaches the world through the traits of `light_core::hal` (`I2cBus`, `InputPin`, `OutputPin`,
-`Clock`), and every module runs unchanged under `cargo test` against a mocked bus. It is the mk4
-successor to what the predecessor C framework split across separate touch and IMU modules; the
-drivers are ports of that framework's drivers, but their cadence and recovery rules were re-checked
-against mk4's loop rate rather than copied — that re-derivation is where the CST816T's minimum read
-gap came from.
-
-This document describes the crate as built in mk4.
+`Clock`), and every module runs unchanged under `cargo test` against a mocked bus. The drivers'
+cadence and recovery rules are derived from the runtime's poll rate, not assumed from a datasheet —
+which is where the CST816T's minimum read gap comes from.
 
 ## Responsibility
 
@@ -124,7 +120,7 @@ parts auto-sleep; retrying a sleeping chip aborts transfers the IMU needs. The d
   (`POLL_INTERVAL_MS = 10`, matched to a controller's ~83 Hz report rate), because the INT pulse is
   only 1–3 ms and a loaded poll loop samples past it.
 - **The INT read floor.** When INT says data is ready the driver may read ahead of the cadence, but
-  no sooner than `INT_READ_FLOOR_MS = 4` after the last read. mk4's runtime polls hundreds of
+  no sooner than `INT_READ_FLOOR_MS = 4` after the last read. The runtime polls hundreds of
   thousands of times a second; without this floor the "read when INT is asserted" rule issued
   back-to-back reads for the whole INT pulse and wedged the controller every few seconds of tapping.
 - **Backoff.** Each consecutive unanswered read doubles the interval (`POLL_INTERVAL_MS << unanswered`)
@@ -336,13 +332,11 @@ drivers and the model while the application supplies only its own event type. It
 which the tracker's `suppress` (via `drag_consumed`) and the drivers' `stats` diagnostics (via
 `is_stats`) are wired to application intent without either side depending on the other.
 
-## mk5 decision — generic input runtime modules, and a `TouchController` trait
+## The generic input runtime modules, and the `TouchController` trait
 
-*Decided and implemented for mk5.* The touch and IMU **runtime modules** (`TouchMod`/`ImuMod` — the
-`Module` implementations that poll the hardware each pass and publish `BoardEvent`s on the app's bus)
-now live in `light-input` (`light_input::module`), so a board wires *drivers*, not *modules*. In mk4
-they lived in a board-support crate and, though generic over the app event, hardcoded the concrete
-drivers, the port's clock, and the board's axis map. mk5 makes them generic over:
+The touch and IMU **runtime modules** (`TouchMod`/`ImuMod` — the `Module` implementations that poll
+the hardware each pass and publish `BoardEvent`s on the app's bus) live in `light-input`
+(`light_input::module`), so a board wires *drivers*, not *modules*. They are generic over:
 
 - the **touch controller**, through a **`TouchController` trait** — `poll(now_ms) -> Option<TouchSample>`,
   `probe`, `diagnostics` (the failure counters), and a default-no-op `reset(clock)` a reset-capable
@@ -352,7 +346,7 @@ drivers, the port's clock, and the board's axis map. mk5 makes them generic over
 - the **IMU driver**, through the existing `ImuDriver` (`ImuMod<A, D, C>`);
 - the **clock**, through `light_core::hal::Clock` rather than a port's free function (the `C`
   parameter above);
-- the **app event**, through `BoardEvent`, as before.
+- the **app event**, through `BoardEvent`.
 
 The board supplies the constructed driver, the axis map, and the clock; the module names no board and
 no port. This is what lets `light-input` own the modules while every board reuses them unchanged (see

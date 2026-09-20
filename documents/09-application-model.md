@@ -32,7 +32,7 @@ From portable to tangible:
    board's `PowerMechanism`, and the board's coordinate/axis maps. It must NOT depend on an
    application crate. It is board-specific *only*: the Rust shell glue lives in the port's `shell`
    module (see [07-ports-and-shell.md](07-ports-and-shell.md)) and the generic `TouchMod`/`ImuMod`
-   modules live in `light-input`, so this crate wires drivers, not modules (the mk5 decisions below).
+   modules live in `light-input`, so this crate wires drivers, not modules.
 
 3. **The per-board instantiation crate** — the crate the firmware executable links (a `staticlib`).
    It constructs the concrete peripherals, embeds the compiled assets, wires the portable app's
@@ -71,42 +71,37 @@ board-support crate and a port. Note that the board-support crate depends on the
 **not** on the application crate — that independence is what lets several apps share one board's
 wiring.*
 
-### mk5 decision — the board layering is required, and board-agnostic code is framework-level
+### The board layering is required, and board-agnostic code is framework-level
 
-*Decided for mk5.* mk4 built this pattern for a single board and bundled board-*agnostic* code into
-that board's crate (the shell ABI glue, the generic input modules, a power-manager wrapper), so the
-crate could not be reused without duplicating its board-agnostic majority — which is why every other
-board re-implemented its own wiring. mk5 makes the split clean and the shape **required** for every
-board:
+The three-crate shape is **required** for every board, and the split is strict: a board crate holds
+only what is genuinely board-specific, so it can be reused without any board-agnostic code being
+copied alongside it. (A board crate that bundles board-agnostic code — shell ABI glue, generic input
+modules, a power-manager wrapper — cannot be reused without duplicating that majority, which is
+how every board ends up re-implementing its own wiring.)
 
 - **A `light-board-<board>` crate per board holds only board-specific facts** — the pin and constant
   set, the touch `CoordMap` and IMU `AxisMap`, backlight inversion, DMA-channel assignments, the
   `Peripherals` struct and its taken-once `take()`, and the board's `PowerMechanism`. Nothing
   board-agnostic lives here.
-- **Board-agnostic code moves to the framework.** The shell ABI glue (`ShellInfo`, the core-1
-  service pump, panic reporting, the stack watermark) becomes a `shell` module in the port (see
+- **Board-agnostic code is framework code.** The shell ABI glue (`ShellInfo`, the core-1 service
+  pump, panic reporting, the stack watermark) is the port's `shell` module (see
   [07-ports-and-shell.md](07-ports-and-shell.md)); the generic runtime input modules
-  (`TouchMod`/`ImuMod`) move into `light-input`, generic over the driver, the clock, and the app
-  event (see [03-input.md](03-input.md)).
+  (`TouchMod`/`ImuMod`) live in `light-input`, generic over the driver, the clock, and the app event
+  (see [03-input.md](03-input.md)); the reusable RTC and power modules live in `light-rtc` and
+  `light-power-manager` (see [06-power-and-time.md](06-power-and-time.md)).
 - **The per-board instantiation crate stays thin** — construct peripherals via `board::take`, build
   the drivers, wire the framework modules and the portable app, embed the assets, and provide the
-  three entry-point wrappers. Tens of lines, as the deduplicated executables already are.
+  three entry-point wrappers. Tens of lines.
 
-Adding a board is then a small board-specific crate plus a thin instantiation crate, with no
-board-agnostic code copied. (The app-coupled runtime modules — RTC, audio, power policy — move to the
-framework separately; see proposal B in [mk5-proposals.md](mk5-proposals.md).)
+Adding a board is a small board-specific crate plus a thin instantiation crate, with no
+board-agnostic code copied.
 
-### The exe/crate naming constraint
+### The exe/crate naming convention
 
 The CMake executable and a Corrosion-imported crate share one target namespace, so an executable and
-a linked crate **cannot share a name**. Hence the `_app` suffix on some instantiation crates (an
-executable `foo` alongside its linked crate `foo_app`), and the distinct names where a crate is
-linked by an executable of a related name.
-
-> **mk5 decision (proposal F).** The `_app` workaround is removed by a uniform naming convention: the
-> instantiation crate is always `light_app_<name>` and the executable is `<name>`, so the two never
-> share a stem and cannot collide (the pattern the ui_demo targets already use). See
-> [10-build-and-release.md](10-build-and-release.md).
+a linked crate **cannot share a name**. The naming convention keeps them apart uniformly: the
+instantiation crate is always `light_app_<name>` and the executable is `<name>`, so the two never
+share a stem and cannot collide. See [10-build-and-release.md](10-build-and-release.md).
 
 ## The runtime shape of an application
 
@@ -136,31 +131,29 @@ assets-as-data path a font (LGF) or theme (LTH) blob takes. See
   The widget demo's four boards share one `light_app_ui_demo/design.json` with a small per-board
   override each.
 - Every interface is authored as data: an app hands the display module a parsed LUI `Blob`. The
-  toolkit's hand-written page-tree API (`Page`/`Desc`/`navigate`/`build`) is retired as an app-facing
+  toolkit's hand-written page-tree API (`Page`/`Desc`/`navigate`/`build`) is not an app-facing
   construction path — no app uses it — but stays available as the machinery behind the `file_list!`
-  list helper and the toolkit's own tests (the mk5 decision below).
+  list helper and the toolkit's own tests (below).
 
 An app maps a design's event ids to its own events with a small `ui_event`/`map_child` function; the
 navigation (`goto`/`back`) and the transition (`descent`) come from the blob. The design's event ids
 and widget tags are the contract between the JSON and the firmware.
 
-### mk5 decision — one UI construction path: data only
+### One UI construction path: data only
 
-*Decided and implemented for mk5 (proposal D).* mk4's `UiSource` offered two construction paths — a
-hand-written `const` page tree (`Const`/`Pages`) and a compiled LUI blob (`Blob`) — that had to be
-kept behaviorally identical. mk5 makes **the LUI blob the one app-facing path**: `UiSource` is gone,
-and each app's display config now holds a parsed `Lui` blob directly. Every application is
-blob-authored — the touch fleet, and the two key-driven boards (an OLED Pico and a bare-CMSIS
-STM32) that were the last const-tree holdouts, now ported: each embeds a `design.json`, builds it with
-`build_lui_with`, and drives navigation from the design's `goto`/`back` through a small `map_child`.
+**The LUI blob is the one app-facing UI construction path.** Each app's display config holds a parsed
+`Lui` blob directly; there is no alternative hand-written construction path to keep behaviourally
+identical to it. Every application is blob-authored — the touch fleet and the key-driven boards alike:
+each embeds a `design.json`, builds it with `build_lui_with`, and drives navigation from the design's
+`goto`/`back` through a small `map_child`.
 
 The const-tree API — `navigate(&Page)`/`build(&Desc)` and the `Page`/`Desc` descriptor types — is
-**retired as an app-facing whole-page construction path**: no application uses it. It is not deleted,
+**not an app-facing whole-page construction path**: no application uses it. It is retained,
 because it remains the machinery behind the `file_list!` list helper (which emits `Desc` rows a
 `FilePicker` fills) and the toolkit's own test fixtures, so it stays `pub`. The low-level widget
 creators (`create_window`/`create_button`/`create_label`) stay — the LUI builder is written on them.
 
-Boards that share a near-identical demo author it once and override: the two key-driven boards extend
+Boards that share a near-identical interface author it once and override: the key-driven boards extend
 a shared `design.json` (a data-only `crates/*/` entry resolved by `extends` name), overriding only
 device size and list-row height — the same authored-once-overridden-per-board pattern the touch fleet
 uses against `light_app_ui_demo`. Every interface is authored as data.
@@ -172,22 +165,25 @@ are the generic `TouchMod`/`ImuMod` in `light-input`, instantiated in the board-
 that board's drivers, clock and axis map. They are generic over the app's event type through the
 `light_input::BoardEvent` trait (touch/gesture/orientation constructors, `is_stats`/`drag_consumed`
 inspectors, see [03-input.md](03-input.md)), so on a board that shares them several apps (for example
-a dictaphone and the widget demo) use the same modules. Modules that consume app-specific extension
-events (the RTC, the audio, the power module) stay in the app or the shared app-board crate, since
-they are app-coupled — and read those events through recognizer functions, not a trait, because the
-orphan rule forbids implementing a framework trait on the app's extension type (see
-[06-power-and-time.md](06-power-and-time.md)).
+a dictaphone and the widget demo) use the same modules.
 
-### mk5 decision — the reusable runtime modules are framework, not per-app
+### The reusable runtime modules are framework, not per-app
 
-*Decided for mk5 (proposal B, building on A).* mk4 kept the touch/IMU modules shareable but left the
-RTC, audio, and power modules app-coupled and duplicated across apps. mk5 promotes the reusable ones
-to framework crates — the power module to `light-power-manager`, the RTC module to `light-rtc`, an
-audio-player module to `light-audio` (see [06-power-and-time.md](06-power-and-time.md) and
-[04-audio-and-midi.md](04-audio-and-midi.md)) — each generic over its driver or mechanism, a clock,
-and the app event through a small per-subsystem event trait, the way `light_input::BoardEvent` already
-works for input. So an app wires *drivers and event-trait impls*, not hand-written modules; what
-stays app-side is genuinely app-shaped logic (a recorder, an app's own console commands).
+A runtime module that is the same for every app that has the hardware is a framework crate, never a
+per-app copy. The power lifecycle is `PowerMod` in `light-power-manager` and the real-time clock is
+`RtcMod` in `light-rtc` (see [06-power-and-time.md](06-power-and-time.md)), each generic over its
+driver or mechanism, a clock, and the app event. Audio has no such module: a recorder is an
+application, and its reusable unit is the generic `light_dictaphone_core` crate (see
+[04-audio-and-midi.md](04-audio-and-midi.md)).
+
+How a framework module reads the app's events depends on where those events live. An event that is
+the app event's *own* variant (touch, gesture, orientation) is reached through a trait —
+`light_input::BoardEvent`. An event that lives in the app's board-specific *extension* type (an RTC
+request, a backlight command) is reached through **recognizer functions** passed to the module
+(`is_report: fn(&A) -> bool`, `backlight_of: fn(&A) -> Option<u16>`, …), because the orphan rule
+forbids implementing a framework trait on the app's extension type. So an app wires *drivers,
+mechanisms and recognizer fns*, not hand-written modules; what stays app-side is genuinely app-shaped
+logic (a recorder, an app's own console commands).
 
 ## The worked examples
 
@@ -199,8 +195,9 @@ stays app-side is genuinely app-shaped logic (a recorder, an app's own console c
   playback to a FAT card through the audio codec, a recordings list, an RTC, in two UI orientations
   over one engine and one shared board crate.
 - **Crossfire** (`light_app_crossfire`) — a USB-MIDI forwarder between every instrument on a USB host
-  port, with a small OLED status display; runs on an RP2040/RP2350 board. The reference application
-  for the USB-host and MIDI stack.
+  port, with a small OLED display of two pages (live status, and uptime and traffic counters) turned
+  by the board's BOOTSEL button; runs on an RP2040/RP2350 board. The reference application for the
+  USB-host and MIDI stack, and for a board whose only input is BOOTSEL.
 
 ## Design decisions and constraints
 

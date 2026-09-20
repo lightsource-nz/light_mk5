@@ -1,6 +1,6 @@
 # Assets and tooling
 
-*mk4 as-built.* This document covers the host tooling that turns authored files into the binary
+This document covers the host tooling that turns authored files into the binary
 blobs firmware embeds, and the blob formats themselves: `tools/crush-core` (the pure compilation
 core), `tools/crush` (the CLI over it), `tools/light-host-gui` and `tools/light-ui-editor` (the
 desktop preview and editor), and the LGF/LTH/LUI formats. None of this is linked into firmware; all
@@ -59,8 +59,7 @@ crush's build-time compile and the editor's live preview resolve a hierarchy ide
 ### render — rasterising a face to LGF
 
 `render::rasterize(ttf, face_index, pixel_size, point_size, ppi_h, ppi_v, mono)` drives FreeType
-over a fixed character set (`CHAR_SET`, the 95 printable ASCII glyphs, unchanged from the predecessor
-C `crush`) and returns a `Rasterized` — the resolved cell metrics, the per-glyph packed 1-bpp
+over a fixed character set (`CHAR_SET`, the 95 printable ASCII glyphs) and returns a `Rasterized` — the resolved cell metrics, the per-glyph packed 1-bpp
 bitmaps (for the C emitter), and the encoded LGF blob. The contract carries three hard-won rules,
 ported from the C backend:
 
@@ -154,16 +153,15 @@ stays an override, not a flattened copy. The two are round-trip tested against e
 ## crush: the CLI
 
 `crush` is the command-line tool over `crush-core`: the context, file I/O, and logging around the
-pure jobs. Its command surface is deliberately kept compatible with the predecessor C `crush` —
-`font add`, `display add`, `render new`, `context`, `console` — because that is what the font CMake
-helper's generated script drives and what the acceptance tests exercise. What changed from the C
-tool is the *output*: a render now emits an LGF blob (data the firmware embeds) beside the C pair the
-older consumers still link, so both stacks share one tool.
+pure jobs. Its command surface — `font add`, `display add`, `render new`, `context`, `console` — is
+stable and shared with the C `crush` it supersedes, because that is what the font CMake helper's
+generated script drives and what the acceptance tests exercise. A render emits an LGF blob (the data
+the firmware embeds) beside the C header/source pair that consumers of the C output link, so one
+tool serves both.
 
 The **context** is a directory of JSON files (`.crush/` in the working directory, or
-`$CRUSH_CONTEXT`) holding fonts, displays and renders. File names and top-level keys follow the C
-implementation's (`font.json` with `contextFonts`, and so on) so an existing context template still
-seeds it. A `font add` opens the face through FreeType before recording it (so a bad file is refused
+`$CRUSH_CONTEXT`) holding fonts, displays and renders. File names and top-level keys match the C `crush`'s
+(`font.json` with `contextFonts`, and so on), so a context template written for it seeds this one. A `font add` opens the face through FreeType before recording it (so a bad file is refused
 where the message names it) and copies it into the context. A `display add` records a resolution and,
 from an optional `--dimension` in millimetres, a pixel density — without it, 96 ppi is assumed and a
 warning notes that point sizes will not match the glass. A `render new` runs the rasteriser and

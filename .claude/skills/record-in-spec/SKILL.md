@@ -30,7 +30,10 @@ Follow `00-overview.md` → Conventions → *Documentation conventions*:
 - **Diagrams:** Mermaid in fenced blocks, each with a one-line italic caption; no raw `;` or `::` in
   labels; write angle brackets as `&lt;` / `&gt;`; solid arrows = a compile-time dependency, dashed =
   a runtime call.
-- **Label status:** mk4 as-built vs mk5 decision.
+- **Present tense, no history.** State what the framework *is*, never how it came to be. Record a
+  decision as a rule with its reason beside it, not as a narrative of what changed; do not describe
+  a superseded design. A change to existing behaviour rewrites the relevant text in place so the
+  document always reads as the current definition.
 
 ## Keep code and spec in step
 

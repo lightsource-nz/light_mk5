@@ -4,10 +4,10 @@ This directory is the specification and user documentation for the **Light Frame
 lightsource aotearoa. Every document here is normative: it defines the structure and behaviour that
 the framework's code implements. The documents are the source of truth; the code follows them.
 
-This set begins as an extraction of the **mark 4 status quo** — a faithful description of the
-predecessor (mark 4) framework as it exists today. It is then edited to define **mark 5**: what changes,
-what is added, what is removed. Where a document describes mk4 as-built, it says so; where it states
-a mk5 decision, it says so.
+The specification describes the framework as it is. It states contracts, public surfaces, and
+invariants in the present tense; it does not narrate how the design was arrived at. Where a design
+choice is recorded, it is recorded as a rule with its reason, so the rule outlives the conversation
+that produced it.
 
 ---
 
@@ -22,7 +22,7 @@ The framework is used by lightsource's own products; the applications in the tre
 the dictaphone, the crossfire USB-MIDI host) are both real applications and the worked examples of
 how an application is built on it.
 
-## Core principles (mk4 as-built)
+## Core principles
 
 1. **Rust above a C shell.** The framework code is a `no_std` Rust staticlib linked into a firmware
    executable that the platform SDK's build still owns. On the RP2 chips that SDK is pico-sdk; the C
@@ -33,7 +33,7 @@ how an application is built on it.
 2. **Host-first, made structural.** Nothing in the portable crates touches hardware directly;
    everything reaches the world through the traits of `light_core::hal`, which a *port* crate
    implements. The same portable code runs under `cargo test` on the host against a mocked board.
-   This is the predecessor C framework's host-first discipline, enforced by the type system.
+   The type system enforces the discipline: portable code cannot name hardware.
 
 3. **Layered crates, one direction of dependency.** The portable crates form a stack; each depends
    only on the ones above it and **never on a port**. A port crate (`light-rp2`, `light-stm32h7`,
@@ -49,9 +49,8 @@ how an application is built on it.
    embedded blobs) and links it to a board-support crate. See [09-application-model.md](09-application-model.md).
 
 6. **One version across the tree.** All crates share a single version, bumped in the commit a release
-   tags. MIT licensed throughout. *(mk4 kept every crate in one cargo workspace; mk5 splits the tree
-   into a portable workspace and a firmware workspace that share the one version — see proposal F in
-   [mk5-proposals.md](mk5-proposals.md).)* See [10-build-and-release.md](10-build-and-release.md).
+   tags. MIT licensed throughout. The tree is two cargo workspaces — a portable one and a firmware
+   one — that share that single version. See [10-build-and-release.md](10-build-and-release.md).
 
 ## Conventions
 
@@ -77,8 +76,8 @@ here as they are established, so the rules live in the repository rather than in
   a compile-time dependency, dashed = a runtime call). Mermaid treats `;` as a statement separator
   and `::` as class-assignment syntax, so neither may appear raw in a label; write angle brackets as
   `&lt;` / `&gt;`.
-- **Status labelling.** Where a document describes mk4 as-built, it says so; where it states an mk5
-  decision, it says so.
+- **Present tense, no history.** State what the framework is, not how it came to be. A rule that
+  needs its reason carries the reason beside it; a superseded design is not described.
 
 ### Normative code conventions
 
@@ -97,7 +96,7 @@ The six **Core principles** above are normative rules the code obeys. In additio
   plus one `critical-section`, and nothing above `light-core` changes (see
   [07-ports-and-shell.md](07-ports-and-shell.md)).
 
-## The execution model (mk4 as-built)
+## The execution model
 
 A firmware image is the C shell plus the Rust staticlib. At boot the shell brings up the platform,
 then hands control to Rust through a small ABI:
@@ -145,7 +144,7 @@ polled each pass and reports whether it is busy or idle; the runtime idles the c
 idle. Modules communicate through a typed **event bus**. This is the whole concurrency model on the
 application core: no preemption, no async runtime. See [01-core-runtime.md](01-core-runtime.md).
 
-## The layering (mk4 as-built)
+## The layering
 
 Portable crates, each depending only on those above it, never on a port:
 
@@ -178,13 +177,13 @@ Host tooling (never linked into firmware):
     tools/light-host-gui            an egui window that renders a light-ui UI offscreen on the desktop
     tools/light-ui-editor           a desktop editor for light-ui designs, over light-host-gui
 
-## Targets (mk4 as-built)
+## Targets
 
 The reference ports run on the RP2040 and RP2350 (both the Arm and Hazard3 cores), and the STM32H743
 and STM32F411 over bare CMSIS; a consumer adds a chip by writing a port (see
 [07-ports-and-shell.md](07-ports-and-shell.md)). A host build exercises the portable crates under
 `cargo test` against a mocked board. Hardware-verified across a range of RP2350 touch boards of
-differing sizes, an OLED-panel rig, and the crossfire USB-MIDI host.
+differing sizes, an OLED-panel board, and the crossfire USB-MIDI host.
 
 ---
 
@@ -203,7 +202,6 @@ differing sizes, an OLED-panel rig, and the crossfire USB-MIDI host.
 | [08-assets-and-tooling.md](08-assets-and-tooling.md) | `crush`/`crush-core`, the LGF/LTH/LUI blob formats and their versioning, the design `extends` mechanism, `light-host-gui`, `light-ui-editor`. |
 | [09-application-model.md](09-application-model.md) | The application model: portable app crates, board-support crates, per-board instantiation crates, the design-as-data workflow, the worked examples. |
 | [10-build-and-release.md](10-build-and-release.md) | The build system: CMake + Corrosion, the presets, the `light-*.ps1` script layer, flashing, host tests, versioning and releases. |
-| [mk5-proposals.md](mk5-proposals.md) | The working backlog of candidate mk5 design changes extracted from mk4; each item's design moves into its subsystem document as it is decided. |
 
 Each subsystem document states, for its crates: the responsibility, the public surface (the types
 and traits that define its contract), the behaviour and the invariants, and the notable design

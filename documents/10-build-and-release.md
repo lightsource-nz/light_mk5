@@ -30,15 +30,12 @@ projects.
   executable subdirectory to add. Each executable links its instantiation crate's staticlib plus the
   pico-sdk libraries it needs.
 
-## mk5 decision — two workspaces and uniform target naming (proposal F)
-
-*Decided and implemented for mk5.* mk4 kept one cargo workspace, which forced two workarounds mk5
-removes.
+## Two workspaces, and uniform target naming
 
 - **Two workspaces, one version.** The single-global `critical-section` (a property of that crate, not
   a defect — see [07-ports-and-shell.md](07-ports-and-shell.md)) means the ports cannot build
-  together and none build on the host, so mk4's host test was `cargo test --workspace` with a
-  twenty-plus-entry `--exclude` list that every new board had to grow. mk5 splits the tree into a
+  together and none build on the host. A single workspace would therefore need a per-board
+  `--exclude` list on every host test, grown by every new board. The tree is instead two workspaces: a
   **portable workspace** (the repository-root `Cargo.toml`: the framework crates, the portable
   application crates, and the host tools) and a **firmware workspace** (`firmware/Cargo.toml`: the
   ports, the board-support crates, the per-board instantiation crates, and the `module/*` executables,
@@ -51,14 +48,13 @@ removes.
   (and `crush`, a host tool, from the root); the firmware crates depend on the portable ones by path
   across the boundary. Both manifests carry the same `[workspace.package] version` literal (cargo
   cannot inherit one across workspaces); a release bumps both in the commit it tags.
-- **Uniform target naming.** mk4's `_app` suffix existed because a CMake `add_executable(<name>)`
-  target and a Corrosion-imported crate of the same name collide in one CMake namespace. mk5 adopts a
-  uniform convention where the instantiation crate and the executable never share a stem — the crate
-  is `light_app_<name>` and the executable is `<name>` — so the collision cannot arise and the four
-  `_app` crates are renamed (`crossfire_pico_app` → `light_app_crossfire_pico`, and so on).
+- **Uniform target naming.** A CMake `add_executable(<name>)` target and a Corrosion-imported crate
+  of the same name collide in one CMake namespace. The convention keeps them apart: the instantiation
+  crate is `light_app_<name>` and the executable is `<name>`, so the two never share a stem and the
+  collision cannot arise. No crate carries an `_app` suffix.
 
-The single-global critical-section itself stays a per-firmware property; F changes the build *around*
-it, not the choice.
+The single-global critical-section itself is a per-firmware property; the workspace split shapes the
+build *around* it, not the choice.
 
 ## The asset pipeline in the build
 

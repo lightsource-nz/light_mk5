@@ -155,26 +155,25 @@ in `.bss` as statics taken once as `&'static mut`, never built on the small core
 recurring discipline across the firmware: a large value on the stack can overflow into the other
 core's stack region.
 
-### mk5 decision — capacities have defaults and derive where they can
+### Capacities have defaults, and derive where they can
 
-*Decided and implemented for mk5 (proposal G, capacities half).* mk4 made every board hand-pick the
-fixed-capacity const generics — `EventBus<E, N, S>`, `Runtime<N>`, `Ui<A, N>` — and a wrong
-subscriber count `S` surfaced only as a runtime `expect("subscriber slot")` panic. mk5:
+The fixed-capacity const generics — `EventBus<E, N, S>`, `Runtime<N>`, `Ui<A, N>` — are sized by a
+board only where its numbers differ from the defaults:
 
-- gives the runtime and the event bus **default const-generic parameters** (`light_core::DEFAULT_MODULES`
-  and `DEFAULT_EVENT_DEPTH`), so a board writes `EventBus<AppEvent>` / `Runtime` and names a capacity
-  only when it differs — cleaner than a type alias, and fully backward-compatible with the explicit
-  `EventBus<E, N, S>` boards that need other numbers. (`Ui<A, N>`'s arena is a page-complexity fact
-  with no meaningful default, so it stays explicit.)
-- **derives the default subscriber count from the module set**: the default `S` *is*
-  `DEFAULT_MODULES`, one slot per module a default `Runtime` can hold, so a board on the defaults can
-  never under-provision the bus. Over-provisioning surfaces at **startup** — `subscribe` returns
+- The runtime and the event bus carry **default const-generic parameters**
+  (`light_core::DEFAULT_MODULES` and `DEFAULT_EVENT_DEPTH`), so a board writes `EventBus<AppEvent>` /
+  `Runtime` and names a capacity only when it differs. The explicit `EventBus<E, N, S>` form remains
+  for boards that need other numbers. `Ui<A, N>`'s arena is a page-complexity fact with no meaningful
+  default, so it is always explicit.
+- **The default subscriber count is derived from the module set**: the default `S` *is*
+  `DEFAULT_MODULES`, one slot per module a default `Runtime` can hold, so a board on the defaults
+  cannot under-provision the bus. Over-provisioning surfaces at **startup** — `subscribe` returns
   `None` and `Runtime::add` returns `Error::Capacity`, both in the init path — never as a mid-run
-  panic (every subscription is taken at startup). A per-board compile-time count would need a
-  module-registration macro; the derived default is the feasible slice, and the explicit path stays
-  for boards that outgrow it.
-- keeps the capacities a board *does* set in **one documented place** per board (its statics and the
-  `Runtime<N>` in `light_app_main`) rather than scattered across call sites.
+  panic, because every subscription is taken at startup. A per-board compile-time count would need a
+  module-registration macro; the derived default is the feasible slice, and the explicit path serves
+  boards that outgrow it.
+- The capacities a board *does* set live in **one place** per board — its statics and the
+  `Runtime<N>` in `light_app_main` — never scattered across call sites.
 
 ## Behaviour and invariants
 
@@ -190,9 +189,8 @@ subscriber count `S` surfaced only as a runtime `expect("subscriber slot")` pani
 
 ## Design decisions and constraints
 
-- **Host-first is structural, not conventional.** The predecessor C framework had a host-first
-  discipline; mk4 makes it a property of the type system — portable code cannot name hardware, so it
-  cannot fail to be host-testable.
+- **Host-first is structural, not conventional.** It is a property of the type system — portable
+  code cannot name hardware, so it cannot fail to be host-testable.
 - **Cooperative, not async.** The runtime is a plain poll loop. The cost is that a module must yield;
   the benefit is no executor, no futures, no hidden allocation, and a model small enough to reason
   about on a 4 KB stack.

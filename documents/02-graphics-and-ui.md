@@ -41,9 +41,7 @@ that knows the rotation.*
 ### Responsibility
 
 Define the LGF (Light Glyph Font) format — a rendered bitmap font as data — and a `no_std` reader
-that parses a blob in place. Provide an `alloc`-gated encoder that `crush` uses to build blobs. This
-replaces the predecessor framework's generated C, which hardcoded consumer field names as printf
-strings and produced files that did not exist until `crush` had run.
+that parses a blob in place. Provide an `alloc`-gated encoder that `crush` uses to build blobs.
 
 ### Public surface
 
@@ -88,8 +86,7 @@ strings and produced files that did not exist until `crush` had run.
 ### Responsibility
 
 Draw primitives and text in logical coordinates onto a physical buffer, honouring a rotation/flip
-transform and a clip rectangle, in the panel's pixel format. Ported from the predecessor C framework
-with its hardware-fixed conventions intact.
+transform and a clip rectangle, in the panel's pixel format.
 
 ### Public surface
 
@@ -231,8 +228,8 @@ sequenceDiagram
 spin-or-yield budget. The deadline bounds one chunk (from its own kick), not the whole update.*
 
 **Rust makes the buffer rule structural.** While an update is in flight the frame buffer cannot be
-mutated, because `frame_mut` returns `None` (single-buffered) — a rule that used to be
-documentation is now the borrow. `kick`'s `start_data` is `unsafe` because it hands the transport a
+mutated, because `frame_mut` returns `None` (single-buffered) — the borrow checker enforces the
+rule. `kick`'s `start_data` is `unsafe` because it hands the transport a
 borrow of the core's buffer, sound precisely because the core refuses mutation until the transfer
 lands.
 
@@ -310,19 +307,14 @@ timings, quirks — are facts about those parts, not the framework.
 
 ---
 
-### mk5 decision — region buffering to relieve the memory model
+### Region buffering — the page slide on a single buffer
 
-*Decided and implemented for mk5 (proposal G, memory half); host-verified and confirmed on the 3.49
-glass.* On the largest panels a full second framebuffer is the dominant RAM user (a ~430 KB double
-buffer of ~520 KB total), yet double buffering exists **only** to serve the whole-page slide and
-rotation animations — steady-state UI already pushes just the invalidated regions, and without a back
-buffer the toolkit snaps them. mk5 keeps the slide on a **single buffer** by scrolling the outgoing
-image off it in place, so a big panel drops the second frame without losing its slide.
-
-**The mechanism.** A board opts in with [`Display::set_region_buffering`](../crates/light-display) and
-supplies no back buffer; the toolkit's page step then runs each half of the slide with a different
-single-buffer mechanic — the new in-place shift for the open reveal, and the existing `over` redraw
-(the incoming at a shrinking offset) for the close cover — rather than the `Full` capture path's
+Double buffering exists **only** to serve the whole-page slide and rotation animations: steady-state
+UI pushes just the invalidated regions, and without a back buffer the toolkit snaps them. On the
+largest panels the second framebuffer is the dominant RAM user, so the toolkit can run the slide on a
+**single buffer** by scrolling the outgoing image off it in place. A board opts in with
+[`Display::set_region_buffering`](../crates/light-display) and supplies no back buffer; the page step
+then runs each half of the slide with a different single-buffer mechanic instead of the capture path's
 blit-from-a-second-frame:
 
 - **A mirrored slide from two single-buffer mechanics.** A slide that reads right opens and closes as
@@ -331,31 +323,34 @@ blit-from-a-second-frame:
   single buffer each half is a different trick. The **reveal** (open): the outgoing image is already in
   the buffer and survives there as *pixels* (its widget tree is torn down at navigate, the image is
   not), so each step scrolls the still-outgoing part off by the step's travel with
-  [`Canvas::shift_region`](../crates/light-draw) — an in-place, single-axis memmove that drops what
-  falls past the edge and leaves the uncovered strip — then paints the incoming into that strip from
-  the live tree; a static-incoming, paint-only-the-new-strip shape, the shift standing in for the
-  capture path's blit-from-a-second-frame. The **cover** (close): the returning page is not in the
-  buffer, so it is redrawn at a shrinking offset over the outgoing (the `over` mechanic). Neither holds
-  a second frame or a second tree. The two are aligned to leave and return the *same* edge — the one
-  subtlety is that `over` negates the horizontal axis but not the vertical, so the cover-close's
-  reversal is suppressed on the vertical axis to keep the mirror. On the full-frame-only AXS15231B
-  (which ignores windowing) the whole composited buffer is pushed each step, as it must be — the
-  *buffer* is what region buffering saves, not the transfer.
+  [`Canvas::shift_region`](../crates/light-draw) — an in-place, single-axis shift that drops what falls
+  past the edge and leaves the uncovered strip — then paints the incoming into that strip from the live
+  tree: a static-incoming, paint-only-the-new-strip shape. The **cover** (close): the returning page is
+  not in the buffer, so it is redrawn at a shrinking offset over the outgoing (the `over` mechanic).
+  Neither holds a second frame or a second tree. The two are aligned to leave and return the *same*
+  edge; `over` negates the horizontal axis but not the vertical, so the cover-close's reversal is
+  suppressed on the vertical axis to keep the mirror. On a panel that accepts only full-frame pushes
+  the whole composited buffer is pushed each step — the *buffer* is what region buffering saves, not
+  the transfer.
+- **Any single-buffer format.** `shift_region` scrolls an RGB565 buffer along either axis by whole-pixel
+  byte moves. It scrolls a 1 bpp (`Mono1`) buffer along either axis too, by two mechanics: a vertical
+  shift moves whole rows (a byte move, so the column run must be byte-aligned), and a horizontal shift
+  — sub-byte, since eight pixels pack into a byte along a row — moves pixel by pixel. Both are cheap on
+  the small buffers a 1 bpp panel has. `Display::region_buffering()` is therefore true for either
+  format once opted in and single-buffered; a rotated panel's on-screen horizontal slide is a vertical
+  buffer shift and vice versa, and both work.
 - **Rotation snaps.** Every pixel moves along an arc each frame, so a rotation has no small moving
-  region and genuinely needs the whole prior image to `blit_rotated` — which the single-buffer path
-  already snaps (`rotation_step` falls back without a back buffer). A board that wants the rotation
-  *animated* keeps `Full` and pays for the frame; region buffering targets the slide, which is the
-  common animation and where the RAM ceiling bites.
+  region and genuinely needs the whole prior image to `blit_rotated`, which the single-buffer path
+  snaps (`rotation_step` falls back without a back buffer). A board that wants the rotation *animated*
+  keeps a back buffer and pays for the frame; region buffering targets the slide, which is the common
+  animation and where the RAM ceiling bites.
 
-**Verification.** A differential host test drives the same open transition through both the capture
+**Invariants, as tested.** A differential host test drives the same open transition through a capture
 display and a single-buffer region display and asserts the pushed frames are **byte-identical at every
-step** of the reveal — so the in-place shift is provably as correct as the verified capture path,
-without a second frame — and a second test locks the routing (open reveals via the shift, close covers
-via `over`). On hardware, all three 3.49 apps were flipped to region buffering (each 215 KB back buffer
-removed): ui_demo and the upright dictaphone (horizontal transitions) and the wide dictaphone (a
-rotated, vertical `FromBottom` transition), and the open/close was confirmed a clean mirror on the
-glass in every case, smooth and tear-free, with zero skipped frames and zero chunk timeouts. The
-`Full`/scanout paths and single-buffer boards that do not opt in are unchanged.
+step** of the reveal, so the in-place shift is exactly as correct as the capture path without a second
+frame; a second test locks the routing (open reveals via the shift, close covers via `over`); and
+`shift_region` carries per-format tests for each axis. A board that does not opt in, and the
+double-buffered and scanout paths, are unaffected.
 
 ## The widget toolkit — `light-ui`
 
@@ -363,16 +358,14 @@ glass in every case, smooth and tear-free, with zero skipped frames and zero chu
 
 A retained tree of windows, buttons and labels over the frame layer, driven by `const` descriptors
 in flash, that lays itself out, paints itself, animates page transitions and rotation, and turns
-touches into application events. Ported from the predecessor C framework, hardware-free (it knows
-nothing of touch controllers, buttons or IMUs), and exercisable entirely on the host.
+touches into application events. Hardware-free (it knows nothing of touch controllers, buttons or
+IMUs), and exercisable entirely on the host.
 
-### mk5 decision — decompose the toolkit into modules
+### Module structure
 
-*Decided and implemented for mk5 (proposal C).* mk4's toolkit was a single ~4.6k-line source file
-(with the LUI runtime and theme already split out), while `light-core` beside it is cleanly divided
-into focused modules. mk5 split the toolkit the same way — a behaviour-preserving, move-only refactor
-(the test suite unchanged) that makes each part independently testable. `lib.rs` keeps the `Ui`
-context, the arena/tree fundamentals, the mutation setters and the tests; the rest moved out to:
+The toolkit is divided into focused modules, each independently testable, in the same way
+`light-core` is. `lib.rs` holds the `Ui` context, the arena/tree fundamentals, the mutation setters
+and the tests; the rest lives in:
 
 - `model` — the widget types (`Widget`, `Kind`, `Window`, `Button`, `Label`, `WidgetId`, `Nav`,
   `Layout`, `Axis`, `Descent`, `Shade`, `TextSlot`, `IndicatorShape`).
@@ -382,14 +375,13 @@ context, the arena/tree fundamentals, the mutation setters and the tests; the re
 - `scrolling` — scrolling and the scroll clamp (named `scrolling`, not `scroll`, so it does not
   shadow the public `scroll` flags module in `model`).
 - `input` — the tap-versus-drag state machine, swipe classification, focus, activate (the largest
-  single piece today, ~800 lines).
+  single piece).
 - `nav` — navigation (`navigate`/`_returning`/`_back`) and the parent-based back model.
-- `anim` — the page-transition and rotation animations (extracting these from the render/navigate
-  paths is the subtle part).
+- `anim` — the page-transition and rotation animations.
 - `render` — `paint`/`render`/`commit` and dirty tracking.
-- `lui` and `theme` — already separate; unchanged.
+- `lui` and `theme` — the LUI blob runtime and the LTH theme parser.
 
-The `Ui<A, N>` context ties them together. No public behaviour changes.
+The `Ui<A, N>` context ties them together.
 
 ### Public surface
 

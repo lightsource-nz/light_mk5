@@ -8,9 +8,6 @@ clock drivers, the PCF85063A so far). All three sit near the bottom of the layer
 `light-core`, and — like every portable crate — reach hardware only through `light_core::hal`
 traits, so the whole of each runs under `cargo test` against a mocked bus, clock or mechanism.
 
-This is an extraction of the mk4 status quo as built. It describes structure and behaviour; it does
-not propose changes.
-
 ---
 
 ## `light-power` — power-supply management
@@ -23,7 +20,7 @@ of a request — lives in one portable place that is identical for every device.
 seam a consumer implements for its own supply hardware; the crate ships that portable place
 (`Power<S>`) and one reference driver behind it (the HUSB238 USB-PD sink).
 
-Two hard-won properties, ported from the predecessor C framework, shape everything:
+Two hard-won properties shape everything:
 
 - **Safe by default.** Selecting a profile moves a real rail, and what hangs off that rail is a fact
   about the board this layer cannot see. A sink whose output feeds a downstream input rated for the
@@ -259,21 +256,19 @@ only behaviour gated on "on external power", the single yes/no question the boar
 
 ---
 
-### mk5 decision — the power lifecycle is a framework runtime module
+### The power lifecycle is a framework runtime module
 
-*Decided and implemented for mk5 (proposal B).* mk4 wrapped `PowerManager` in a per-app "board" module
-and copied it into every app (five near-identical copies), fused with unrelated storage and PSRAM
-diagnostic console commands. mk5 promotes the power lifecycle to a framework runtime module — a
+The power lifecycle is a framework runtime module, not a per-app one: a
 `PowerMod<M: PowerMechanism, C: Clock, A>` in `light-power-manager` that runs `on_load` / `tick` /
 `on_unload`, applies backlight commands, and reports battery and external-power stats — generic over
-the board's mechanism, a clock, and the app event. It reads that event through three **recognizer
+the board's mechanism, a clock, and the app event. An app adds the module; it never hand-writes a
+copy. It reads that event through three **recognizer
 functions**, not a trait — `backlight_of: fn(&A) -> Option<u16>`, `is_stats: fn(&A) -> bool`, and
 `busy_of: fn(&A) -> Option<bool>` (the last defers the on-battery power-off while audio is in flight)
-— for the same reason the RTC does (see the implementation note below): the events live in the app's
-extension type, which the orphan rule forbids implementing a framework trait on. The storage and
-PSRAM diagnostics that mk4 fused into that module are a separate concern and are **unfused** — they
-move to where storage lives, or remain app console commands. An app then adds the module, not a
-hand-written copy.
+— for the same reason the RTC does (see the note below): the events live in the app's extension
+type, which the orphan rule forbids implementing a framework trait on. Storage and PSRAM diagnostics
+are a separate concern and are not part of this module — they live where storage lives, or remain
+app console commands.
 
 ## `light-rtc` — real-time clock
 
@@ -328,22 +323,20 @@ implemented so far as a reference driver: the NXP PCF85063A.
   uses exactly the framing each operation needs from the shared `I2cBus` trait, the same trait the
   power and audio drivers reach the world through.
 
-## mk5 decision — an RTC runtime module and an `Rtc` driver trait
+## The RTC runtime module and the `Rtc` driver trait
 
-*Decided for mk5 (proposal B); implemented and hardware-verified.* mk4 wrapped the concrete RTC
-driver in a per-app module and copied it into each app that has a clock (three near-identical
-copies). mk5 promotes it to a framework runtime module — an `RtcMod<R: Rtc, A>` in `light-rtc` —
-generic over the RTC driver and the app event. This needs an **`Rtc` driver trait** (`init` / `now` /
-`set`), which the concrete driver implements, mirroring `ImuDriver` and the new `TouchController` (see
-[03-input.md](03-input.md)); a consumer's own RTC implements the same trait and drops into `RtcMod`.
+The real-time clock is a framework runtime module, not a per-app one: an `RtcMod<R: Rtc, A>` in
+`light-rtc`, generic over the RTC driver and the app event. It rests on an **`Rtc` driver trait**
+(`init` / `now` / `set`), which the concrete driver implements, mirroring `ImuDriver` and
+`TouchController` (see [03-input.md](03-input.md)); a consumer's own RTC implements the same trait
+and drops into `RtcMod`.
 
-**Implementation note — event recognition is by function pointer, not a trait.** The decision first
-proposed a small "rtc-event trait" mirroring `BoardEvent`, but that only works where the events are
-the *app event's own* variants (as touch/gesture/orientation are, so `BoardEvent` is implemented for
+**Event recognition is by function pointer, not a trait.** A trait mirroring `BoardEvent` works only
+where the events are the *app event's own* variants (as touch/gesture/orientation are, so `BoardEvent` is implemented for
 `DemoEvent<X>` in the shared app crate). An app's RTC requests (show / set) live in its *board-specific
 extension* event `X`; the module cannot name `X`, and Rust's orphan rule forbids implementing a
 foreign trait (`RtcEvent`) on the foreign generic type (`DemoEvent<X>`) from the board crate. So
 `RtcMod` takes two **recognizer fns** — `is_report(&A) -> bool` and `get_set(&A) -> Option<Datetime>`
-— exactly as `TouchMod` takes its `reads_held: fn() -> bool` gate. The same rule decides the other
-promoted modules: an event that is the app event's own variant can use a trait; one that lives in the
-board extension is passed as a fn.
+— exactly as `TouchMod` takes its `reads_held: fn() -> bool` gate. The same rule decides every
+framework runtime module: an event that is the app event's own variant can use a trait; one that
+lives in the board extension is passed as a fn.
