@@ -25,7 +25,8 @@
 #
 #   Which board. Every framework board presents the same console device, so with more than one
 # attached the script refuses to guess: -Port names the one to open (COM19, /dev/ttyACM0), or
-# -Board its chip family by serial (rp2, stm32h7, ...).
+# -Board its chip family by serial (rp2, stm32h7, ...). -Port also takes a port that is not a
+# framework console at all -- a debug probe's UART bridge, for a board whose USB port is a host.
 #
 # USAGE:  light-console.ps1 [-Seconds 30] [-Out <file>] [-Until <regex>] [-Quiet] [-Port COM19 | -Board rp2]
 #         light-console.ps1 -Send "stats"                     # one command, print its reply
@@ -46,8 +47,9 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'lib/LightPlatform.psm1') -Force
 
 $serial = if ($Board) { "LIGHT-$Board*" } else { '*' }
-$ports = @(Find-LightSerialPort -VendorId '2E8A' -ProductId '0009' -Serial $serial)
-if ($Port) { $ports = @($ports | Where-Object { $_.Device -eq $Port }) }
+#   -Port names any port, framework console or not: a debug probe's UART bridge carries the
+# console of a board whose USB port is busy being a host
+$ports = if ($Port) { @([pscustomobject]@{ Device = $Port; Description = $Port; Serial = '' }) } else { @(Find-LightSerialPort -VendorId '2E8A' -ProductId '0009' -Serial $serial) }
 if (-not $ports) {
         $hint = if ($IsWindows) { '' } else { " On Linux the port also has to be readable -- if it exists but is not listed, check group membership (dialout/uucp)." }
         $which = if ($Port) { " at $Port" } elseif ($Board) { " with serial $serial" } else { '' }

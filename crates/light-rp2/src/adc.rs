@@ -17,9 +17,7 @@ pub struct Adc {
 
 impl Adc {
         pub fn new(pin: usize) -> Self {
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.adc().clear_bit());
-                while resets.reset_done().read().adc().bit_is_clear() {}
+                crate::reset_cycle(false, |w| w, |w| w.adc().clear_bit(), |r| r.adc().bit_is_set());
                 //   the pad goes fully analog, the way pico-sdk's adc_gpio_init leaves it:
                 // digital input disabled, output disabled, pulls off, no function
                 let pads = unsafe { &*pac::PADS_BANK0::ptr() };

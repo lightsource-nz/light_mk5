@@ -59,7 +59,14 @@ void __attribute__((noreturn)) light_shell_reset_to_bootsel(void)
 // runs from RAM with interrupts off and no call into flash. The pin idles high (pulled up) and the
 // button pulls it low, so pressed is the low reading. Restores chip-select before returning, or the
 // next flash fetch would fault. Chip-independent: the QSPI_SS bit differs on RP2040 vs RP2350.
-bool __attribute__((noinline)) __not_in_flash_func(light_shell_bootsel)(void)
+//
+//   AND THE OTHER CORE MUST NOT FETCH FROM FLASH MEANWHILE. Core 1 runs the console from flash;
+// a cache miss while chip-select floats fetches garbage -- a literal pool read that hands the
+// console loop a pointer made of a spin count, a hard fault, and a console that silently died
+// (found on a board polling this at 20 Hz: the death landed on whichever log line first missed
+// the cache). So the read is bracketed by the SDK's multicore lockout, the same mechanism its own
+// flash writes use: core 1 is asked over the FIFO to park in RAM, and released after.
+static bool __not_in_flash_func(bootsel_sample)(void)
 {
         const uint cs_index = 1; // QSPI_SS is the second QSPI IO
         uint32_t flags = save_and_disable_interrupts();
@@ -75,6 +82,14 @@ bool __attribute__((noinline)) __not_in_flash_func(light_shell_bootsel)(void)
         bool pressed = (sio_hw->gpio_hi_in & cs_bit) == 0;
         hw_write_masked(&ioqspi_hw->io[cs_index].ctrl, GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB, IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
         restore_interrupts(flags);
+        return pressed;
+}
+
+bool light_shell_bootsel(void)
+{
+        multicore_lockout_start_blocking();
+        bool pressed = bootsel_sample();
+        multicore_lockout_end_blocking();
         return pressed;
 }
 
@@ -133,11 +148,45 @@ void light_shell_usb_host_reset(void)
 }
 #endif
 
+//   A HARD FAULT RECORDS ITSELF. The SDK's default handler breakpoints, which with no debugger
+// attached is a second fault inside the first -- a lockup that leaves nothing behind but a PC of
+// 0xFFFFFFFE. This one copies the stacked frame and the faulting core into a static, hands the
+// fact to the panic relay (so the other core's console can say so), and spins where a debugger
+// can read it all: light_shell_fault[core], valid when .magic is 0xFA17.
+struct light_shell_fault_frame {
+        uint32_t r0, r1, r2, r3, r12, lr, pc, xpsr;
+        uint32_t magic;
+};
+struct light_shell_fault_frame light_shell_fault[2];
+
+void __attribute__((used)) light_shell_hardfault(const uint32_t *frame)
+{
+        uint core = sio_hw->cpuid;
+        struct light_shell_fault_frame *f = &light_shell_fault[core & 1];
+        for (int i = 0; i < 8; ++i)
+                ((uint32_t *) f)[i] = frame[i];
+        f->magic = 0xFA17;
+        static const char msg[] = "hard fault";
+        light_app_panic(msg, sizeof msg - 1);
+}
+
+//   the frame is on whichever stack was active; both cores run on their main stacks here
+void __attribute__((naked)) isr_hardfault(void)
+{
+        __asm volatile(
+                "mrs r0, msp\n"
+                "ldr r1, =light_shell_hardfault\n"
+                "bx r1\n");
+}
+
 //   core 1 is handed to Rust once and never comes back: the console loop lives there. Ready means
 // launched; the application need not wait for a host to open the console, since its early log
 // lines wait in the bounded queue and are drained when one does
 static void core1_main(void)
 {
+        //   answer core 0's lockout requests: the SDK's FIFO interrupt handler, in RAM, that
+        // parks this core while core 0 floats the flash chip-select for the BOOTSEL read
+        multicore_lockout_victim_init();
         core1_ready = true;
         light_app_core1_main(&info);
 }

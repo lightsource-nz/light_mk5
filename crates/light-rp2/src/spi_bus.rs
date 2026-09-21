@@ -26,10 +26,7 @@ impl Spi1Bus {
                 // floating line reads garbage during the response-search window
                 gpio::set_pull_up(miso);
 
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.spi1().set_bit());
-                resets.reset().modify(|_, w| w.spi1().clear_bit());
-                while resets.reset_done().read().spi1().bit_is_clear() {}
+                crate::reset_cycle(true, |w| w.spi1().set_bit(), |w| w.spi1().clear_bit(), |r| r.spi1().bit_is_set());
 
                 let mut bus = Self { clk_peri_hz, actual_hz: 0 };
                 bus.set_rate(hz);

@@ -29,11 +29,9 @@ impl PwmOutput {
                 // 0, which ran happily while the pad it was not wired to stayed low
                 let slice = if pin < 32 { (pin / 2) & 7 } else { 8 + ((pin / 2) & 3) };
                 let channel_b = pin % 2 == 1;
-                let resets = unsafe { &*pac::RESETS::ptr() };
                 //   the SDK's runtime unresets the block already; making sure costs nothing and
                 // means this driver does not depend on that
-                resets.reset().modify(|_, w| w.pwm().clear_bit());
-                while resets.reset_done().read().pwm().bit_is_clear() {}
+                crate::reset_cycle(false, |w| w, |w| w.pwm().clear_bit(), |r| r.pwm().bit_is_set());
                 let pwm = unsafe { &*pac::PWM::ptr() };
                 let ch = pwm.ch(slice);
                 let div = (sys_hz / (u32::from(top) + 1) / carrier_hz.max(1)).clamp(1, 255) as u8;

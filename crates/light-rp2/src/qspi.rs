@@ -60,9 +60,7 @@ impl PioQspiDisplayBus {
 
                 let sm_index = 0usize;
                 let pio = unsafe { &*pac::PIO0::ptr() };
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.pio0().clear_bit());
-                while resets.reset_done().read().pio0().bit_is_clear() {}
+                crate::reset_cycle(false, |w| w, |w| w.pio0().clear_bit(), |r| r.pio0().bit_is_set());
 
                 // the two-instruction program, at offsets 0 and 1
                 pio.instr_mem(0).write(|w| unsafe { w.bits(u32::from(INSTR_OUT4)) });

@@ -138,6 +138,12 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
   C shell — may touch while it lives. DMA channels are taken from the top of the range, where
   pico-sdk's `dma_claim_unused_channel` (counting up from 0) will not reach in a shell that claims
   none — a convention, not a claim the SDK can see.
+- **A reset pulse is serialised across the cores.** The reset register is read-modify-written, and
+  the two cores construct peripherals at the same moment at boot — core 1 its console UART, core 0
+  everything else. Every constructor pulses its block through one helper that holds the cross-core
+  critical section; unserialised, one core's write-back carried the other's stale reset bit and
+  put the block that core was configuring back into reset under it (a bus fault on its next
+  register read, with the fault handler in flash).
 - **Outputs settle before they drive.** `gpio::Output::new` drives the pin to its initial level
   before enabling the output, so a chip-select never glitches low on its way up.
 - **The RP2350's pads power up isolated.** `set_function` clears the isolation bit on the RP2350,
@@ -338,7 +344,10 @@ The whole boundary is a handful of functions.
   returning. The chip-select bit differs between the RP2040 and the RP2350, which is why the read
   lives in the shell and not above it. Each read is a short interrupts-off window, so a caller
   samples it at a modest rate (a few times a second), never every pass beside a USB host. A board
-  with no other button uses it as its one input.
+  with no other button uses it as its one input. **And the other core is parked meanwhile**: core 1
+  runs the console from flash, and a cache miss while the chip-select floats fetches garbage â a
+  literal-pool read handed the console loop a pointer made of a spin count, and it died silently.
+  The read is bracketed by the SDK's multicore lockout, the mechanism its own flash writes use.
 - Host-role only (`LIGHT_SHELL_USB_HOST`): `light_shell_usb_host_init` / `_task` / `_reset`, which
   the `tinyusb_midi` transport calls to drive the host stack.
 
@@ -372,10 +381,12 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
 
 ### Behaviour and invariants
 
-- **Logging never blocks the loop.** A console write that finds no room — the host not reading the
-  CDC, the UART FIFO full — **drops** the line rather than waiting. A blocking write here is a latent
-  deadlock: while core 1 waits for CDC TX space it is not polling the device, so the host's next
-  transfer times out. Dropping matches the log queue's own push-side policy.
+- **Logging never blocks the loop.** A console write the CDC class has no room for — the host not
+  reading — **drops** the line rather than waiting. A blocking write there is a latent deadlock:
+  while core 1 waits for CDC TX space it is not polling the device, so the host's next transfer
+  times out. Dropping matches the log queue's own push-side policy. The UART, whose FIFO is shorter
+  than a line, is waited for byte by byte with a bounded spin: a line costs the console core its
+  wire time and no more, and a wedged transmitter costs a bounded spin, never a hang.
 - **Boot-time lines wait in the queue, not the loop.** The application starts as soon as core 1 is
   running; there is no wait for a host to open the console. Lines logged before the host connects sit
   in the bounded log queue and are drained when it does; beyond the queue's depth they are dropped, as
@@ -401,6 +412,14 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
   on. Each core's stack is 4 KB with an MPU guard region at its base, so an overflow is a hard fault
   at the offending instruction rather than a silent overwrite. Module state lives in `.bss`, not on
   the stack.
+- **A hard fault records itself.** The shell's handler copies the stacked frame and the faulting core
+  into `light_shell_fault[core]` and hands the fact to the panic relay before halting, where a
+  debugger can read it. The SDK's default handler breakpoints, which with no debugger attached is a
+  second fault inside the first: a lockup that leaves nothing behind but a PC of `0xFFFFFFFE`.
+- **A hard fault records itself.** The shell's handler copies the stacked frame and the faulting core
+  into `light_shell_fault[core]` and hands the fact to the panic relay before halting, where a
+  debugger can read it. The SDK's default handler breakpoints, which with no debugger attached is a
+  second fault inside the first: a lockup that leaves nothing behind but a PC of `0xFFFFFFFE`.
 
 The device-role build links **no SDK stdio and no TinyUSB device stack**: `pico_stdio_usb`,
 `pico_stdio_uart` and their knobs are absent, and the application supplies no `tusb_config.h`. Only

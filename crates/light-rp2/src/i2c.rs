@@ -85,10 +85,7 @@ macro_rules! i2c_instance {
                                 gpio::set_pull_up(scl);
                                 gpio::set_pull_up(sda);
 
-                                let resets = unsafe { &*pac::RESETS::ptr() };
-                                resets.reset().modify(|_, w| w.$reset().set_bit());
-                                resets.reset().modify(|_, w| w.$reset().clear_bit());
-                                while resets.reset_done().read().$reset().bit_is_clear() {}
+                                crate::reset_cycle(true, |w| w.$reset().set_bit(), |w| w.$reset().clear_bit(), |r| r.$reset().bit_is_set());
 
                                 let i2c = Self::regs();
                                 i2c.ic_enable().write(|w| unsafe { w.bits(0) });

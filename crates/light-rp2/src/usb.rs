@@ -91,10 +91,7 @@ impl UsbBus {
         /// # Safety
         /// Constructs the one owner of the USB controller; call it once.
         pub unsafe fn new() -> Self {
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.usbctrl().set_bit());
-                resets.reset().modify(|_, w| w.usbctrl().clear_bit());
-                while resets.reset_done().read().usbctrl().bit_is_clear() {}
+                crate::reset_cycle(true, |w| w.usbctrl().set_bit(), |w| w.usbctrl().clear_bit(), |r| r.usbctrl().bit_is_set());
 
                 // a clean RAM: no stale control words from before the reset
                 let dpram = Dpram::ptr() as *mut u8;

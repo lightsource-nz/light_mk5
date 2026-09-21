@@ -52,9 +52,7 @@ impl PwmAudio {
                 // extra RP2350 slices; channel B when the pin is odd
                 let slice = if pin < 32 { (pin / 2) & 7 } else { 8 + ((pin / 2) & 3) };
                 let channel_b = pin % 2 == 1;
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.pwm().clear_bit());
-                while resets.reset_done().read().pwm().bit_is_clear() {}
+                crate::reset_cycle(false, |w| w, |w| w.pwm().clear_bit(), |r| r.pwm().bit_is_set());
                 let out = Self { pin, slice, channel_b, sys_hz, dma_ch, dma_timer };
                 out.configure(DAC_WRAP, 1);
                 out.set_level(DAC_SILENCE);

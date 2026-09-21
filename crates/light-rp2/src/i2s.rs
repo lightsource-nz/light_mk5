@@ -247,9 +247,7 @@ impl PioI2sOut {
         pub unsafe fn new(dout: usize, bclk_pin: usize, lrclk_pin: usize, mclk: usize, sys_hz: u32, mclk_hz: u32, dma_a: usize, dma_b: usize) -> Self {
                 let (bclk, lrclk) = (bclk_pin, lrclk_pin);
                 let pio = unsafe { &*pac::PIO1::ptr() };
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.pio1().clear_bit());
-                while resets.reset_done().read().pio1().bit_is_clear() {}
+                crate::reset_cycle(false, |w| w, |w| w.pio1().clear_bit(), |r| r.pio1().bit_is_set());
 
                 let mclk_prog: [u16; 5] = [0xe001, 0xa042, 0xe000, 0xa042, MCLK_ORIGIN];
                 let w1 = |pin: usize| 0x2080 | pin as u16;

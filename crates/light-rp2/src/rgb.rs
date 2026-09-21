@@ -144,9 +144,7 @@ impl RgbScanout {
                 SCAN_TOTAL.store(u32::from(width) * u32::from(height), Ordering::Relaxed);
                 SCAN_W.store(u32::from(width), Ordering::Release);
 
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.pio1().clear_bit().pio2().clear_bit());
-                while resets.reset_done().read().pio1().bit_is_clear() || resets.reset_done().read().pio2().bit_is_clear() {}
+                crate::reset_cycle(false, |w| w, |w| w.pio1().clear_bit().pio2().clear_bit(), |r| r.pio1().bit_is_set() && r.pio2().bit_is_set());
                 let sync = unsafe { &*pac::PIO1::ptr() };
                 let data = unsafe { &*pac::PIO2::ptr() };
                 sync.gpiobase().write(|w| unsafe { w.bits(GPIO_BASE as u32) });

@@ -21,10 +21,7 @@ impl Uart {
         /// # Safety
         /// Constructs the one owner of UART0; call it once.
         pub unsafe fn new(tx: usize, rx: usize, baud: u32, peri_hz: u32) -> Self {
-                let resets = unsafe { &*pac::RESETS::ptr() };
-                resets.reset().modify(|_, w| w.uart0().set_bit());
-                resets.reset().modify(|_, w| w.uart0().clear_bit());
-                while resets.reset_done().read().uart0().bit_is_clear() {}
+                crate::reset_cycle(true, |w| w.uart0().set_bit(), |w| w.uart0().clear_bit(), |r| r.uart0().bit_is_set());
 
                 let uart = unsafe { &*pac::UART0::ptr() };
                 //   the PL011's baud divisor: a 16.6 fixed-point value of peri / (16 * baud). The
@@ -53,15 +50,22 @@ impl Uart {
                 Self { _private: () }
         }
 
-        /// Queue as many of `bytes` as the transmit FIFO has room for, and return how many that
-        /// was. Never waits: what does not fit is the caller's to drop, which is what the console
-        /// does -- logging never blocks the loop.
+        /// Send `bytes`, waiting a bounded time for room in the transmit FIFO byte by byte, and
+        /// return how many went. The FIFO is 32 deep and a log line is longer, so a write that
+        /// only took what fitted truncated every line; the wait is a few byte-times, so a line
+        /// costs the console core its wire time (14 ms at 115200) and no more -- that core has
+        /// nothing more urgent -- while a wedged transmitter costs a bounded spin, never a hang.
         pub fn write(&mut self, bytes: &[u8]) -> usize {
                 let uart = unsafe { &*pac::UART0::ptr() };
                 let mut n = 0;
                 for &b in bytes {
-                        if uart.uartfr().read().txff().bit_is_set() {
-                                break;
+                        // a byte time at the console rate is ~87 us; this is a generous multiple
+                        let mut spins = 20_000u32;
+                        while uart.uartfr().read().txff().bit_is_set() {
+                                spins -= 1;
+                                if spins == 0 {
+                                        return n;
+                                }
                         }
                         uart.uartdr().write(|w| unsafe { w.data().bits(b) });
                         n += 1;

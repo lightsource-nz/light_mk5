@@ -108,3 +108,30 @@ impl Idle for Breathe {
                 core::hint::spin_loop();
         }
 }
+
+/// Cycle a peripheral's reset -- or just release it -- and wait for it to come out. `set` and
+/// `clear` are the reset register's field writers for the block (`|w| w.uart0().set_bit()`);
+/// `done` reads its bit of `RESET_DONE`.
+///
+/// IN A CRITICAL SECTION, because the reset register is read-modify-written and the two cores
+/// construct peripherals at the same moment at boot -- core 1 its console UART, core 0 everything
+/// else. Unserialised, one core's write-back carries the other's stale reset bit, and the block
+/// that core is configuring is back in reset under it: a bus fault on its first register read,
+/// and with the fault handler in flash, a locked core. It showed as the console dying in the
+/// first second, one boot in a few.
+pub(crate) fn reset_cycle<S, C, D>(pulse: bool, set: S, clear: C, done: D)
+where
+        S: FnOnce(&mut pac::resets::reset::W) -> &mut pac::resets::reset::W,
+        C: FnOnce(&mut pac::resets::reset::W) -> &mut pac::resets::reset::W,
+        D: Fn(&pac::resets::reset_done::R) -> bool,
+{
+        // SAFETY: the reset block's registers, under the cross-core lock every port path shares
+        let resets = unsafe { &*pac::RESETS::ptr() };
+        critical_section::with(|_| {
+                if pulse {
+                        resets.reset().modify(|_, w| set(w));
+                }
+                resets.reset().modify(|_, w| clear(w));
+        });
+        while !done(&resets.reset_done().read()) {}
+}
