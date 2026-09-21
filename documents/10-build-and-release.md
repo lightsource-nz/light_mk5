@@ -19,10 +19,10 @@ projects.
 ## The build model — CMake over Corrosion
 
 - CMake is the outer driver. The pico-sdk build owns `crt0`, `boot2`, the linker script, multicore
-  launch and PIO (and, for a USB-host firmware only, TinyUSB's host stack); the bare-CMSIS shell
-  stands in for it on the STM32 ports. A device-role firmware links no SDK stdio and no TinyUSB — its
-  console is the port's Rust USB device stack — so `light_shell_configure` selects the role: the
-  default device role, or `USB_HOST`. See [07-ports-and-shell.md](07-ports-and-shell.md).
+  launch and PIO; the bare-CMSIS shell stands in for it on the STM32 ports. No firmware links SDK
+  stdio or TinyUSB — the console and both USB roles are the port's, in Rust — so pico-sdk is used
+  exactly as shipped, and `light_shell_configure` has no role to select. See
+  [07-ports-and-shell.md](07-ports-and-shell.md).
 - **Corrosion** imports the Rust crates into CMake: `corrosion_import_crate` names the per-board
   `staticlib` crates from the workspace `Cargo.toml`; only the crate the selected executable links is
   actually built. `crush` is imported as a **host** tool (`corrosion_set_hostbuild`) and built for

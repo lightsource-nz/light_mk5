@@ -2,18 +2,12 @@
 # USB-MIDI instruments (through an OTG adapter, one device or a hub), forwarding every
 # instrument's MIDI to every other; the Pico-OLED-1.3 display board and its keys appear
 # when one is fitted. The application is the hardware-independent light_app_crossfire
-# crate; this module is its RP2040 instantiation -- see rust/src/board.rs and
-# include/tusb_config.h.
+# crate; this module is its RP2040 instantiation -- see rust/src/board.rs.
 #   the executable name matches the module directory: light-flash.ps1 and light-debug.ps1
 # resolve module/<target>/<target>.{uf2,elf}
 add_executable(crossfire_pico
         ../light_shell/src/main.c
 )
-
-#   tusb_config.h: the host stack's configuration, on the include path for the shell (which
-# initialises the stack) and for TinyUSB itself. This module's OWN copy: host-stack tuning
-# is per tangible board, never shared
-target_include_directories(crossfire_pico PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 
 target_link_libraries(crossfire_pico PRIVATE
         pico_stdlib
@@ -43,4 +37,4 @@ light_add_ui(crossfire_pico_ui
         CRATE light_app_crossfire_pico ENV LIGHT_UI_LUI
 )
 
-light_shell_configure(crossfire_pico USB_HOST)
+light_shell_configure(crossfire_pico)

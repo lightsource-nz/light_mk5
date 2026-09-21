@@ -52,7 +52,7 @@ pub mod spi;
 pub mod spi_bus;
 pub mod uart;
 #[cfg(feature = "usb-host")]
-pub mod tinyusb_midi;
+pub mod usb_host;
 #[cfg(feature = "usb-console")]
 pub mod usb;
 

@@ -11,11 +11,13 @@ description = "RP2-family board access for the light framework via the chip's pa
 # touches (svd2rust of the same generation over near-identical SVDs), so the chip shows in
 # three places: which pac is aliased as `pac`, the timer block's name, and the RP2350's
 # pad isolation bit. Everything else is one source
-rp2040 = ["dep:rp2040-pac"]
-rp2350 = ["dep:rp235x-pac"]
-#   the TinyUSB host transport, which resolves against tinyusb_host at link time: only a
-# firmware whose shell was built in the host role can carry it
-usb-host = ["dep:light-midi"]
+rp2040 = ["dep:rp2040-pac", "cotton-usb-host?/rp2040"]
+rp2350 = ["dep:rp235x-pac", "cotton-usb-host?/rp2350"]
+#   the USB host role: the ecosystem's host stack over its controller driver for this chip
+# (vendored under lib/ with the framework's fixes, see its LIGHT_PATCHES.md), behind
+# light_midi::Host in src/usb_host.rs. A board whose native USB port hosts instruments carries
+# it instead of usb-console; the C shell links no USB stack in either role
+usb-host = ["dep:light-midi", "dep:cotton-usb-host", "dep:futures", "dep:defmt"]
 #   the USB device role: the port's own controller driver (src/usb.rs) with the CDC console on
 # it, run from the core-1 loop in src/shell.rs. Every board whose native USB port is a device
 # carries it; a host-role board (usb-host) leaves it off and its console is the UART alone
@@ -24,6 +26,9 @@ usb-console = ["dep:usb-device", "dep:usbd-serial"]
 [dependencies]
 light-core = { path = "../light-core" }
 light-midi = { path = "../light-midi", optional = true }
+cotton-usb-host = { path = "../../lib/cotton-usb-host", default-features = false, optional = true }
+futures = { version = "0.3", default-features = false, optional = true }
+defmt = { version = "1", optional = true }
 #   no `rt` feature on either: the vector table, reset handler and linker script belong to
 # pico-sdk's runtime in the C shell. This crate only wants the register definitions
 rp235x-pac = { version = "0.2", default-features = false, optional = true }

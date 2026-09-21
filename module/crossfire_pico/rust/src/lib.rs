@@ -1,7 +1,7 @@
 //! crossfire on a stock Pico (RP2040), the product board: the hardware-bound
 //! instantiation. The application is `light_app_crossfire`, with no hardware in it; this
-//! crate is everything tangible -- the board wiring, the RP2040 chip feature, the TinyUSB
-//! host stack, the shell ABI, the panic handler -- constructed here and handed to
+//! crate is everything tangible -- the board wiring, the RP2040 chip feature, the USB host
+//! stack, the shell ABI, the panic handler -- constructed here and handed to
 //! [`app::serve`].
 
 #![no_std]
@@ -16,7 +16,7 @@ use light_font::Font;
 mod board;
 use board::*;
 use light_rp2::spi::Spi1Display;
-use light_rp2::tinyusb_midi::UsbMidiHost;
+use light_rp2::usb_host::UsbMidiHost;
 use light_rp2::shell::{bootsel, panic_report, ShellInfo, UART_BAUD, UART_RX, UART_TX};
 use light_rp2::uart::Uart;
 use light_rp2::{now_us, Breathe, Clocks, SysClock};

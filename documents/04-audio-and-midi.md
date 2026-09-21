@@ -208,8 +208,7 @@ every *other* mounted device that has a cable C.
   until `None` per service), `write(idx, packet)`, `flush(idx)` (once per service for each slot
   written; a transport whose writes are already complete bursts ignores it).
 - **`Host: Transport`** — a full USB host stack: `task()` (run enumeration/transfers/callbacks each
-  pass), `next_event() -> Option<MidiEvent>`, `reset()` (tear the controller down and bring it back,
-  may block for a settle), `dropped_events()`. The port implements this over the real controller; a
+  pass), `next_event() -> Option<MidiEvent>`, `dropped_events()`. The port implements this over the real controller; a
   mock implements it for the host tests.
 - **`Forwarder<const N: usize>`** — the engine, over `N` device slots (at least the host stack's
   MIDI-interface count, plus one for a linked peer). `mount(idx, Mount, Option<BusInfo>)`,
@@ -218,7 +217,7 @@ every *other* mounted device that has a cable C.
   `hub_port_occupied`.
 - Supporting types: `Mount` (`daddr`, `rx_cables`, `tx_cables`), `BusInfo` (`hub_addr`, `hub_port`),
   `MidiEvent` (`Mounted`/`Unmounted`), `Device`, `Kind` (`Usb` / `Link`), `Change`
-  (`status_changed`, `any_usb_mounted`, `reset_host`), `Activity` (`received`, `forwarded`).
+  (`status_changed`, `any_usb_mounted`), `Activity` (`received`, `forwarded`).
 
 ### Behaviour and invariants
 
@@ -241,9 +240,8 @@ every *other* mounted device that has a cable C.
   device that mounts behind a hub; there is no "hub mounted" callback, because an empty hub is
   indistinguishable from none and has nothing to forward. The hub is forgotten only once nothing is
   mounted behind it, so pulling one instrument does not make a display claim the hub went away.
-- **`reset_host` is requested only by the disconnect that empties the root port.** A controller reset
-  drops every device on the bus, so behind a hub it must wait until the last device has gone —
-  otherwise unplugging one instrument would lose all four.
+- **The engine never asks for the controller to be reset.** Hot-plug, hub-level and per-port, is
+  the host stack's to handle; a disconnect that empties the root port only forgets the hub.
 - A `Link` device (an SPI-linked peer board) is a forwarding participant unconditionally, with no
   discovery or handshake; it is mounted for the life of the program and is *not* counted by
   `usb_mounted_count`, so the last USB device leaving still empties the bus, peer or no peer.
@@ -255,10 +253,10 @@ every *other* mounted device that has a cable C.
 
 - **The engine names neither the host stack nor MIDI.** It sees only 4-byte packets over a
   `Transport`, and the concrete stack is a `Host` the port implements — so the whole forwarder tests
-  on the host against a mock that stands in for TinyUSB's `tuh_midi_*` API.
+  on the host against a mock that stands in for the host stack.
 - **Everything the app must do comes out as a return value.** No callbacks, no clock, no shared
-  state: `Change` and `Activity` carry exactly the decisions (redraw the status, reset the
-  controller, light an LED) an application acts on.
+  state: `Change` and `Activity` carry exactly the decisions (redraw the status, light an LED) an
+  application acts on.
 - **Two configuration counts, one guard.** Because the host stack's interface count and the
   `Forwarder`'s slot count are set independently, the out-of-range `mount` refusal is the deliberate
   seam that keeps a drift between them from corrupting a slot.

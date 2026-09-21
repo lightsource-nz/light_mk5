@@ -26,8 +26,8 @@ how an application is built on it.
 
 1. **Rust above a C shell.** The framework code is a `no_std` Rust staticlib linked into a firmware
    executable that the platform SDK's build still owns. On the RP2 chips that SDK is pico-sdk; the C
-   shell keeps `crt0`, `boot2`, the linker script, multicore launch, PIO and, in the USB-host role,
-   TinyUSB's host stack. Rust owns everything above the runtime, the USB device stack included. The
+   shell keeps `crt0`, `boot2`, the linker script, multicore launch and PIO. Rust owns everything
+   above the runtime, USB included, in both its device and host roles. The
    same shape carries the bare-CMSIS STM32 ports, where a small C shell stands in for the SDK. See [07-ports-and-shell.md](07-ports-and-shell.md).
 
 2. **Host-first, made structural.** Nothing in the portable crates touches hardware directly;

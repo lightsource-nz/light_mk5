@@ -200,6 +200,12 @@ $searchDir = @(
 $ocdArgs = @()
 if ($searchDir) { $ocdArgs += @('-s', $searchDir) }
 $ocdArgs += @('-f', $ocdConfig)
+#   ATTACHING MUST NOT PROBE THE FLASH. On connect gdb asks for the memory map, and OpenOCD
+# answers by probing the flash banks -- on an RP2 that means calling the boot ROM to take the
+# flash out of XIP for a moment, with only core 0 halted: core 1, still running its console from
+# flash, fetches garbage and locks up. A dead console after every "-Attach" look was that. Nothing
+# is programmed on an attach, so the map is not wanted; the default load path keeps it
+if ($Attach) { $ocdArgs += @('-c', '"gdb memory_map disable"') }
 
 Write-Host "openocd: $openocd"
 Write-Host "config:  $ocdConfig"

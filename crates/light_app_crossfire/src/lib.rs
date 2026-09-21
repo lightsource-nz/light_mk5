@@ -6,8 +6,7 @@
 //! SH1107 driver, the LED as an [`OutputPin`], time as `light_core::log`'s clock. A tangible
 //! crossfire -- a Pico, a Pico 2, whatever comes later -- is a hardware-bound module that
 //! constructs those concrete parts, hands them to [`serve`], and owns everything this crate
-//! must not: pins, chip features, the TinyUSB configuration, the shell ABI, the panic
-//! handler.
+//! must not: pins, chip features, the USB host stack, the shell ABI, the panic handler.
 
 #![no_std]
 
@@ -21,9 +20,8 @@ use light_font::Font;
 use light_midi::{Forwarder, Host, MidiEvent};
 use light_ui::{Descent, Fonts, Lui, LuiChild, Style, Theme, Ui};
 
-/// USB device slots the engine tracks: TinyUSB's CFG_TUH_MIDI, which every hardware
-/// module's tusb_config.h sets to the same four. The engine indexes its table with the
-/// mount index directly, so the two must agree.
+/// USB device slots the engine tracks: the host stack's MIDI slot count (`light_rp2::usb_host::SLOTS`,
+/// four). The engine indexes its table with the mount index directly, so the two must agree.
 pub const USB_SLOTS: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -39,10 +37,6 @@ enum AppEvent {
         Stats,
         /// The BOOTSEL button was pressed: move the display to the next page.
         NavToggle,
-        /// Tear the host controller down and bring it back, from the console.
-        UsbReset,
-        /// Whether the engine's root-port-empty verdict resets the controller by itself.
-        AutoReset(bool),
 }
 
 static EVENTS: EventBus<AppEvent, 8, 3> = EventBus::new();
@@ -89,21 +83,13 @@ pub struct UsbMod<H: Host> {
         host: H,
         forwarder: Forwarder<USB_SLOTS>,
         events: Subscription,
-        reset_pending: bool,
-        /// The controller is reset whenever a disconnect empties the root port, working
-        /// around a stale buffer-control state (hathach/tinyusb#3533) -- and the RP2350 needs
-        /// it too: without the reset the next enumeration panicked inside the USB IRQ. The
-        /// reset itself hung in tusb_deinit(), which closed devices after tearing down the
-        /// port's critical section; that is fixed in the pico-sdk TinyUSB fork. `usb autoreset
-        /// off` keeps the switch for diagnosis
-        auto_reset: bool,
         packets: u32,
         status: Status,
 }
 
 impl<H: Host> UsbMod<H> {
         pub fn new(host: H) -> Self {
-                Self { host, forwarder: Forwarder::new(), events: EVENTS.subscribe().expect("subscriber slot"), reset_pending: false, auto_reset: true, packets: 0, status: Status::default() }
+                Self { host, forwarder: Forwarder::new(), events: EVENTS.subscribe().expect("subscriber slot"), packets: 0, status: Status::default() }
         }
 
         fn publish_status(&mut self) {
@@ -133,26 +119,9 @@ impl<H: Host> Module for UsbMod<H> {
                 CORE0_PASSES.fetch_add(1, light_core::atomic::Ordering::Relaxed);
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                AppEvent::Stats => info!("usb: {} mounted, hub addr {}, {} packets forwarded, {} dropped (cable), {} events dropped, auto-reset {}", self.forwarder.usb_mounted_count(), self.forwarder.hub_addr(), self.packets, self.forwarder.dropped, self.host.dropped_events(), if self.auto_reset { "on" } else { "off" }),
-                                AppEvent::UsbReset => self.reset_pending = true,
-                                AppEvent::AutoReset(on) => {
-                                        self.auto_reset = on;
-                                        info!("usb: controller auto-reset on an empty root port {}", if on { "on" } else { "off" });
-                                }
+                                AppEvent::Stats => info!("usb: {} mounted, hub addr {}, {} packets forwarded, {} dropped (cable), {} events dropped", self.forwarder.usb_mounted_count(), self.forwarder.hub_addr(), self.packets, self.forwarder.dropped, self.host.dropped_events()),
                                 _ => {}
                         }
-                }
-                //   the reset is done here, at the top of a pass, never from inside the
-                // callback that asked for it
-                //   a reset unmounts everything, and those unmounts empty the bus, which would
-                // ask for a second reset: the verdicts of the pass that follows a reset are not
-                // honoured
-                let mut just_reset = false;
-                if self.reset_pending {
-                        self.reset_pending = false;
-                        info!("resetting the USB host controller");
-                        self.host.reset();
-                        just_reset = true;
                 }
                 self.host.task();
                 let mut busy = false;
@@ -175,13 +144,6 @@ impl<H: Host> Module for UsbMod<H> {
                                 warn!("the host stack reported a slot the engine does not have");
                                 continue;
                         };
-                        if c.reset_host && !just_reset {
-                                if self.auto_reset {
-                                        self.reset_pending = true;
-                                } else {
-                                        info!("root port empty; the controller is left as it is (`usb autoreset on` to reset it)");
-                                }
-                        }
                         let _ = EVENTS.publish(AppEvent::Mounted(c.any_usb_mounted));
                         self.publish_status();
                         let _ = EVENTS.publish(AppEvent::Status);
@@ -468,18 +430,8 @@ fn parse_stats(_w: &mut Words) -> Parsed<AppEvent> {
         Parsed::Event(AppEvent::Stats)
 }
 
-fn parse_usb(w: &mut Words) -> Parsed<AppEvent> {
-        match (w.next(), w.next()) {
-                (Some("reset"), _) => Parsed::Event(AppEvent::UsbReset),
-                (Some("autoreset"), Some("on")) => Parsed::Event(AppEvent::AutoReset(true)),
-                (Some("autoreset"), Some("off")) => Parsed::Event(AppEvent::AutoReset(false)),
-                _ => Parsed::Usage,
-        }
-}
-
 static COMMANDS: &[Command<AppEvent>] = &[
         Command { name: "stats", usage: "stats", parse: parse_stats },
-        Command { name: "usb", usage: "usb reset | usb autoreset on|off", parse: parse_usb },
 ];
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 

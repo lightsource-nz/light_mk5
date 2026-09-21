@@ -2,8 +2,8 @@
 //!
 //! One rule: incoming data on cable C of any mounted device is forwarded to cable C of
 //! every other mounted device that has a cable C. Devices are slots indexed the way the host
-//! stack indexes its MIDI interfaces; what sits behind a slot -- TinyUSB, an SPI-linked peer
-//! board, a test mock -- is a [`Transport`], and the engine sees only 4-byte USB-MIDI event
+//! stack indexes its MIDI interfaces; what sits behind a slot -- the USB host stack, an SPI-linked
+//! peer board, a test mock -- is a [`Transport`], and the engine sees only 4-byte USB-MIDI event
 //! packets, a fixed-size self-framing format every transport shares without any MIDI parsing
 //! of its own.
 //!
@@ -13,7 +13,7 @@
 //!
 //! The engine holds no clock and calls nothing back: mounts and unmounts come in as calls,
 //! traffic goes through the transport, and what an application must react to -- a display to
-//! update, a host controller to reset -- comes out as return values.
+//! update -- comes out as return values.
 
 #![no_std]
 
@@ -74,8 +74,6 @@ pub trait Host: Transport {
         fn task(&mut self);
         /// What the stack reported since the last poll.
         fn next_event(&mut self) -> Option<MidiEvent>;
-        /// Tear the controller down and bring it back. May block for a settle delay.
-        fn reset(&mut self);
         /// Mount reports lost to a full queue since boot.
         fn dropped_events(&self) -> u32;
 }
@@ -114,10 +112,6 @@ pub struct Change {
         pub status_changed: bool,
         /// Whether anything USB is still mounted -- what an activity LED shows.
         pub any_usb_mounted: bool,
-        /// A disconnect left the root port EMPTY: the moment to reset the host controller.
-        /// Only then, because a controller reset drops every other device on the bus, and
-        /// behind a hub that would turn unplugging one instrument into losing all four.
-        pub reset_host: bool,
 }
 
 /// What one service pass saw.
@@ -202,7 +196,7 @@ impl<const N: usize> Forwarder<N> {
                         _ => {}
                 }
                 self.rebuild();
-                Some(Change { status_changed: true, any_usb_mounted: true, reset_host: false })
+                Some(Change { status_changed: true, any_usb_mounted: true })
         }
 
         /// The SPI-linked peer, in its reserved slot: a forwarding participant unconditionally,
@@ -211,7 +205,7 @@ impl<const N: usize> Forwarder<N> {
                 let d = self.devices.get_mut(usize::from(idx))?;
                 *d = Device { mounted: true, kind: Kind::Link, daddr: 0, rx_cables: 1, tx_cables: 1, hub_port: HUB_PORT_NONE };
                 self.rebuild();
-                Some(Change { status_changed: true, any_usb_mounted: self.usb_mounted_count() > 0, reset_host: false })
+                Some(Change { status_changed: true, any_usb_mounted: self.usb_mounted_count() > 0 })
         }
 
         pub fn unmount(&mut self, idx: u8) -> Option<Change> {
@@ -228,7 +222,7 @@ impl<const N: usize> Forwarder<N> {
                 if usb_left == 0 {
                         self.hub_addr = 0;
                 }
-                Some(Change { status_changed: true, any_usb_mounted: usb_left > 0, reset_host: usb_left == 0 })
+                Some(Change { status_changed: true, any_usb_mounted: usb_left > 0 })
         }
 
         fn rebuild(&mut self) {
@@ -319,7 +313,7 @@ mod tests {
         use std::collections::VecDeque;
         use std::vec::Vec as StdVec;
 
-        /// Fake devices and their queues, standing in for TinyUSB's tuh_midi_* API.
+        /// Fake devices and their queues, standing in for the USB host stack.
         #[derive(Default)]
         struct Mock {
                 inbound: StdVec<VecDeque<Packet>>,
@@ -432,7 +426,7 @@ mod tests {
                 connect(&mut f, 0, 1, 1);
                 connect(&mut f, 1, 1, 1);
                 let c = f.unmount(1).unwrap();
-                assert!(c.status_changed && c.any_usb_mounted && !c.reset_host);
+                assert!(c.status_changed && c.any_usb_mounted);
                 m.feed(0, [0x08, 0x80, 0x3C, 0x40]);
                 f.service(&mut m, 0);
                 assert_eq!(m.take_written(1), None);
@@ -468,14 +462,12 @@ mod tests {
         }
 
         #[test]
-        fn unplugging_one_hub_device_keeps_its_siblings_and_asks_no_reset() {
+        fn unplugging_one_hub_device_keeps_its_siblings() {
                 let mut f: Forwarder<4> = Forwarder::new();
                 let mut m = Mock::new(4);
                 connect_hub(&mut f, 4);
                 let c = f.unmount(1).unwrap();
-                //   THE POINT: a controller reset drops every device on the bus, so behind a
-                // hub it must wait until the last one has gone
-                assert!(!c.reset_host && c.any_usb_mounted);
+                assert!(c.any_usb_mounted);
                 assert!(!f.hub_port_occupied(2));
                 assert!(f.hub_port_occupied(1) && f.hub_port_occupied(3) && f.hub_port_occupied(4));
                 assert_eq!(f.hub_addr(), HUB, "still known while devices remain behind it");
@@ -486,14 +478,14 @@ mod tests {
         }
 
         #[test]
-        fn the_reset_is_requested_by_the_disconnect_that_empties_the_bus() {
+        fn the_hub_is_forgotten_by_the_disconnect_that_empties_the_bus() {
                 let mut f: Forwarder<4> = Forwarder::new();
                 connect_hub(&mut f, 4);
                 for idx in 0..3 {
-                        assert!(!f.unmount(idx).unwrap().reset_host);
+                        assert!(f.unmount(idx).unwrap().any_usb_mounted);
                 }
                 let last = f.unmount(3).unwrap();
-                assert!(last.reset_host && !last.any_usb_mounted);
+                assert!(!last.any_usb_mounted);
                 assert_eq!(f.hub_addr(), 0, "forgotten once nothing is mounted behind it");
         }
 
@@ -510,7 +502,7 @@ mod tests {
                 assert_eq!(m.take_written(0), Some(NOTE_ON));
                 // the last USB device leaving still empties the bus, peer or no peer
                 let c = f.unmount(0).unwrap();
-                assert!(c.reset_host && !c.any_usb_mounted);
+                assert!(!c.any_usb_mounted);
         }
 
         #[test]

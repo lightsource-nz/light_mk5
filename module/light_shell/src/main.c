@@ -7,12 +7,12 @@
 // What the shell exports TO Rust is the handful of functions below; keeping them in one file makes
 // the size of that surface visible.
 //
-// THE SHELL HAS NO STDIO AND NO USB DEVICE STACK. The console, on both its transports, is Rust's
+// THE SHELL HAS NO STDIO AND NO USB. The console, on both its transports, is Rust's
 // (light_rp2::shell, on core 1): the USB device stack with the CDC class on it, from the
-// controller register up, and the UART. What stays here is what only the SDK can do -- boot,
-// clocks, multicore launch, the bootrom (entering BOOTSEL, reading the BOOTSEL button), the SDK's
-// own panic hook (which hands its message to the Rust relay) -- and, in the USB-host role only,
-// the TinyUSB host stack.
+// controller register up, and the UART; the USB host role (light_rp2::usb_host, on core 0) is
+// Rust's too. What stays here is what only the SDK can do -- boot, clocks, multicore launch, the
+// bootrom (entering BOOTSEL, reading the BOOTSEL button), the SDK's own panic hook (which hands
+// its message to the Rust relay), and the hard-fault handler.
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -24,9 +24,6 @@
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
-#ifdef LIGHT_SHELL_USB_HOST
-#include <tusb.h>
-#endif
 
 // what the shell knows and Rust must not assume: the clocks the SDK runtime configured
 struct light_shell_info {
@@ -112,41 +109,6 @@ void __attribute__((noreturn)) light_shell_panic_sdk(const char *fmt, ...)
                 n = sizeof panic_message - 1;
         light_app_panic(panic_message, (size_t) n);
 }
-
-#ifdef LIGHT_SHELL_USB_HOST
-//   THE HOST ROLE, for crossfire: the native USB port is a HOST -- USB-MIDI instruments plug into
-// it -- so there is no CDC console and the console is the UART alone, which Rust drives on core 1
-// like any other. The whole host stack runs on CORE 0, driven from the Rust runtime through the
-// three calls below: TinyUSB guards its queues with per-core IRQ-disable sections that are not
-// cross-core safe, hcd_int_enable() enables the IRQ on the CALLING core, and the class callbacks
-// (tuh_midi_mount_cb, implemented on the Rust side) then run in the same context as the packet
-// reads and writes.
-void light_shell_usb_host_init(void)
-{
-        tusb_rhport_init_t host_init = {
-                .role = TUSB_ROLE_HOST,
-                .speed = TUSB_SPEED_AUTO,
-        };
-        tusb_init(BOARD_TUH_RHPORT, &host_init);
-}
-
-void light_shell_usb_host_task(void)
-{
-        tuh_task();
-}
-
-//   the RP2 native host controller can leave stale buffer-control state behind across a
-// disconnect (hathach/tinyusb#3533), which panics the next enumeration; the answer is a full
-// teardown and re-init once the root port is EMPTY, from the main loop and never from inside a
-// callback the stack is still unwinding. The settle delay matches TinyUSB's own dynamic_switch
-// example
-void light_shell_usb_host_reset(void)
-{
-        tusb_deinit(BOARD_TUH_RHPORT);
-        sleep_ms(100);
-        light_shell_usb_host_init();
-}
-#endif
 
 //   A HARD FAULT RECORDS ITSELF. The SDK's default handler breakpoints, which with no debugger
 // attached is a second fault inside the first -- a lockup that leaves nothing behind but a PC of

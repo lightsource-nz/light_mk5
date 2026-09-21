@@ -123,7 +123,8 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
   - `usb` — `UsbBus`, the USB device controller as a `usb_device::bus::UsbBus`, polled (below);
   - `uart` — `Uart`, a UART as a console transport (the debug-probe path, and the host role's only
     console);
-  - `tinyusb_midi` (feature `usb-host`) — the USB-MIDI host transport behind `light_midi::Transport`.
+  - `usb_host` (feature `usb-host`) — the USB-MIDI host role: the ecosystem's host stack over its
+    controller driver for this chip, behind `light_midi::Host` (below).
 - `shell` — the Rust side of the C shell's ABI, shared by every RP2 board (see the shell below).
 - Its own `critical-section` implementation (target builds only).
 
@@ -202,6 +203,38 @@ source for both chips over the pac, under the same feature split as the rest of 
 - **Enumeration state is exposed, not consumed here.** The loop publishes whether the device is
   configured (`shell::usb_mounted`); the power manager reads it as the "on external power" signal on
   boards with no VBUS-sense pin.
+
+### The USB host role — `usb_host` (feature `usb-host`)
+
+A board whose native USB port hosts instruments builds the port with `usb-host` instead of
+`usb-console`, and the port then provides [`light_midi::Host`] over the ecosystem's host stack —
+`cotton-usb-host`, over its own controller driver for this chip (vendored under `lib/` with the
+framework's fixes and its RP2350 driver; every change is listed in its `LIGHT_PATCHES.md`). The
+stack does enumeration, hub topology and hot-plug; the port owns the MIDI class, the device slots,
+and the way the stack is driven.
+
+- **Polled from the runtime, no executor, no interrupt.** The stack is written for an async
+  executor woken from the controller's interrupt, but every one of its futures re-reads the
+  controller when polled, so one poll per runtime pass with a waker that does nothing drives it
+  completely. The interrupt its constructor unmasks is masked again before interrupts are
+  re-enabled. The bus task is one future, type-erased into aligned storage in `.bss` and driven as
+  `dyn Future`; `Host::task` is one poll of it.
+- **A MIDI IN endpoint is a hardware-polled pipe, never a bulk read.** On these chips the stack
+  runs bulk transfers on the one general-purpose pipe and holds it until data arrives; a bulk read
+  pending on a silent instrument would stall every other transfer on the bus. The controller's
+  polled interrupt pipes are per endpoint and serviced by the hardware, so each instrument's IN
+  endpoint is opened as one, at a 1 ms interval, and the MIDI OUT writes go as bulk transfers.
+- **The host's constructor pulses the controller's reset inside the port's critical section**, as
+  every reset pulse in the port is (the two cores construct peripherals at the same moment).
+- **The control endpoint's completion flags are cleared only when a completion is consumed.**
+  Cleared on every pending poll as well, a completion landing between the read and the clear was
+  wiped and the transfer — and the whole device-event stream behind it, hub status pipes included
+  — never resolved. Woken from the interrupt that window is rarely hit; polled continuously it was
+  hit within a few enumerations.
+- **Mount reports carry the bus position** — the hub in front of the device and that hub's port —
+  from the stack's topology, so a status display can show which socket an instrument is in.
+- **Nothing resets the controller.** Hot-plug, hub-level and per-port, is handled by the stack; the
+  application has no root-port workaround to run.
 
 ### Its `critical-section` implementation
 
@@ -307,13 +340,14 @@ The C shell is the thin C layer that owns everything pico-sdk must own and nothi
 comes up through the SDK's `crt0` and `runtime_init` exactly as for any SDK program; the shell
 launches the second core, reads the resolved clocks, and hands control to Rust — core 0 through
 `light_app_main`, core 1 through `light_app_core1_main` — and does not get it back. It has **no
-stdio and no USB device stack**: the console, on both its transports, is the port's, in Rust (the
-`usb` and `uart` modules above, driven by the core-1 loop below). What stays in C is what only the
-SDK can do — boot, clocks, multicore launch, the bootrom (BOOTSEL entry and the BOOTSEL button read),
-the SDK's own panic hook, and, in the host role only, the TinyUSB host stack. Keeping the shell to
-one `main.c` makes the size of the Rust↔C boundary visible. It is built as a CMake *function*
-(`light_shell_configure(<target> [USB_HOST])`) rather than a library, because the panic hook and
-the host-role stack are per-executable settings.
+stdio and no USB**: the console, on both its transports, is the port's, in Rust (the `usb` and
+`uart` modules above, driven by the core-1 loop below), and so is the USB host role (the `usb_host`
+module, on core 0). What stays in C is what only the SDK can do — boot, clocks, multicore launch,
+the bootrom (BOOTSEL entry and the BOOTSEL button read), the SDK's own panic hook, and the
+hard-fault handler. Keeping the shell to one `main.c` makes the size of the Rust↔C boundary
+visible. It is built as a CMake *function* (`light_shell_configure(<target>)`) rather than a
+library, because the panic hook is a per-executable setting; the same shell serves both roles,
+which differ only in which feature the port crate is built with.
 
 ### The ABI
 
@@ -345,11 +379,9 @@ The whole boundary is a handful of functions.
   lives in the shell and not above it. Each read is a short interrupts-off window, so a caller
   samples it at a modest rate (a few times a second), never every pass beside a USB host. A board
   with no other button uses it as its one input. **And the other core is parked meanwhile**: core 1
-  runs the console from flash, and a cache miss while the chip-select floats fetches garbage â a
+  runs the console from flash, and a cache miss while the chip-select floats fetches garbage — a
   literal-pool read handed the console loop a pointer made of a spin count, and it died silently.
   The read is bracketed by the SDK's multicore lockout, the mechanism its own flash writes use.
-- Host-role only (`LIGHT_SHELL_USB_HOST`): `light_shell_usb_host_init` / `_task` / `_reset`, which
-  the `tinyusb_midi` transport calls to drive the host stack.
 
 `ShellInfo` is the one thing the shell knows and Rust must not assume — the clock rates the SDK
 runtime configured (pico-sdk's defaults are 125 MHz sys on the RP2040, 150 MHz on the RP2350).
@@ -367,10 +399,9 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
   from any of them into the app, and publishes the enumeration state. The stack is polled, never
   interrupt-driven, so core 0 can be arbitrarily busy without ever stalling the console.
 - In the **host role**, the native port is a USB *host* for MIDI instruments, so there is no CDC
-  console: the console is the UART alone. The whole host stack (TinyUSB, in C) runs on **core 0**,
-  driven from the Rust runtime through `light_shell_usb_host_*`, so the class callbacks (implemented
-  on the Rust side) fire in the same context as the packet reads. Core 1 keeps the UART console pump
-  and the panic relay.
+  console: the console is the UART alone. The host stack runs on **core 0**, one poll per pass of
+  the runtime, in the application's own context (see the host role below). Core 1 keeps the UART
+  console pump and the panic relay.
 - **The UART is the board's decision.** The console's UART pins (the port's `UART_TX`/`UART_RX`,
   the chip's default console pair) are ordinary GPIO that a board may have committed to something
   else — an audio interface, a buzzer. The board's instantiation crate constructs the `Uart` and
@@ -421,9 +452,8 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
   debugger can read it. The SDK's default handler breakpoints, which with no debugger attached is a
   second fault inside the first: a lockup that leaves nothing behind but a PC of `0xFFFFFFFE`.
 
-The device-role build links **no SDK stdio and no TinyUSB device stack**: `pico_stdio_usb`,
-`pico_stdio_uart` and their knobs are absent, and the application supplies no `tusb_config.h`. Only
-the host-role build links TinyUSB, and only its host half.
+Neither role's build links **any SDK stdio or USB stack**: `pico_stdio_usb`, `pico_stdio_uart` and
+their knobs are absent, and no application supplies a `tusb_config.h`. pico-sdk is used as shipped.
 
 ---
 
