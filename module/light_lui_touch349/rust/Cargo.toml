@@ -17,4 +17,4 @@ light-input = { path = "../../../crates/light-input" }
 light-draw = { path = "../../../crates/light-draw" }
 light-font = { path = "../../../crates/light-font" }
 light-board-touch349 = { path = "../../../crates/light-board-touch349" }
-light-rp2 = { path = "../../../crates/light-rp2", features = ["rp2350"] }
+light-rp2 = { path = "../../../crates/light-rp2", features = ["rp2350", "usb-console"] }

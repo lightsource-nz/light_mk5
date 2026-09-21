@@ -14,7 +14,7 @@ light-core = { path = "../../../crates/light-core" }
 light-draw = { path = "../../../crates/light-draw" }
 light-display = { path = "../../../crates/light-display" }
 light-ui = { path = "../../../crates/light-ui" }
-light-rp2 = { path = "../../../crates/light-rp2" }
+light-rp2 = { path = "../../../crates/light-rp2", features = ["usb-console"] }
 
 light-font = { path = "../../../crates/light-font" }
 

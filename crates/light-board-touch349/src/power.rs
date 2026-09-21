@@ -15,7 +15,7 @@
 //!   So the charger asserts exactly one thing we can trust: charging = external power. At this pin
 //!   that is GPIO 47 LOW (unambiguous external); GPIO 47 HIGH is the released/Hi-Z state, which
 //!   means charge-complete OR on-battery -- the two are indistinguishable here.
-//! - **USB device enumeration** (`light_shell_usb_mounted`): true while a host has us enumerated,
+//! - **USB device enumeration** (`light_rp2::shell::usb_mounted`): true while a host has us enumerated,
 //!   which recovers the one case GPIO 47 cannot -- plugged into a computer with the battery full
 //!   (charger done, STAT released, GPIO 47 high).
 //!
@@ -32,10 +32,10 @@ use light_power_manager::PowerMechanism;
 
 use crate::board::{BACKLIGHT_INVERTED, BACKLIGHT_LEVEL_MAX, BATTERY_DIVIDER};
 
-unsafe extern "C" {
-        /// True while a USB host has this device enumerated. Set on core 1 (which owns TinyUSB) by
-        /// the C shell; a plain volatile bool, safe to read from core 0. Covers GPIO 47's done-gap.
-        fn light_shell_usb_mounted() -> bool;
+/// True while a USB host has this device enumerated: published by the port's console loop on
+/// core 1, which owns the USB device stack. Covers GPIO 47's done-gap.
+fn usb_mounted() -> bool {
+        light_rp2::shell::usb_mounted()
 }
 
 /// ADC samples averaged per VBAT reading, for a steady `stats` figure.
@@ -82,7 +82,7 @@ impl PowerMechanism for Touch349Power {
                 // is ambiguous: the charger releases STAT (Hi-Z) both at charge-complete AND when it
                 // is unpowered on battery, so HIGH covers full-and-plugged and on-battery alike. The
                 // full-and-plugged case is recovered by USB enumeration instead. See the module docs.
-                self.charge_stat.is_low() || unsafe { light_shell_usb_mounted() }
+                self.charge_stat.is_low() || usb_mounted()
         }
 
         fn power_off(&mut self) {

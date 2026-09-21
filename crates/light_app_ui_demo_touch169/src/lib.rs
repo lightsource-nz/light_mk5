@@ -3,10 +3,10 @@
 //! 1.69: the wiring (`board.rs`), the ST7789 over SPI, the CST816T, the IMU, the piezo,
 //! the shell ABI and the panic handler.
 //!
-//! The C shell (`module/light_shell`) brings the pico-sdk runtime up, puts TinyUSB on
-//! core 1, and calls `light_app_main` on core 0 with the clocks it configured; it never
-//! returns. Core 1 calls `light_app_core1_service` from its USB loop. Everything the shell
-//! provides to Rust is declared in the one `extern` block below.
+//! The C shell (`module/light_shell`) brings the pico-sdk runtime up, launches core 1 into the
+//! port's console loop (`light_app_core1_main`), and calls `light_app_main` on core 0 with the
+//! clocks it configured; neither returns. Everything the shell provides to Rust is declared in
+//! the one `extern` block below.
 
 #![no_std]
 
@@ -24,7 +24,7 @@ use light_display::st7789::St7789;
 use light_display::{Display, FrameLayer};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::PowerMod;
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
@@ -33,7 +33,9 @@ use light_rp2::gpio::{Input, Output};
 use light_rp2::pwm_audio::PwmAudio;
 use light_rp2::i2c::I2c1;
 use light_rp2::spi::Spi1Display;
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{panic_report, ShellInfo};
+use light_rp2::shell::{UART_BAUD, UART_RX, UART_TX};
+use light_rp2::uart::Uart;
 use light_rp2::{Breathe, Clocks, SysClock};
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -99,8 +101,10 @@ static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 // --- core 1 --------------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(demo::push_console_byte);
+pub extern "C" fn light_app_core1_main(info: &ShellInfo) -> ! {
+        // SAFETY: core 1's one construction of the console UART, on the pins the SDK's console used
+        let uart = unsafe { Uart::new(UART_TX, UART_RX, UART_BAUD, info.clk_peri_hz) };
+        light_rp2::shell::core1_main(demo::push_console_byte, Some(uart))
 }
 
 // --- the interface, as data ---------------------------------------------------------------

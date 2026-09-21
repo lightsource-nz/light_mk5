@@ -10,6 +10,7 @@ use crate::pac;
 /// GPIO function selects, the same numbers on both chips (RP2040 datasheet table 2.19.2,
 /// RP2350 table 9.4.1). Only the ones in use.
 pub const FUNC_SPI: u8 = 1;
+pub const FUNC_UART: u8 = 2;
 pub const FUNC_I2C: u8 = 3;
 pub const FUNC_SIO: u8 = 5;
 pub const FUNC_PIO0: u8 = 6;

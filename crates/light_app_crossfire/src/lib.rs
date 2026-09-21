@@ -54,11 +54,6 @@ pub fn push_console_byte(b: u8) {
         let _ = CONSOLE_BYTES.push(b);
 }
 
-/// The core 1 heartbeat, bumped by the hardware module's service hook -- see [`Stats`].
-pub fn core1_heartbeat() {
-        CORE1_PASSES.fetch_add(1, light_core::atomic::Ordering::Relaxed);
-}
-
 /// The status the display shows, published by the USB module and read by the OLED module:
 /// the engine itself stays private to the module that drives it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -83,11 +78,10 @@ struct StatsSnapshot {
 
 static STATS: Mailbox<StatsSnapshot, 1> = Mailbox::new();
 
-/// Heartbeats, one per core, for a post-mortem that reads memory without halting anything:
-/// whether each core is still executing its loop is the first question, and it should not
-/// take a debugger session that disturbs the answer.
+/// The core 0 heartbeat, for a post-mortem that reads memory without halting anything: whether
+/// the core is still executing its loop is the first question, and it should not take a debugger
+/// session that disturbs the answer. The console core keeps its own tick in the port.
 static CORE0_PASSES: light_core::atomic::AtomicU32 = light_core::atomic::AtomicU32::new(0);
-static CORE1_PASSES: light_core::atomic::AtomicU32 = light_core::atomic::AtomicU32::new(0);
 
 /// Owns the host stack and the forwarding engine. Every pass: run the stack, apply what it
 /// reported, forward what arrived, and say what changed.
@@ -470,7 +464,7 @@ impl<P: OutputPin> Module for LedMod<P> {
 //   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
 // this table is everything this application adds
 fn parse_stats(_w: &mut Words) -> Parsed<AppEvent> {
-        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; passes core0 {} core1 {}; log dropped {}", log::now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), CORE0_PASSES.load(light_core::atomic::Ordering::Relaxed), CORE1_PASSES.load(light_core::atomic::Ordering::Relaxed), log::pending());
+        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; passes {}; log dropped {}", log::now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), CORE0_PASSES.load(light_core::atomic::Ordering::Relaxed), log::pending());
         Parsed::Event(AppEvent::Stats)
 }
 

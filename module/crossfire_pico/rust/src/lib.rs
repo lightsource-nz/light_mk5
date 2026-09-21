@@ -17,7 +17,8 @@ mod board;
 use board::*;
 use light_rp2::spi::Spi1Display;
 use light_rp2::tinyusb_midi::UsbMidiHost;
-use light_rp2::shell::{bootsel, panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{bootsel, panic_report, ShellInfo, UART_BAUD, UART_RX, UART_TX};
+use light_rp2::uart::Uart;
 use light_rp2::{now_us, Breathe, Clocks, SysClock};
 
 /// 64x128 at 1 bpp: one kilobyte.
@@ -28,12 +29,13 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
-/// Core 1: the app heartbeat, then the shell's log drain and console read (no USB here -- the
-/// host stack is core 0's).
+/// Core 1: the port's console loop on the UART alone -- the native USB port is the MIDI host,
+/// core 0's, so this build has no CDC console and light-rp2 carries no device stack.
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        app::core1_heartbeat();
-        service_core1(app::push_console_byte);
+pub extern "C" fn light_app_core1_main(info: &ShellInfo) -> ! {
+        // SAFETY: core 1's one construction of the console UART
+        let uart = unsafe { Uart::new(UART_TX, UART_RX, UART_BAUD, info.clk_peri_hz) };
+        light_rp2::shell::core1_main(app::push_console_byte, Some(uart))
 }
 
 #[unsafe(no_mangle)]

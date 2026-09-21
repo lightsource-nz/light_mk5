@@ -50,8 +50,11 @@ pub mod rgb;
 pub mod shell;
 pub mod spi;
 pub mod spi_bus;
+pub mod uart;
 #[cfg(feature = "usb-host")]
 pub mod tinyusb_midi;
+#[cfg(feature = "usb-console")]
+pub mod usb;
 
 use light_core::{Clock, Idle};
 

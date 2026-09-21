@@ -10,11 +10,6 @@ use light_rp2::pwm::PwmOutput;
 
 use crate::board::BACKLIGHT_LEVEL_MAX;
 
-unsafe extern "C" {
-        /// True while a USB host has this device enumerated; set on core 1 by the shell.
-        fn light_shell_usb_mounted() -> bool;
-}
-
 pub struct Touch28Power {
         pub backlight: PwmOutput,
         pub bat_en: Output,
@@ -29,7 +24,8 @@ impl PowerMechanism for Touch28Power {
         }
 
         fn on_external_power(&self) -> bool {
-                unsafe { light_shell_usb_mounted() }
+                // published by the port's console loop on core 1, which owns the USB device stack
+                light_rp2::shell::usb_mounted()
         }
 
         fn power_off(&mut self) {

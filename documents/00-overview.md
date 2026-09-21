@@ -104,8 +104,8 @@ then hands control to Rust through a small ABI:
 - `light_app_main(&ShellInfo) -> !` — the Rust entry. The shell calls it once with the resolved
   clock rates; it never returns. It constructs the peripherals, builds the modules, and runs the
   runtime loop forever on the application core.
-- `light_app_core1_main() -> !` — on a **multi-core** chip, the Rust entry for the second core,
-  called once: it owns that core, bringing up the console transports and running the housekeeping
+- `light_app_core1_main(&ShellInfo) -> !` — on a **multi-core** chip, the Rust entry for the second
+  core, called once: it owns that core, bringing up the console transports and running the housekeeping
   loop forever — polling the USB device, draining the log queue to the console and pumping console
   input into the app — so the application core never touches the console and a busy render loop
   cannot stall it. A **single-core** chip has no second core; the same housekeeping runs inline on
@@ -129,7 +129,7 @@ sequenceDiagram
     H-->>B: ready
     B->>R: light_app_main(ShellInfo)
     Note over R: build modules,<br/>run the runtime loop forever
-    B->>H: light_app_core1_main()
+    B->>H: light_app_core1_main(ShellInfo)
     R->>B: reset_to_bootsel / bootsel
     loop each pass, multi-core only
         H->>H: poll USB · drain log · pump console

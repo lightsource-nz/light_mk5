@@ -16,6 +16,10 @@ rp2350 = ["dep:rp235x-pac"]
 #   the TinyUSB host transport, which resolves against tinyusb_host at link time: only a
 # firmware whose shell was built in the host role can carry it
 usb-host = ["dep:light-midi"]
+#   the USB device role: the port's own controller driver (src/usb.rs) with the CDC console on
+# it, run from the core-1 loop in src/shell.rs. Every board whose native USB port is a device
+# carries it; a host-role board (usb-host) leaves it off and its console is the UART alone
+usb-console = ["dep:usb-device", "dep:usbd-serial"]
 
 [dependencies]
 light-core = { path = "../light-core" }
@@ -26,6 +30,10 @@ rp235x-pac = { version = "0.2", default-features = false, optional = true }
 rp2040-pac = { version = "0.6", default-features = false, optional = true }
 #   the restore state is "was this the outermost section", one bool
 critical-section = { version = "1.2", features = ["restore-state-bool"] }
+#   the USB device stack above the port's controller driver (src/usb.rs): the device/endpoint
+# model, and the CDC-ACM class the console rides on. Both no_std, no allocation
+usb-device = { version = "0.3", optional = true }
+usbd-serial = { version = "0.2", optional = true }
 #   the Cortex-M0+ has no atomic read-modify-write instructions: portable-atomic's
 # critical-section fallback provides swap/fetch_add there through THIS crate's spinlock
 # section, and compiles to the native instructions everywhere else

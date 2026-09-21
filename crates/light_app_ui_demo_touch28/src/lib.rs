@@ -27,14 +27,16 @@ use light_display::st7789::St7789;
 use light_display::{Display, FrameLayer};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, Runtime, StaticCell};
 use light_power_manager::PowerMod;
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
 use light_rp2::spi::Spi1Display;
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{panic_report, ShellInfo};
+use light_rp2::shell::{UART_BAUD, UART_RX, UART_TX};
+use light_rp2::uart::Uart;
 use light_rp2::{Breathe, Clocks, SysClock};
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -84,8 +86,10 @@ static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
 // --- core 1 --------------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(demo::push_console_byte);
+pub extern "C" fn light_app_core1_main(info: &ShellInfo) -> ! {
+        // SAFETY: core 1's one construction of the console UART, on the pins the SDK's console used
+        let uart = unsafe { Uart::new(UART_TX, UART_RX, UART_BAUD, info.clk_peri_hz) };
+        light_rp2::shell::core1_main(demo::push_console_byte, Some(uart))
 }
 
 // --- the interface, as data ---------------------------------------------------------------

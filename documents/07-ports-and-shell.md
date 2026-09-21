@@ -175,6 +175,15 @@ source for both chips over the pac, under the same feature split as the rest of 
   advanced by calling `poll` from the console loop on core 1. This is what lets USB live on one
   core without a per-core interrupt-enable question, and what keeps a busy application core from
   ever affecting the console.
+- **The control endpoint's OUT buffer is armed lazily, never left armed.** A SETUP packet disarms
+  it; the driver arms it for the DATA stage only when the request has one (an IN request, or an OUT
+  request with a non-zero length), and re-arms after a full-length packet only. An EP0 OUT buffer
+  left permanently armed carries a stale data PID into the next control transfer, and the host's
+  first write to the port (the line-coding request) hangs. Every other OUT endpoint is re-armed
+  continuously, as the class layer expects.
+- **The chip's PHY isolation is cleared.** Where the controller's main-control register resets with
+  the PHY isolated (the RP2350 does), the driver clears it on enable; a port that leaves it set is
+  fully configured and never enumerates.
 - **The device's identity is a constant of this module** — vendor and product ids and the strings.
   The framework's scripts find a board by it, so it is stable; the reference port presents the same
   identity the SDK's console presented, and the tooling's detection is unchanged.
@@ -284,9 +293,10 @@ The whole boundary is a handful of functions.
 - `light_app_main(const struct light_shell_info *info) -> !` — the Rust entry, called once on core 0
   with the resolved clock rates (`clk_sys_hz`, `clk_peri_hz`). It never returns: it constructs the
   peripherals, builds the modules, and runs the runtime loop forever.
-- `light_app_core1_main(void) -> !` — the Rust entry for core 1, called once after launch. It owns
-  the whole of core 1: it brings up the console transports and runs the housekeeping loop forever
-  (below).
+- `light_app_core1_main(const struct light_shell_info *info) -> !` — the Rust entry for core 1,
+  called once after launch with the same clock rates (the UART's baud divisor needs the peripheral
+  clock). It owns the whole of core 1: it brings up the console transports and runs the housekeeping
+  loop forever (below).
 - `light_app_panic(const char *msg, size_t len) -> !` — the SDK's own panics (assertions, spinlock
   misuse), formatted by the shell's `PICO_PANIC_FUNCTION` hook, hand their message to the Rust
   panic relay, which prints it and finishes the panic (below). Rust's own panics take the same relay
@@ -318,15 +328,22 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
 - `main` launches core 1 first (resetting it before launch, or a warm restart of core 0 hangs in the
   FIFO handshake) and waits for the launch handshake before calling `light_app_main`.
 - In the default **device role**, core 1 brings up the port's USB device stack — the `UsbBus`
-  controller driver with a CDC-ACM class on it — and the UART, then each pass polls the USB device,
-  drains the log queue to both transports, pumps input bytes from either into the app, and publishes
-  the enumeration state. The stack is polled, never interrupt-driven, so core 0 can be arbitrarily
-  busy without ever stalling the console.
+  controller driver with a CDC-ACM class on it — and the UART where the board has one to give, then
+  each pass polls the USB device, drains the log queue to every transport it has, pumps input bytes
+  from any of them into the app, and publishes the enumeration state. The stack is polled, never
+  interrupt-driven, so core 0 can be arbitrarily busy without ever stalling the console.
 - In the **host role**, the native port is a USB *host* for MIDI instruments, so there is no CDC
   console: the console is the UART alone. The whole host stack (TinyUSB, in C) runs on **core 0**,
   driven from the Rust runtime through `light_shell_usb_host_*`, so the class callbacks (implemented
   on the Rust side) fire in the same context as the packet reads. Core 1 keeps the UART console pump
   and the panic relay.
+- **The UART is the board's decision.** The console's UART pins (the port's `UART_TX`/`UART_RX`,
+  the chip's default console pair) are ordinary GPIO that a board may have committed to something
+  else — an audio interface, a buzzer. The board's instantiation crate constructs the `Uart` and
+  hands it to the loop, or hands `None`, and the loop is the same either way; a board that gives up
+  the UART keeps the CDC console and its reflash path. The USB device stack is a feature of the port
+  crate (`usb-console`), on for every device-role board and off for the host role, which then carries
+  no device stack at all.
 
 ### Behaviour and invariants
 
@@ -370,10 +387,11 @@ the host-role build links TinyUSB, and only its host half.
 
 The ABI above is the C↔Rust contract. The **Rust** side of the shell on the RP2 port is the `shell`
 module of the port crate (`light_rp2::shell`), used by every RP2 board and app and never copied into
-one: the `ShellInfo` accessor; the core-1 loop itself (`core1_main`, the body of
-`light_app_core1_main`) and the console transports it drives — the CDC class over the `usb` module
-and the `uart` module; the panic relay (`panic_report`, and the `light_app_panic` entry the C hook
-calls); `usb_mounted()`; the core-0 stack watermark; and the `bootsel` reader. The bare-CMSIS glue is
+one: the `ShellInfo` accessor; the core-1 loop itself (`core1_main(push, uart)`, the body of
+`light_app_core1_main` — the board passes its console-byte sink and its `Uart` or `None`) and the
+console transports it drives — the CDC class over the `usb` module and the `uart` module; the panic
+relay (`panic_report`, and the `light_app_panic` entry the C hook calls); `usb_mounted()`; the
+core-0 stack watermark; and the `bootsel` reader. The bare-CMSIS glue is
 single-core (no core-1 loop) *and* chip-independent — the handshake is the same on every STM32 chip
 — so it does not belong in one STM32 port crate; it is the shared `light-shell-cmsis` crate
 (`drain_log`, `read_console`, `panic_report`, `ShellInfo`) that every bare-CMSIS board uses. Either

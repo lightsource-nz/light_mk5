@@ -20,7 +20,8 @@ mod board;
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::spi::Spi1Display;
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{panic_report, ShellInfo, UART_BAUD, UART_RX, UART_TX};
+use light_rp2::uart::Uart;
 use light_rp2::{now_us, Breathe, Clocks, SysClock};
 
 #[derive(Clone, Copy, Debug)]
@@ -56,11 +57,19 @@ static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 /// design.json and light_add_ui.
 static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
+//   core 1: the shell hands the whole core to the port's console loop once -- the USB device
+// stack with the CDC console, the UART on the stock Pico's free GPIO 0/1, the log drain, the
+// input pump into this app's console mailbox
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(|b| {
-                let _ = CONSOLE_BYTES.push(b);
-        });
+pub extern "C" fn light_app_core1_main(info: &ShellInfo) -> ! {
+        // SAFETY: core 1's one construction of the console UART
+        let uart = unsafe { Uart::new(UART_TX, UART_RX, UART_BAUD, info.clk_peri_hz) };
+        light_rp2::shell::core1_main(
+                |b| {
+                        let _ = CONSOLE_BYTES.push(b);
+                },
+                Some(uart),
+        )
 }
 
 // --- the interface, as data ---------------------------------------------------------------

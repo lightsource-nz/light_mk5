@@ -33,7 +33,7 @@ use light_sd::{SdError, SpiSd};
 use light_board_touch349::{board, Touch349Power};
 use light_power_manager::PowerMod;
 use light_input::{ImuMod, TouchMod};
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{panic_report, ShellInfo};
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
@@ -378,11 +378,13 @@ static EVENTS: EventBus<AppEvent, 16, 8> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
-//   the shell ABI glue (clocks, core-1 log/console pump, panic) is shared by every touch349 app in
-// light_board_touch349::shell; core 1's pump feeds this app's console mailbox
+//   the shell ABI glue (clocks, the core-1 console, panic) is the port's, in light_rp2::shell:
+// the shell hands core 1 to the port's console loop once, and it feeds this app's console
+// mailbox. No UART console on this board -- GPIO 0/1, the chip's default UART, carry the audio
+// amplifier and data lines -- so the USB CDC is its one console
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(demo::push_console_byte);
+pub extern "C" fn light_app_core1_main(_info: &ShellInfo) -> ! {
+        light_rp2::shell::core1_main(demo::push_console_byte, None)
 }
 
 // --- the interface, as data ---------------------------------------------------------------

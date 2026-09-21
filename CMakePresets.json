@@ -19,8 +19,7 @@
             "binaryDir": "${sourceDir}/build-pico2",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
             }
         },
         {
@@ -33,8 +32,7 @@
             "binaryDir": "${sourceDir}/build-touch169",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
             }
         },
         {
@@ -47,8 +45,7 @@
             "binaryDir": "${sourceDir}/build-touch28",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
             }
         },
         {
@@ -61,8 +58,7 @@
             "binaryDir": "${sourceDir}/build-touch349",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
             }
         },
         {
@@ -75,8 +71,7 @@
             "binaryDir": "${sourceDir}/build-touch4",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
             }
         },
         {
@@ -89,8 +84,7 @@
             "binaryDir": "${sourceDir}/build-touch169-release",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
             }
         },
         {
@@ -105,8 +99,7 @@
             "cacheVariables": {
                 "LIGHT_ARCH": "riscv32",
                 "PICO_TOOLCHAIN_PATH": "$env{PICO_TOOLCHAIN_PATH}",
-                "Rust_CARGO_TARGET": "riscv32imac-unknown-none-elf",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "riscv32imac-unknown-none-elf"
             }
         },
         {
@@ -121,8 +114,7 @@
             "cacheVariables": {
                 "LIGHT_ARCH": "riscv32",
                 "PICO_TOOLCHAIN_PATH": "$env{PICO_TOOLCHAIN_PATH}",
-                "Rust_CARGO_TARGET": "riscv32imac-unknown-none-elf",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "riscv32imac-unknown-none-elf"
             }
         },
         {
@@ -167,8 +159,7 @@
             "binaryDir": "${sourceDir}/build-pico",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv6m-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv6m-none-eabi"
             }
         },
         {
@@ -209,8 +200,7 @@
             "binaryDir": "${sourceDir}/build-pico2-release",
             "generator": "Ninja",
             "cacheVariables": {
-                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
-                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
             }
         }
     ],

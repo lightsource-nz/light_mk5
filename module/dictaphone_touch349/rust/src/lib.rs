@@ -6,7 +6,7 @@
 
 #![no_std]
 
-use light_dictaphone_touch349::{panic_report, push_console_byte, run, service_core1, RunConfig, ShellInfo};
+use light_dictaphone_touch349::{core1_console, panic_report, run, RunConfig, ShellInfo};
 use light_draw::Rotation;
 use light_input::imu::Orientation;
 
@@ -44,11 +44,11 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         )
 }
 
-//   the shell ABI glue is shared in light_board_touch349::shell; core 1's pump feeds the engine's
-// console mailbox
+//   core 1 is the port's console loop, shared through light_dictaphone_touch349; it feeds the
+// engine's console mailbox
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(push_console_byte);
+pub extern "C" fn light_app_core1_main(info: &ShellInfo) -> ! {
+        core1_console(info)
 }
 
 #[cfg(target_os = "none")]

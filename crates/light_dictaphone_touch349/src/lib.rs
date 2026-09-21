@@ -31,8 +31,16 @@ use light_power_manager::PowerMod;
 use light_input::{ImuMod, TouchMod};
 use light_rp2::shell::{core1_ticks, stack_free, stack_paint};
 //   re-exported for the thin executables that link this crate: they hold the #[panic_handler] and
-// the core-1 service entry point, and take the shell's info -- all from the port's shell module.
-pub use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+// the core-1 entry point, and take the shell's info -- all from the port's shell module. Core 1
+// is the console loop; this board has no UART console (GPIO 0/1 carry the audio lines), so it
+// runs on the USB CDC alone
+pub use light_rp2::shell::{panic_report, ShellInfo};
+
+/// Core 1's whole life, for a thin executable's `light_app_core1_main`: the port's console loop
+/// over the USB CDC, feeding the engine's console mailbox. Never returns.
+pub fn core1_console(_info: &ShellInfo) -> ! {
+        light_rp2::shell::core1_main(push_console_byte, None)
+}
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};

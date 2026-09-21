@@ -23,7 +23,7 @@ use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig
 use light_board_touch4::{board, Touch4Power};
 use board::*;
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::PowerMod;
 use light_display::scanout::Scanout;
 use light_display::{Display, FrameLayer};
@@ -39,7 +39,7 @@ use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_rp2::adc::Adc;
 use light_rp2::gpio::Input;
 use light_rp2::i2c::I2c1;
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{panic_report, ShellInfo};
 use light_rp2::{Breathe, Clocks, SysClock};
 
 unsafe extern "C" {
@@ -136,8 +136,8 @@ static EVENTS: EventBus<AppEvent, 16, 7> = EventBus::new();
 // --- core 1 --------------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(demo::push_console_byte);
+pub extern "C" fn light_app_core1_main(_info: &ShellInfo) -> ! {
+        light_rp2::shell::core1_main(demo::push_console_byte, None)
 }
 
 // --- the interface, as data ---------------------------------------------------------------

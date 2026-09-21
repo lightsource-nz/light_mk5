@@ -10,7 +10,7 @@
 
 
 use light_board_touch349::board::{self, DISPLAY_HEIGHT, DISPLAY_WIDTH, TOUCH_MAP};
-use light_rp2::shell::{panic_report, service_core1, ShellInfo};
+use light_rp2::shell::{panic_report, ShellInfo};
 use light_core::{info, log, warn, ConstStaticCell, Module, Poll, Runtime};
 use light_display::axs15231b::Axs15231b;
 use light_display::{Display, FrameLayer};
@@ -180,11 +180,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 // --- shell glue: logging on core 1, panic handoff ------------------------------------------
 
 //   the shell ABI glue is shared by every touch349 app in light_board_touch349::shell; this demo
-// has no console, so its core-1 pump discards the drained input (still drained so the shell's
-// buffer never backs up)
+// has no console commands, so the console loop discards its input (still drained so the
+// transports never back up); its log still goes out. No UART on this board (GPIO 0/1 carry the
+// audio lines), so the loop runs on the USB CDC alone
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
-        service_core1(|_| {});
+pub extern "C" fn light_app_core1_main(_info: &ShellInfo) -> ! {
+        light_rp2::shell::core1_main(|_| {}, None)
 }
 
 #[cfg(target_os = "none")]
