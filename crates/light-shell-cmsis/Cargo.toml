@@ -4,7 +4,14 @@ workspace = "../../firmware"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "the Rust side of the bare-CMSIS shell ABI: clocks, log/console pump and panic, shared by every STM32/CMSIS board"
+description = "the Rust side of the bare-CMSIS shell: the console (CDC over the port's USB bus, the port's USART, ITM) and the panic path, shared by every STM32/CMSIS board"
 
 [dependencies]
 light-core = { path = "../light-core" }
+#   the class layer on the port's USB device controller
+usb-device = "0.3"
+usbd-serial = "0.2"
+heapless = "0.8"
+critical-section = "1.2"
+#   for the ITM stimulus port and the halt; the critical-section implementation is the port's
+cortex-m = "0.7"

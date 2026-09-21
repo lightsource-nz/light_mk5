@@ -4,9 +4,9 @@
 //!
 //! The C shell (`module/light_shell_cmsis`) owns what a chip port owns: the CMSIS
 //! startup file and linker script, the clock tree (400 MHz off the crystal, with PLL1's Q output
-//! for the SPI kernel clock and PLL3 at 48 MHz for USB), the caches, and the console -- ITM and
-//! USART1 both, since they fail in opposite ways. This crate owns the peripherals the drivers
-//! talk to, through the registers directly. The finding that matters most is carried in
+//! for the SPI kernel clock and PLL3 at 48 MHz for USB) and the caches. This crate owns the
+//! peripherals the drivers talk to, through the registers directly -- including the console's
+//! transports, USART1 and the USB OTG controller as a `usb_device` bus. The finding that matters most is carried in
 //! [`spi::Spi4Display`]: the H7's SPI is a different generation from the F4's, with a transfer
 //! size programmed per transaction and a FIFO to prime before the start.
 //!
@@ -24,6 +24,8 @@ use light_core::hal::{Clock, Idle};
 
 pub mod gpio;
 pub mod spi;
+pub mod uart;
+pub mod usb;
 
 /// Register access: the port's whole peripheral vocabulary.
 mod reg {
@@ -47,6 +49,9 @@ mod reg {
 }
 
 pub const RCC_BASE: usize = 0x5802_4400;
+pub const RCC_AHB1RSTR: usize = RCC_BASE + 0x080;
+pub const RCC_AHB1ENR: usize = RCC_BASE + 0x0D8;
+pub const RCC_AHB1LPENR: usize = RCC_BASE + 0x100;
 pub const RCC_AHB4ENR: usize = RCC_BASE + 0x0E0;
 pub const RCC_APB1LENR: usize = RCC_BASE + 0x0E8;
 pub const RCC_APB2ENR: usize = RCC_BASE + 0x0F0;
@@ -62,6 +67,8 @@ const TIM2_ARR: usize = TIM2_BASE + 0x2C;
 #[derive(Clone, Copy, Debug)]
 pub struct Clocks {
         pub sys_hz: u32,
+        /// AHB, half the core clock: what the USB controller sees.
+        pub ahb_hz: u32,
         /// APB2, which SPI4/5 take their kernel clock from by reset default.
         pub apb2_hz: u32,
         /// The APB1 timers' clock: twice APB1 whenever APB1 is prescaled, which it is.

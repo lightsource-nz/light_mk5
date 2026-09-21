@@ -12,6 +12,7 @@ const OSPEEDR: usize = 0x08;
 const PUPDR: usize = 0x0C;
 const IDR: usize = 0x10;
 const BSRR: usize = 0x18;
+const AFRL: usize = 0x20;
 
 /// A pin on a port: `Pin::new('C', 13)` is PC13.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +45,16 @@ impl Pin {
                 reg::modify(self.base() + OTYPER, 1 << self.pin, 0);
                 reg::modify(self.base() + OSPEEDR, 3 << shift, 3 << shift);
                 reg::modify(self.base() + PUPDR, 3 << shift, 0);
+        }
+
+        /// Route the pin to alternate function `af`, push-pull at high speed.
+        pub fn set_alternate(self, af: u32) {
+                self.clock_enable();
+                self.set_fast_push_pull();
+                let afr = self.base() + AFRL + usize::from(self.pin >> 3) * 4;
+                let shift = u32::from(self.pin & 7) * 4;
+                reg::modify(afr, 0xF << shift, af << shift);
+                self.set_mode(2);
         }
 }
 

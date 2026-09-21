@@ -184,9 +184,11 @@ source for both chips over the pac, under the same feature split as the rest of 
 - **The chip's PHY isolation is cleared.** Where the controller's main-control register resets with
   the PHY isolated (the RP2350 does), the driver clears it on enable; a port that leaves it set is
   fully configured and never enumerates.
-- **The device's identity is a constant of this module** — vendor and product ids and the strings.
-  The framework's scripts find a board by it, so it is stable; the reference port presents the same
-  identity the SDK's console presented, and the tooling's detection is unchanged.
+- **The device's identity is the framework's, not the port's** — the vendor and product ids and the
+  manufacturer and product strings are constants of `light_core::usb`, presented identically by
+  every port's console device, and the framework's scripts find a board by them. Only the serial
+  string is the port's (its chip family), so two boards on one host stay distinct devices. The
+  identity is the one the SDK's console presented, so the tooling's detection is unchanged.
 - **The 1200-baud trigger.** The CDC class reports the host's line coding; when the host sets 1200
   baud the console enters the BOOTSEL bootloader through the shell (`light_shell_reset_to_bootsel`).
   This is the reflash path for a board with no debug pads, so it is part of the contract, not a
@@ -223,8 +225,9 @@ makes it safe to call from inside another section.
 `light-stm32h7` is the STM32H743 port; `light-stm32f4` is the STM32F411 port. Both are written
 against the reference manual directly — **no pac** — because the handful of registers each touches is
 small enough that raw register access keeps the crate small and its failures legible. The C shell
-(`light_shell_cmsis`) owns what a chip port's runtime owns: the
-CMSIS startup file and linker script, the clock tree, the caches, and the console.
+(`light_shell_cmsis`) owns what a chip port's runtime owns: the CMSIS startup file and linker
+script, the clock tree and the caches. The console, on every transport, is the port's and the shared
+Rust shell glue's (below).
 
 ### Public surface
 
@@ -232,12 +235,15 @@ Both crates expose the same shape:
 
 - a private `reg` module — `read`/`write`/`modify` over `read_volatile`/`write_volatile` — the
   port's whole peripheral vocabulary;
-- `Clocks { sys_hz, apb2_hz, tim_hz }` — the rates the shell hands over;
+- `Clocks { sys_hz, ahb_hz, apb2_hz, tim_hz }` — the rates the shell hands over;
 - `clock_init(&Clocks)` — starts TIM2 as a free-running 1 MHz counter;
 - `now_us() -> u64` and `SysClock` (a `Clock`) — microseconds since `clock_init`, the 32-bit TIM2
   count extended to 64 bits by tracking wraps;
 - `Breathe` (an `Idle`);
-- `gpio` — pin wrappers over the chip's GPIO block (on AHB4 for the H7, AHB1 for the F4).
+- `gpio` — pin wrappers over the chip's GPIO block (on AHB4 for the H7, AHB1 for the F4);
+- `uart` — `Usart1`, the chip's USART1 on its default console pins as a console transport
+  (`light_shell_cmsis::Transport`), non-blocking both ways;
+- `usb` — the chip's USB OTG controller as a `usb_device::bus::UsbBus`, polled (below).
 
 `light-stm32h7` additionally has `spi` — `Spi4Display` (`SpiDisplayBus`), whose one carried finding
 is that the H7's SPI is a different generation from the F4's: the transfer size is programmed per
@@ -253,6 +259,25 @@ nothing that has run on the F411 has needed one yet.
   thousands of times a second.
 - **The clock rates come from the shell.** The port never assumes a frequency; the shell measures
   what its clock tree actually produced and passes it in `Clocks`.
+
+### The USB device controller — `usb` (the Synopsys OTG cores)
+
+Both chips carry a Synopsys OTG core — the H743's second instance (OTG_FS, the one on the PA11/PA12
+pins) and the F411's OTG_FS. The core is shared by a whole family of parts and the ecosystem's driver
+for it, `synopsys-usb-otg`, already carries the per-revision quirks (the two opposite meanings of
+the VBUS-sense bit, when an OUT endpoint is re-enabled) that a fresh driver would have to find on
+hardware again. So on these ports the **controller driver is the ecosystem's, and the port
+implements its `UsbPeripheral` seam**: the register base, the PHY (the internal full-speed one), the
+FIFO depth and endpoint count, and `enable()` — the bus clock and reset, the pins, and on the H7 the
+PHY's supply detector (`USB33DEN`), without which a fully configured controller never enumerates.
+The 48 MHz kernel clock is the shell's, part of the clock tree it builds (PLL3 on the H7; the PLL's
+Q output on the F411). The port also owns the driver's endpoint memory (in `.bss`) and constructs
+the bus once (`usb::init`), handing back the `UsbBusAllocator` the class layer builds on.
+
+Above the trait everything is as on the RP2: the CDC class is `usbd-serial`, the device is polled
+from the console loop, and the identity is the framework's shared one (`light_core::usb`). Where the
+RP2 port writes its own driver over the pac, these ports reuse one — the contract each satisfies is
+the same trait, and which side of it the port stops at is the port's business.
 
 ### The critical-section split — why the two flavours cannot coexist
 
@@ -394,7 +419,8 @@ relay (`panic_report`, and the `light_app_panic` entry the C hook calls); `usb_m
 core-0 stack watermark; and the `bootsel` reader. The bare-CMSIS glue is
 single-core (no core-1 loop) *and* chip-independent — the handshake is the same on every STM32 chip
 — so it does not belong in one STM32 port crate; it is the shared `light-shell-cmsis` crate
-(`drain_log`, `read_console`, `panic_report`, `ShellInfo`) that every bare-CMSIS board uses. Either
+(`Console`, `install`, `service`, `flush`, `usb_mounted`, `panic_report`, `ShellInfo`) that every
+bare-CMSIS board uses. Either
 way, a board's instantiation crate keeps only the thin `#[no_mangle]` / `#[panic_handler]` entry
 points that call in. See [09-application-model.md](09-application-model.md).
 
@@ -404,55 +430,84 @@ points that call in. See [09-application-model.md](09-application-model.md).
 
 The same shape as `light_shell`, in miniature, for the STM32 ports — what pico-sdk's runtime
 does for the RP2 boards, done here by the CMSIS startup file, ST's system file, and the small amount
-this shell adds: the clock tree and caches where the chip has them, and the console. Two chips so
-far: the H743 gets its caches and a 400 MHz clock tree; the F411 runs on its reset defaults (HSI at
-16 MHz, every prescaler at 1). It is a CMake function,
+this shell adds: the clock tree, and the caches where the chip has them. Two chips so far: the
+H743 gets its caches and a 400 MHz clock tree with the 48 MHz USB kernel clock off PLL3; the F411
+gets a 72 MHz clock tree off its crystal (falling back to HSI) with the 48 MHz USB clock off the
+PLL's Q output. It is a CMake function,
 `light_shell_cmsis_configure(<target> CHIP <stm32h743|stm32f411>)`, selecting the chip's
 sources, arch flags, linker script and packaging step. The CMSIS device and core headers come from
 the framework's vendored `lib/` checkouts, and the Rust staticlib is built for
-`thumbv7em-none-eabihf` — hard float on both chips.
+`thumbv7em-none-eabihf` — hard float on both chips. Like the RP2 shell it has **no stdio and no
+console**: the console, on every transport, is Rust's.
 
 ### The ABI
 
-The same boundary crosses, minus the second core:
+The boundary is one call in and nothing back:
 
 - `light_app_main(const struct light_shell_info *info) -> !` — the Rust entry, with
-  `ShellInfo { clk_sys_hz, clk_apb2_hz, clk_tim_hz }`.
-- `light_shell_log(msg, len)` and `light_shell_read_byte() -> int` — the console: a formatted line
-  out, one input byte or `-1` in, driven from C over the USART or the ITM port. This shell keeps a C
-  console (its ports have no USB device driver); the RP2 shell's console is Rust's.
-- `light_shell_panic(msg, len) -> !` — prints and halts at a breakpoint; there is no BOOTSEL to fall
-  into, and an ST-Link reflashes a halted part.
+  `ShellInfo { clk_sys_hz, clk_ahb_hz, clk_apb2_hz, clk_tim_hz, clock_status }` — the measured
+  rates, and a static string saying what the clock tree did (which clock, which fallback), for the
+  Rust side to log once its console is up.
 
-There is **no `light_app_core1_main`**: with one core, the log drain the RP2 shell runs on core 1
-is the Rust side's own job, called from within its runtime loop.
+There is **no `light_app_core1_main`**: with one core, the console loop the RP2 shell runs on core 1
+is the Rust side's own job, called from within its runtime loop. There is no panic callback either:
+a panic prints through the Rust console and halts at a breakpoint — there is no BOOTSEL to fall
+into, and an ST-Link reflashes a halted part.
 
-Internal to the shell (not Rust-facing): `light_shell_clock_init` / `_status` and
-`light_shell_console_init` / `_console_read_byte`, declared in `shell.h`.
+Internal to the shell (not Rust-facing): `light_shell_clock_init` / `_status`, declared in `shell.h`.
+
+### The Rust shell glue — `light-shell-cmsis`
+
+The single-core, chip-independent counterpart of `light_rp2::shell`, shared by every bare-CMSIS
+board: the `ShellInfo` type; the **console** — `Console<B, U>` over the port's `UsbBus` (the CDC
+class on it, through `usbd-serial`) and its USART (any `Transport`: non-blocking `write` and
+`read`), plus the ITM stimulus port whenever a debugger has enabled it; and the panic path. A board
+builds the console once from the port's `usb::init` and `uart` and **installs** it, and its console
+module calls `service(push)` each poll: poll the USB device, publish the enumeration state
+(`usb_mounted`), drain a bounded number of log lines to every transport, and pump input from any of
+them to `push`. `flush(max)` at shutdown drains the last words while still polling the device so
+they leave. The board's `#[panic_handler]` calls `panic_report`.
 
 ### Behaviour and invariants
 
 - **The shell measures the clocks it built and passes them in.** On the H743 `main` enables the
-  I-cache, runs the clock tree to 400 MHz, then computes `clk_sys`/`apb2`/`tim` from the RCC
-  prescaler fields (the APB1 timers run at twice APB1 when APB1 is prescaled). On the F411 it takes
-  the reset defaults, every bus at the core clock.
-- **Order in the clock tree is load-bearing.** Voltage scaling before frequency, flash wait states
-  before the clock that needs them, prescalers before the switch — each done late hangs the core.
-  Every wait is bounded, so a missing crystal is a slow board (HSI fallback), not a dead one, and
-  the status string reports what happened once the console exists. PLL1's Q output is configured
-  even though it feeds no PLL directly, because `SPI123SEL` resets to it — leave it disabled and
-  SPI1/2/3 configure perfectly while transferring nothing.
+  I-cache, runs the clock tree to 400 MHz, then computes `clk_sys`/`ahb`/`apb2`/`tim` from the RCC
+  prescaler fields (the APB1 timers run at twice APB1 when APB1 is prescaled). On the F411 it runs
+  the PLL to 72 MHz — 2 wait states, APB1 halved, the timers at the core clock — and 48 MHz on the
+  PLL's Q output; the same multiplier and dividers serve the crystal and the HSI fallback, so a
+  missing crystal is a USB clock out of tolerance (reported in the status string), not a different
+  clock tree.
+- **Order in the clock tree is load-bearing.** The supply configuration first, voltage scaling
+  before frequency, flash wait states before the clock that needs them, prescalers before the
+  switch — each done late hangs the core or silently fails. Every wait is bounded, so a missing
+  crystal is a slow board (HSI fallback), not a dead one, and the status string reports what
+  happened once the console exists. PLL1's Q output is configured even though it feeds no PLL
+  directly, because `SPI123SEL` resets to it — leave it disabled and SPI1/2/3 configure perfectly
+  while transferring nothing.
+- **On the H743 the supply configuration must be written before voltage scaling is requested.**
+  The chip applies no VOS change until `PWR_CR3` has been written once after power-up (the write
+  that clears `SCUEN`); a VOS request made before it waits for a `VOSRDY` that never comes, the
+  clock tree falls back to HSI, and the board runs at 64 MHz reporting a fallback nobody reads. The
+  shell writes the LDO configuration first and waits for `ACTVOSRDY`.
 - **The data cache stays off on the H743, deliberately** — the frame buffer is DMA territory, and a
   cached buffer handed to DMA is silently wrong. The debug interface is kept alive across `WFI`, or a
   running application becomes unreachable over SWD.
-- **The console is USART1 and ITM both, since they fail in opposite ways.** SWO needs a debugger
-  attached; the USART needs a wire but no debugger. Neither may block forever: both TX paths spin on
-  FIFO room with a bounded spin count and drop the byte on timeout — a debugger that enables ITM
-  without draining SWO (as OpenOCD does after flashing) would otherwise stop the firmware dead inside
-  a `printf`. A lost log line is a log line. `_write` is a strong symbol that beats libnosys's stub,
-  so every `printf` lands here. The USART is a different generation on the two chips (ISR/TDR/RDR
-  with FIFO flags on the H7, SR/DR on the F4), and every difference fails silently if carried
-  across, so each is coded per chip.
+- **Three transports, because they fail in opposite ways.** The CDC console needs a host that has
+  opened the port; the USART needs a wire but no host; SWO needs a debugger attached and one wire
+  already on the SWD header. None may block: the USART and ITM TX paths spin on FIFO room with a
+  bounded count and drop the byte on timeout — a debugger that enables ITM without draining SWO (as
+  OpenOCD does after flashing) would otherwise stop the firmware dead — and a line the CDC class has
+  no room for is dropped, never waited for. A lost log line is a log line. The USART is a different
+  generation on the two chips (ISR/TDR/RDR with FIFO flags on the H7, SR/DR on the F4), and every
+  difference fails silently if carried across, so each port codes its own.
+- **A panic prints through the console it has, then halts.** `panic_report` formats the message
+  into a static buffer, takes the installed console if nothing else holds it (a panic raised inside
+  `service` itself cannot), writes the message to every transport while polling the device for a
+  moment so the bytes leave, and halts at a breakpoint with the message still in memory for a
+  debugger. The USB device stays connected but unserviced from then on; the host sees a port that
+  has stopped answering, and the ST-Link reflashes the halted part.
+- **The enumeration state is exposed** (`usb_mounted`), as on the RP2, for a board that has a use
+  for it; no bare-CMSIS board yet gates power on it.
 
 ---
 

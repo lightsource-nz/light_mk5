@@ -79,13 +79,26 @@ $volume = Get-BootselTarget
 if ($volume) {
         Write-Host "board already in BOOTSEL at $($volume.Path)"
 } else {
-        # PID_0009 is pico-sdk's CDC stdio interface. PID_000C is a CMSIS-DAP probe, which shares
-        # the VID and will happily accept a reset that then does nothing useful.
-        $port = Find-LightSerialPort -VendorId '2E8A' -ProductId '0009' | Select-Object -First 1
+        #   VID_2E8A&PID_0009 is the framework's console device on every chip; only an RP2
+        # board answers the 1200-baud reset with BOOTSEL, and its serial says which it is
+        # (LIGHT-RP2, or LIGHT on older firmware). An STM32 board with the same VID/PID takes the
+        # line coding and does nothing, which looks exactly like a board that ignored it. PID_000C
+        # is a CMSIS-DAP probe, which shares the VID and behaves the same way
+        $ports = @(Find-LightSerialPort -VendorId '2E8A' -ProductId '0009' | Where-Object { $_.Serial -in 'LIGHT', 'LIGHT-RP2' })
+        if ($ports.Count -gt 1) {
+                $list = ($ports | ForEach-Object { "$($_.Device) ($($_.Serial))" }) -join ', '
+                throw "several RP2 boards are attached ($list); leave one connected to flash it."
+        }
+        $port = $ports | Select-Object -First 1
         if (-not $port) {
                 $stuck = Get-BootselUnmounted
                 if ($stuck) {
                         throw "the BOOTSEL volume is present ($($stuck.Device)) but not mounted, so there is nowhere to copy to. Mount it and re-run with -NoBuild -- e.g. 'udisksctl mount -b $($stuck.Device)'."
+                }
+                $others = @(Find-LightSerialPort -VendorId '2E8A' -ProductId '0009')
+                if ($others) {
+                        $list = ($others | ForEach-Object { "$($_.Device) ($($_.Serial))" }) -join ', '
+                        throw "no RP2 board found: the framework console(s) attached are $list, which flash over SWD, not BOOTSEL."
                 }
                 throw "no board found: no CDC port with VID_2E8A&PID_0009, and no BOOTSEL volume. Is it connected? If it has panicked or halted, its USB stack is gone -- hold BOOT and re-plug."
         }

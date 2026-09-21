@@ -1,15 +1,11 @@
 #ifndef LIGHT_SHELL_CMSIS_H
 #define LIGHT_SHELL_CMSIS_H
 
-// the H743's clock tree: 400 MHz off the crystal, falling back to HSI if it does not start.
-// light_shell_clock_status() says afterwards what happened, once there is a console. The F411
-// has no clock file and runs on its reset defaults; its status string says so
+// the chip's clock tree, and afterwards a static string saying what happened -- which clock the
+// core runs on and what fell back -- for the Rust side to log once its console is up. The H743
+// runs 400 MHz off the crystal with the 48 MHz USB clock off PLL3; the F411 runs 72 MHz off its
+// crystal with the 48 MHz USB clock off the PLL's Q output; both fall back to HSI
 void light_shell_clock_init(void);
 const char *light_shell_clock_status(void);
-
-// the console: USART1 on PA9/PA10 and the ITM stimulus port, both, since they fail in opposite
-// ways. Neither may block forever
-void light_shell_console_init(void);
-int light_shell_console_read_byte(void);
 
 #endif

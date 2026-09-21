@@ -1,7 +1,7 @@
 //! STM32F411 chip access for the light framework, on bare CMSIS: the same shape as
 //! `light-stm32h7` at the F4's addresses -- GPIO on AHB1, a different RCC map -- with a
-//! microsecond clock on the 32-bit TIM2. No bus drivers yet: nothing that has run on this
-//! chip needed one. Board wiring lives with the application, not here.
+//! microsecond clock on the 32-bit TIM2, the console USART, and the USB OTG controller as a
+//! `usb_device` bus. Board wiring lives with the application, not here.
 
 #![no_std]
 
@@ -12,6 +12,8 @@ use cortex_m as _;
 use light_core::hal::{Clock, Idle};
 
 pub mod gpio;
+pub mod uart;
+pub mod usb;
 
 mod reg {
         #[inline(always)]
@@ -30,7 +32,9 @@ mod reg {
 }
 
 pub const RCC_BASE: usize = 0x4002_3800;
+pub const RCC_AHB2RSTR: usize = RCC_BASE + 0x14;
 pub const RCC_AHB1ENR: usize = RCC_BASE + 0x30;
+pub const RCC_AHB2ENR: usize = RCC_BASE + 0x34;
 pub const RCC_APB1ENR: usize = RCC_BASE + 0x40;
 pub const RCC_APB2ENR: usize = RCC_BASE + 0x44;
 
@@ -45,6 +49,7 @@ const TIM2_ARR: usize = TIM2_BASE + 0x2C;
 #[derive(Clone, Copy, Debug)]
 pub struct Clocks {
         pub sys_hz: u32,
+        pub ahb_hz: u32,
         pub apb2_hz: u32,
         pub tim_hz: u32,
 }

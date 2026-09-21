@@ -199,10 +199,15 @@ function Sync-LightWslProject {
 
 # --- USB serial devices --------------------------------------------------------------------
 
-#   every serial device matching a USB VID/PID, as objects with .Device (what you open) and
-# .Description. Matching the PID as well as the VID is not optional: a CMSIS-DAP probe shares
-# RP2's vendor ID, and a 1200-baud reset sent to the probe does nothing while looking exactly
-# like a board that ignored it.
+#   every serial device matching a USB VID/PID, as objects with .Device (what you open),
+# .Description and .Serial (the device's serial string, upper-cased). Matching the PID as well
+# as the VID is not optional: a CMSIS-DAP probe shares RP2's vendor ID, and a 1200-baud reset
+# sent to the probe does nothing while looking exactly like a board that ignored it.
+#
+#   -Serial narrows by the serial string (a wildcard pattern). Every framework board presents
+# the same VID/PID whichever chip it is, and the serial names the chip family (LIGHT-RP2,
+# LIGHT-STM32H7, ...; LIGHT alone on older RP2 firmware) -- so with two boards attached the
+# serial is what tells a UF2-flashable board from one that only flashes over SWD.
 #
 #   Windows reads WMI. Linux walks sysfs rather than parsing /dev/serial/by-id names, because
 # the by-id string is composed from USB descriptor text -- it carries the product NAME, which
@@ -211,7 +216,8 @@ function Sync-LightWslProject {
 function Find-LightSerialPort {
         param(
                 [Parameter(Mandatory)] [string]$VendorId,     # '2E8A'
-                [Parameter(Mandatory)] [string]$ProductId     # '0009'
+                [Parameter(Mandatory)] [string]$ProductId,    # '0009'
+                [string]$Serial = '*'
         )
 
         if ($IsWindows) {
@@ -219,8 +225,12 @@ function Find-LightSerialPort {
                 return @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue |
                         Where-Object { $_.PNPDeviceID -like $pattern } |
                         ForEach-Object {
-                                [pscustomobject]@{ Device = $_.DeviceID; Description = $_.Name }
-                        })
+                                # the instance path's last segment is the serial string (not
+                                # $serial: variable names are case-insensitive, and that is the parameter)
+                                $devSerial = ($_.PNPDeviceID -split '\\')[-1].ToUpper()
+                                [pscustomobject]@{ Device = $_.DeviceID; Description = $_.Name; Serial = $devSerial }
+                        } |
+                        Where-Object { $_.Serial -like $Serial.ToUpper() })
         }
 
         #   NOT $pid: that is a read-only automatic variable holding this process's own ID, and
@@ -246,8 +256,12 @@ function Find-LightSerialPort {
                                     ((Get-Content $pf -Raw).Trim() -eq $prod)) {
                                         $nameFile = Join-Path $node 'product'
                                         $desc = if (Test-Path $nameFile) { (Get-Content $nameFile -Raw).Trim() } else { $tty.Name }
-                                        $found += [pscustomobject]@{
-                                                Device = "/dev/$($tty.Name)"; Description = $desc
+                                        $serialFile = Join-Path $node 'serial'
+                                        $devSerial = if (Test-Path $serialFile) { (Get-Content $serialFile -Raw).Trim().ToUpper() } else { '' }
+                                        if ($devSerial -like $Serial.ToUpper()) {
+                                                $found += [pscustomobject]@{
+                                                        Device = "/dev/$($tty.Name)"; Description = $desc; Serial = $devSerial
+                                                }
                                         }
                                 }
                                 break

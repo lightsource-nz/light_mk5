@@ -12,3 +12,9 @@ light-core = { path = "../light-core" }
 # provides -- the dual-core spinlock the RP2350 port needs has no counterpart here
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 critical-section = "1.2"
+light-shell-cmsis = { path = "../light-shell-cmsis" }
+#   the ecosystem's driver for the Synopsys OTG core, in its high-speed register layout (both of
+# the H7's instances are that layout, with the internal full-speed PHY on the one this port
+# drives); this crate implements its UsbPeripheral seam
+synopsys-usb-otg = { version = "0.4", features = ["cortex-m", "hs"] }
+usb-device = "0.3"

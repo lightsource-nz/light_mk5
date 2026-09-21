@@ -1,15 +1,16 @@
 // The C shell for the bare-CMSIS STM32 targets: what pico-sdk's runtime does for the RP2 boards,
 // done here by the CMSIS startup file, ST's system file and the things this file adds -- the
-// caches and clock tree where the chip has them, and the console -- before control passes to
-// Rust and does not come back. The same functions cross the boundary as on the RP2 shell; there
-// is no second core, so the log drain the RP2 shell runs on core 1 is the Rust side's own job.
+// caches and clock tree where the chip has them -- before control passes to Rust and does not
+// come back. THE SHELL HAS NO STDIO AND NO CONSOLE: the console, on every transport, is Rust's
+// (light-shell-cmsis over the port's USB device controller, its USART and the ITM port). What
+// crosses the boundary is one call with the measured clocks and a status string; there is no
+// second core, and no callback back.
 //
-// Two chips so far. The H743 gets its caches and a 400 MHz clock tree; the F411 runs on its
-// reset defaults -- HSI at 16 MHz, every prescaler at 1.
-#include <stdarg.h>
+// Two chips so far. The H743 gets its caches and a 400 MHz clock tree with the 48 MHz USB clock
+// off PLL3; the F411 gets a 72 MHz clock tree off its crystal with the 48 MHz USB clock off the
+// PLL's Q output.
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #if defined(STM32H743xx)
 #include <stm32h7xx.h>
@@ -23,40 +24,22 @@
 
 struct light_shell_info {
         uint32_t clk_sys_hz;
+        uint32_t clk_ahb_hz;
         uint32_t clk_apb2_hz;
         uint32_t clk_tim_hz;
+        // what the clock tree did, NUL-terminated and static, for Rust to log once its console is up
+        const char *clock_status;
 };
 
 extern void light_app_main(const struct light_shell_info *info) __attribute__((noreturn));
 
-void light_shell_log(const char *msg, size_t len)
-{
-        printf("%.*s\n", (int) len, msg);
-}
-
-int light_shell_read_byte(void)
-{
-        return light_shell_console_read_byte();
-}
-
-#define PANIC_MESSAGE_MAX 256
-static char panic_message[PANIC_MESSAGE_MAX];
-
-//   one core, one console: print and halt where a debugger can read the message. There is no
-// BOOTSEL to fall into; the ST-Link reflashes a halted part
-static void __attribute__((noreturn)) shell_panic_finish(void)
-{
-        printf("\n*** PANIC ***\n%s\n", panic_message);
-        __BKPT(0);
-        while (1)
-                __NOP();
-}
-
-void __attribute__((noreturn)) light_shell_panic(const char *msg, size_t len)
-{
-        snprintf(panic_message, sizeof panic_message, "rust: %.*s", (int) len, msg);
-        shell_panic_finish();
-}
+//   newlib's exit path, linked from crt0 and garbage-collected since main never returns, still
+// references the file syscalls at link time; defining them here keeps libnosys's "will always
+// fail" warnings out of every link. Nothing calls them: there is no stdio in this image
+int _write(int fd, const void *buf, int len) { (void) fd; (void) buf; (void) len; return -1; }
+int _read(int fd, void *buf, int len) { (void) fd; (void) buf; (void) len; return -1; }
+int _close(int fd) { (void) fd; return -1; }
+int _lseek(int fd, int off, int whence) { (void) fd; (void) off; (void) whence; return -1; }
 
 #if defined(STM32H743xx)
 //   the prescaler fields encode "divide at all" in the top bit and the power of two below it;
@@ -74,11 +57,17 @@ static uint32_t apb_hz(uint32_t ppre_field)
         static const uint8_t shift[8] = { 0,0,0,0, 1,2,3,4 };
         return hclk_hz() >> shift[ppre_field & 7];
 }
+#else
+static uint32_t apb_hz(uint32_t ppre_field)
+{
+        static const uint8_t shift[8] = { 0,0,0,0, 1,2,3,4 };
+        return SystemCoreClock >> shift[ppre_field & 7];
+}
 #endif
 
 int main(void)
 {
-        struct light_shell_info info;
+        static struct light_shell_info info;
 #if defined(STM32H743xx)
         //   the instruction cache before anything else: at 400 MHz flash is two wait states,
         // and fetch has no coherency problem to manage. The data cache stays OFF,
@@ -90,23 +79,23 @@ int main(void)
         //   keep the debug interface alive across WFI, or a running application becomes
         // unreachable over SWD ("Cortex-M CPUID: 0x0 is unrecognized")
         DBGMCU->CR |= DBGMCU_CR_DBG_SLEEPD1 | DBGMCU_CR_DBG_STOPD1 | DBGMCU_CR_DBG_STANDBYD1;
-        light_shell_console_init();
         uint32_t pclk1 = apb_hz((RCC->D2CFGR & RCC_D2CFGR_D2PPRE1) >> RCC_D2CFGR_D2PPRE1_Pos);
         info.clk_sys_hz = SystemCoreClock;
+        info.clk_ahb_hz = hclk_hz();
         info.clk_apb2_hz = apb_hz((RCC->D2CFGR & RCC_D2CFGR_D2PPRE2) >> RCC_D2CFGR_D2PPRE2_Pos);
         // the APB1 timers run at twice APB1 whenever APB1 is prescaled (TIMPRE clear)
         info.clk_tim_hz = (pclk1 == hclk_hz()) ? pclk1 : pclk1 * 2;
 #else
+        light_shell_clock_init();
         SystemCoreClockUpdate();
         DBGMCU->CR |= DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY;
-        light_shell_console_init();
-        // reset defaults: every bus at the core clock, the timers too
+        // AHB at the core clock (HPRE is left at 1); APB1 halved, so its timers run at twice it
+        uint32_t pclk1 = apb_hz((RCC->CFGR & RCC_CFGR_PPRE1) >> RCC_CFGR_PPRE1_Pos);
         info.clk_sys_hz = SystemCoreClock;
-        info.clk_apb2_hz = SystemCoreClock;
-        info.clk_tim_hz = SystemCoreClock;
+        info.clk_ahb_hz = SystemCoreClock;
+        info.clk_apb2_hz = apb_hz((RCC->CFGR & RCC_CFGR_PPRE2) >> RCC_CFGR_PPRE2_Pos);
+        info.clk_tim_hz = (pclk1 == SystemCoreClock) ? pclk1 : pclk1 * 2;
 #endif
-        printf("light_mk5 shell: sys %lu Hz, apb2 %lu Hz, timers %lu Hz%s\n",
-                        (unsigned long) info.clk_sys_hz, (unsigned long) info.clk_apb2_hz,
-                        (unsigned long) info.clk_tim_hz, light_shell_clock_status());
+        info.clock_status = light_shell_clock_status();
         light_app_main(&info);
 }

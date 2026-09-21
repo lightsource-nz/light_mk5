@@ -39,6 +39,7 @@ pub mod hal;
 pub mod log;
 pub mod mailbox;
 pub mod module;
+pub mod usb;
 
 pub use activity::note_activity;
 pub use blink::Blinker;

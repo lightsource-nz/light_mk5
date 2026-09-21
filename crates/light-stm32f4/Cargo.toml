@@ -10,3 +10,9 @@ description = "STM32F411 board access for the light framework, on bare CMSIS: th
 light-core = { path = "../light-core" }
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 critical-section = "1.2"
+light-shell-cmsis = { path = "../light-shell-cmsis" }
+#   the ecosystem's driver for the Synopsys OTG core, in its full-speed register layout (the
+# F4's OTG_FS); this crate implements its UsbPeripheral seam. Its critical sections are
+# cortex-m's PRIMASK ones, the same single-core kind this crate already links
+synopsys-usb-otg = { version = "0.4", features = ["cortex-m", "fs"] }
+usb-device = "0.3"

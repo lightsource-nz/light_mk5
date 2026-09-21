@@ -3,20 +3,18 @@
 # WHY THIS EXISTS: two details make the difference between this working and appearing to be a
 # dead board, and neither is discoverable from the symptom.
 #
-#   DtrEnable. pico-sdk's notion of "connected" is tud_cdc_connected(), which is the DTR line --
-# not the port being open. .NET's SerialPort leaves DtrEnable false, so opening the port
-# satisfies Windows and nothing else. Firmware built with PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS
-# set to -1 (which these apps are) then sits in its connect-wait loop forever, and the capture
-# comes back completely empty: no error, no partial output, not even a created file. That reads
-# as a dead board or a bad flash, and it is neither. Note the 1200-baud BOOTSEL reset is
-# unaffected, because it only needs the baud change -- so flashing keeps working perfectly while
-# every capture is silent, which is what makes it confusing.
+#   DtrEnable. A CDC console's notion of "connected" is conventionally the DTR line -- not the
+# port being open -- and .NET's SerialPort leaves DtrEnable false, so opening the port satisfies
+# Windows and nothing else. The framework's own console does not gate on DTR, but firmware that
+# does (an SDK's stdio, a bootloader) sits waiting forever, and the capture comes back completely
+# empty: no error, no partial output, not even a created file. That reads as a dead board or a
+# bad flash, and it is neither. Asserting DTR costs nothing and removes the question.
 #
 #   Buffered reads. Appending to a file per line reopens it every line, which is slow enough to
-# stop draining the CDC FIFO. The firmware then blocks inside stdio_usb_out_chars() waiting for
-# space -- up to PICO_STDIO_USB_STDOUT_TIMEOUT_US per write -- and the device stalls. Measured:
-# the same firmware stalled 13.2 s against a per-line writer and 1.7 s against a buffered one.
-# The observer must not perturb the thing it is observing.
+# stop draining the CDC FIFO. A console that waits for space then stalls with it (measured on an
+# SDK console: 13.2 s against a per-line writer, 1.7 s against a buffered one); the framework's
+# console drops lines instead, so a slow reader loses log rather than stalling the board. Either
+# way the observer must not perturb the thing it is observing.
 #
 #   Sending commands. `-Send` writes one or more console commands and captures each reply, so a
 # script (or an agent) can drive the board's CLI non-interactively -- the same open/DTR/buffered
@@ -25,7 +23,11 @@
 # and go quiet (a short idle gap) rather than a fixed sleep, capped at -SettleMs. The command is
 # sent with a trailing newline, which the firmware's line reader takes as Enter.
 #
-# USAGE:  light-console.ps1 [-Seconds 30] [-Out <file>] [-Until <regex>] [-Quiet]
+#   Which board. Every framework board presents the same console device, so with more than one
+# attached the script refuses to guess: -Port names the one to open (COM19, /dev/ttyACM0), or
+# -Board its chip family by serial (rp2, stm32h7, ...).
+#
+# USAGE:  light-console.ps1 [-Seconds 30] [-Out <file>] [-Until <regex>] [-Quiet] [-Port COM19 | -Board rp2]
 #         light-console.ps1 -Send "stats"                     # one command, print its reply
 #         light-console.ps1 -Send "stats","backlight 500"     # several, in order
 #         light-console.ps1 -Send "sd" -Until "boot signature" # stop once a pattern is seen
@@ -35,19 +37,31 @@ param(
         [string]$Until,
         [string[]]$Send,
         [int]$SettleMs = 1500,
-        [switch]$Quiet
+        [switch]$Quiet,
+        [string]$Port,
+        [string]$Board
 )
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'lib/LightPlatform.psm1') -Force
 
-$port = Find-LightSerialPort -VendorId '2E8A' -ProductId '0009' | Select-Object -First 1
-if (-not $port) {
+$serial = if ($Board) { "LIGHT-$Board*" } else { '*' }
+$ports = @(Find-LightSerialPort -VendorId '2E8A' -ProductId '0009' -Serial $serial)
+if ($Port) { $ports = @($ports | Where-Object { $_.Device -eq $Port }) }
+if (-not $ports) {
         $hint = if ($IsWindows) { '' } else { " On Linux the port also has to be readable -- if it exists but is not listed, check group membership (dialout/uucp)." }
-        throw "no board found: no CDC port with VID_2E8A&PID_0009. If it is in BOOTSEL it has no console; if it has halted, its USB stack is gone.$hint"
+        $which = if ($Port) { " at $Port" } elseif ($Board) { " with serial $serial" } else { '' }
+        throw "no board found: no CDC port with VID_2E8A&PID_0009$which. If it is in BOOTSEL it has no console; if it has halted, its USB stack is gone.$hint"
 }
+if ($ports.Count -gt 1) {
+        $list = ($ports | ForEach-Object { "$($_.Device) ($($_.Serial))" }) -join ', '
+        throw "several framework boards are attached: $list. Say which with -Port or -Board."
+}
+# (not $port or $board: those are the [string] parameters -- names are case-insensitive --
+# and the object would be flattened into one)
+$chosen = $ports[0]
 
-$sp = New-Object System.IO.Ports.SerialPort $port.Device, 115200, None, 8, one
+$sp = New-Object System.IO.Ports.SerialPort $chosen.Device, 115200, None, 8, one
 $sp.DtrEnable = $true          # see the header -- without this the board never boots
 $sp.ReadTimeout = 50
 $sp.ReadBufferSize = 131072
@@ -58,7 +72,7 @@ $sb = New-Object System.Text.StringBuilder
 $matched = $false
 try {
         if ($Send) {
-                if (-not $Quiet) { Write-Host "driving $($port.Device): $($Send.Count) command(s) (DTR asserted)" }
+                if (-not $Quiet) { Write-Host "driving $($chosen.Device): $($Send.Count) command(s) (DTR asserted)" }
                 #   let the board settle and its boot output land, then drain it so the transcript
                 # is just the command replies (use a plain capture if the boot log is what you want)
                 Start-Sleep -Milliseconds 700
@@ -85,7 +99,7 @@ try {
                         if ($matched) { break }
                 }
         } else {
-                if (-not $Quiet) { Write-Host "capturing $($port.Device) for ${Seconds}s (DTR asserted)" }
+                if (-not $Quiet) { Write-Host "capturing $($chosen.Device) for ${Seconds}s (DTR asserted)" }
                 $deadline = (Get-Date).AddSeconds($Seconds)
                 while ((Get-Date) -lt $deadline) {
                         $chunk = $sp.ReadExisting()

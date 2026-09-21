@@ -1,6 +1,6 @@
 //! The Rust side of the MiniSTM32H7 firmware: the widget demo on the board's 160x80 ST7735,
-//! the LED, the one key, and the console on USART1. Single core, so the log drain that the
-//! RP2 shells run on core 1 is a module here.
+//! the LED, the one key, and the console -- over the board's USB port and USART1. Single core,
+//! so the console loop the RP2 shells run on core 1 is a module here.
 //!
 //! One key drives a whole interface: a short press moves the focus, a long press activates.
 
@@ -19,8 +19,9 @@ mod board;
 use board::*;
 use light_stm32h7::gpio::{Input, Output};
 use light_stm32h7::spi::Spi4Display;
-use light_stm32h7::{now_us, Breathe, Clocks, SysClock};
-use light_shell_cmsis::{drain_log, panic_report, read_console, ShellInfo};
+use light_stm32h7::uart::Usart1;
+use light_stm32h7::{now_us, usb, Breathe, Clocks, SysClock};
+use light_shell_cmsis::{panic_report, Console, ShellInfo};
 
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
@@ -360,12 +361,11 @@ impl Module for ConsoleMod {
                 "console"
         }
         fn poll(&mut self) -> Poll {
-                // the drain, bounded per pass so a burst of log cannot starve the rest
-                let drained = drain_log(4);
-                read_console(|b| {
+                // the console's pass: the USB device, the log drain, the input pump
+                let moved = light_shell_cmsis::service(|b| {
                         let _ = CONSOLE_BYTES.push(b);
                 });
-                let mut result = if drained > 0 { Poll::Busy } else { Poll::Idle };
+                let mut result = if moved { Poll::Busy } else { Poll::Idle };
                 while let Some(b) = CONSOLE_BYTES.pop() {
                         if let Some(line) = self.reader.push(b) {
                                 match self.dispatch(line.as_str()) {
@@ -380,11 +380,17 @@ impl Module for ConsoleMod {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
-        let clocks = Clocks { sys_hz: info.clk_sys_hz, apb2_hz: info.clk_apb2_hz, tim_hz: info.clk_tim_hz };
+        let clocks = Clocks { sys_hz: info.clk_sys_hz, ahb_hz: info.clk_ahb_hz, apb2_hz: info.clk_apb2_hz, tim_hz: info.clk_tim_hz };
         light_stm32h7::clock_init(&clocks);
         log::set_clock(now_us);
+        //   the console first, so the shell's account of the clocks and every line after it
+        // have somewhere to go: the USB device on the board's port, USART1 on PA9/PA10
+        static CONSOLE: StaticCell<Console<usb::UsbBus, Usart1>> = StaticCell::new();
+        // SAFETY: the one construction of the controller and the USART
+        let (bus, uart) = unsafe { (usb::init(clocks.ahb_hz), Usart1::new(light_stm32h7::uart::BAUD, clocks.apb2_hz)) };
+        light_shell_cmsis::install(CONSOLE.init(Console::new(bus, Some(uart), "light-stm32h7")));
         let p = take(&clocks).expect("the board's peripherals are taken once");
-        info!("clocks: sys {} Hz, apb2 {} Hz, timers {} Hz; spi4 at {} Hz", clocks.sys_hz, clocks.apb2_hz, clocks.tim_hz, p.display_bus.actual_hz);
+        info!("clocks: sys {} Hz, ahb {} Hz, apb2 {} Hz, timers {} Hz{}; spi4 at {} Hz", clocks.sys_hz, clocks.ahb_hz, clocks.apb2_hz, clocks.tim_hz, info.clock_status(), p.display_bus.actual_hz);
 
         // built in place in .bss and taken exactly once; a second take() panics
         let front: &'static mut [u8] = FRAME_FRONT.take();
@@ -433,12 +439,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let mut idle = Breathe;
         let result = rt.run(|| light_core::Idle::idle(&mut idle));
         // drain what the shutdown said before going quiet
-        drain_log(64);
+        light_shell_cmsis::flush(64);
         match result {
                 Ok(()) => info!("runtime stopped cleanly"),
                 Err(e) => warn!("runtime stopped with {e:?}"),
         }
-        drain_log(64);
+        light_shell_cmsis::flush(64);
         loop {
                 core::hint::spin_loop();
         }

@@ -1,5 +1,5 @@
 // clock.c -- the STM32H743's clock tree, ported from the predecessor C framework with its
-// logging replaced by a status string the shell prints once the console exists.
+// logging replaced by a status string the Rust side logs once its console exists.
 //
 // ST's SystemInit() does not configure the PLL on H7, so the part boots on HSI at 64 MHz with
 // every prescaler at 1. This takes it to 400 MHz off the board's crystal and provides the 48 MHz
@@ -55,6 +55,16 @@ static void spi123_kernel_clock_fallback(void)
 
 void light_shell_clock_init(void)
 {
+        //   THE SUPPLY CONFIGURATION FIRST, and it has to be a write: the chip applies no
+        // voltage-scaling change until CR3 has been written once after power-up (SCUEN clears on
+        // that write), so a VOS request before it waits for a VOSRDY that never comes and the
+        // whole tree falls back to HSI. The LDO alone, as the board is built; BYPASS off
+        PWR->CR3 = (PWR->CR3 & ~PWR_CR3_BYPASS) | PWR_CR3_LDOEN;
+        if (!wait_for(&PWR->CSR1, PWR_CSR1_ACTVOSRDY, CLOCK_WAIT_SPINS)) {
+                clock_status = ": supply not ready, staying on HSI at 64 MHz";
+                spi123_kernel_clock_fallback();
+                return;
+        }
         PWR->D3CR |= (3u << PWR_D3CR_VOS_Pos);          // Scale 1
         if (!wait_for(&PWR->D3CR, PWR_D3CR_VOSRDY, CLOCK_WAIT_SPINS)) {
                 clock_status = ": VOS1 not ready, staying on HSI at 64 MHz";
@@ -88,6 +98,9 @@ void light_shell_clock_init(void)
         }
         RCC->CR |= RCC_CR_PLL3ON;
         bool pll3 = wait_for(&RCC->CR, RCC_CR_PLL3RDY, CLOCK_WAIT_SPINS);
+        // the USB controllers' 48 MHz kernel clock: pll3_q_ck, which is what PLL3 is for
+        if (pll3)
+                RCC->D2CCIP2R = (RCC->D2CCIP2R & ~RCC_D2CCIP2R_USBSEL_Msk) | (2u << RCC_D2CCIP2R_USBSEL_Pos);
 
         // flash wait states before the switch: AXI at 200 MHz needs 2WS at VOS1
         FLASH->ACR = FLASH_ACR_LATENCY_2WS | (2u << FLASH_ACR_WRHIGHFREQ_Pos);

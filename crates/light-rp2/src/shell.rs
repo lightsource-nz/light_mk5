@@ -274,15 +274,10 @@ impl Transports<'_> {
 pub fn core1_main(mut push: impl FnMut(u8), uart: Option<Uart>) -> ! {
         #[cfg(feature = "usb-console")]
         let mut t = {
-                use light_core::StaticCell;
+                use light_core::{usb, StaticCell};
                 use usb_device::bus::UsbBusAllocator;
                 use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbVidPid};
                 use usbd_serial::{SerialPort, USB_CLASS_CDC};
-
-                /// The console device's identity: the vendor and product the SDK's console
-                /// presented, so the tooling that finds a board by them is unchanged.
-                const USB_VID: u16 = 0x2E8A;
-                const USB_PID: u16 = 0x0009;
 
                 // the allocator outlives the device and class built on it, and is the biggest
                 // piece, so it lives in .bss rather than on this core's 4 KB stack
@@ -292,8 +287,8 @@ pub fn core1_main(mut push: impl FnMut(u8), uart: Option<Uart>) -> ! {
                 //   a 512-byte write store: a burst of log lines while the host is not reading is
                 // absorbed here, and what does not fit is dropped -- never waited for
                 let serial = SerialPort::new_with_store(alloc, [0u8; 128], [0u8; 512]);
-                let dev = UsbDeviceBuilder::new(alloc, UsbVidPid(USB_VID, USB_PID))
-                        .strings(&[StringDescriptors::default().manufacturer("lightsource").product("Light Framework console").serial_number("light")])
+                let dev = UsbDeviceBuilder::new(alloc, UsbVidPid(usb::VID, usb::PID))
+                        .strings(&[StringDescriptors::default().manufacturer(usb::MANUFACTURER).product(usb::PRODUCT).serial_number("light-rp2")])
                         .expect("descriptor strings")
                         .device_class(USB_CLASS_CDC)
                         .build();
