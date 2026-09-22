@@ -148,9 +148,13 @@ struct MidiConfig {
         in_midi_streaming: bool,
         ep_in: Option<u8>,
         ep_out: Option<u8>,
+        /// The IN endpoint's wMaxPacketSize: the pipe is opened at exactly that, not a guess.
+        in_max_packet: u16,
         rx_cables: u8,
         tx_cables: u8,
         last_ep_in: bool,
+        /// Every endpoint the walk passed, MIDI or not: a truncated descriptor set shows here.
+        endpoints_seen: u8,
 }
 
 const CLASS_AUDIO: u8 = 1;
@@ -169,11 +173,15 @@ impl DescriptorVisitor for MidiConfig {
                 }
         }
         fn on_endpoint(&mut self, e: &EndpointDescriptor) {
+                self.endpoints_seen += 1;
                 if !self.in_midi_streaming || e.bmAttributes & 0x03 != 0x02 {
                         return;
                 }
                 self.last_ep_in = e.bEndpointAddress & 0x80 != 0;
                 if self.last_ep_in {
+                        if self.ep_in.is_none() {
+                                self.in_max_packet = u16::from_le_bytes(e.wMaxPacketSize);
+                        }
                         self.ep_in.get_or_insert(e.bEndpointAddress & 0x0F);
                 } else {
                         self.ep_out.get_or_insert(e.bEndpointAddress & 0x0F);
@@ -192,7 +200,7 @@ impl DescriptorVisitor for MidiConfig {
 }
 
 /// Four empty pipe slots of the type `open` returns: the way to name an opaque stream type.
-fn no_pipes<S>(_open: &impl Fn(&cotton_usb_host::usb_bus::UsbDevice, u8) -> S) -> [Option<S>; SLOTS] {
+fn no_pipes<S>(_open: &impl Fn(&cotton_usb_host::usb_bus::UsbDevice, u8, u16) -> S) -> [Option<S>; SLOTS] {
         [None, None, None, None]
 }
 
@@ -216,7 +224,7 @@ async fn host_main(bus: &'static Bus, hub: &'static HubState<Controller>) -> cor
         let mut slots: [Option<Slot>; SLOTS] = [const { None }; SLOTS];
         //   the IN pipes are streams of one opaque type; an array of them is fine as long as
         // the array never moves, which it does not: it lives in this pinned future
-        let open_pipe = move |device: &cotton_usb_host::usb_bus::UsbDevice, ep: u8| bus.interrupt_endpoint_in(device, ep, 64, 1);
+        let open_pipe = move |device: &cotton_usb_host::usb_bus::UsbDevice, ep: u8, max_packet: u16| bus.interrupt_endpoint_in(device, ep, max_packet.clamp(8, 64), 1);
         let mut pipes = no_pipes(&open_pipe);
         let mut out_buf = [0u8; 64];
 
@@ -262,8 +270,9 @@ async fn host_main(bus: &'static Bus, hub: &'static HubState<Controller>) -> cor
                                         }
                                 };
                                 let out = configured.open_out_endpoint(ep_out).ok();
-                                pipes[idx] = Some(open_pipe(&configured, ep_in));
+                                pipes[idx] = Some(open_pipe(&configured, ep_in, cfg.in_max_packet));
                                 slots[idx] = Some(Slot { daddr, out });
+                                light_core::info!("usb: device {} ({:04x}:{:04x}): MIDI interface {}, in ep {} ({} cables, {} bytes), out ep {} ({} cables), {} endpoints seen", daddr, info.vid, info.pid, cfg.interface.unwrap_or(0), ep_in, cfg.rx_cables, cfg.in_max_packet, ep_out, cfg.tx_cables, cfg.endpoints_seen);
                                 let mount = Mount { daddr, rx_cables: cfg.rx_cables.max(1), tx_cables: cfg.tx_cables.max(1) };
                                 // where it sits: the hub in front of it and that hub's port, for the display
                                 let position = hub.topology().parent_of(daddr).map(|(hub_addr, hub_port)| BusInfo { hub_addr, hub_port });

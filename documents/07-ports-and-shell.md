@@ -223,7 +223,10 @@ and the way the stack is driven.
   runs bulk transfers on the one general-purpose pipe and holds it until data arrives; a bulk read
   pending on a silent instrument would stall every other transfer on the bus. The controller's
   polled interrupt pipes are per endpoint and serviced by the hardware, so each instrument's IN
-  endpoint is opened as one, at a 1 ms interval, and the MIDI OUT writes go as bulk transfers.
+  endpoint is opened as one, at a 1 ms interval and at the endpoint's own `wMaxPacketSize` (not
+  a guessed maximum), and the MIDI OUT writes go as bulk transfers. The mount log line records
+  what the descriptor walk found — interface, endpoints, cable counts, packet size, endpoints
+  seen — so an instrument that mounts but misbehaves can be read off the console.
 - **The host's constructor pulses the controller's reset inside the port's critical section**, as
   every reset pulse in the port is (the two cores construct peripherals at the same moment).
 - **The control endpoint's completion flags are cleared only when a completion is consumed.**

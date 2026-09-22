@@ -97,6 +97,16 @@ font, or a theme is data: an authored file and one call, no firmware source touc
   captures output for a window (`-Seconds`, `-Until`), or drives the CLI non-interactively with
   `-Send "cmd"` (or a list) — sending each command and capturing its reply — so a script, CI, or an
   agent can read `stats` and issue commands without a terminal.
+- **A debugger reset is a whole-chip reboot.** The repository's OpenOCD configurations for the
+  dual-core chips debug core 0 alone (examining core 1 stalls the firmware), and the stock reset
+  would then reset core 0 alone: core 1 keeps running the old image while the new core 0 zeroes
+  `.bss` and releases the spinlocks under it, and is only stopped when the shell relaunches it —
+  which left the log's cell borrowed for the new core 0 to panic on ("RefCell already borrowed" at
+  the first log call), or the boot parked in the ROM. Firmware reboots through the watchdog, so the
+  configurations do the same just before the stock core reset: the watchdog resets everything but
+  core 0 (the SDK's `watchdog_reboot()` selection minus core 0), and the stock reset takes core 0
+  with its halt-at-the-reset-vector intact for the flash path. Every `reset` from the scripts, gdb
+  or a telnet session is therefore equivalent to a power cycle of the chip's logic.
 
 No `--workspace` cross build works, in either workspace: the portable root has `std` binaries
 (`crush`, the GUI tools) that do not cross-compile, and the firmware workspace holds every port at
