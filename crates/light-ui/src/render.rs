@@ -564,10 +564,23 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// widgets, because every frame is a full repaint; only the pushed REGION is optimised,
         /// which is where the cost that scales with panel size lives.
         pub fn paint(&self, c: &mut Canvas<'_>, style: &Style<'_>) {
+                self.paint_within(c, style, self.canvas_rect());
+        }
+        /// Paint the tree with every stroke confined to `clip`: the full-repaint walk, cropped.
+        /// For a canvas that is NOT cleared between frames (a live framebuffer the glass is
+        /// scanning), the pixels outside the invalidated area are already right, and repainting
+        /// them is worse than wasted -- each widget is a fill and then its text, and a beam
+        /// crossing it between the two shows it blank for a refresh, so a full repaint of a page
+        /// of cells flashes a band of them on every tap. Cropped to the dirty bounds, only the
+        /// cells that changed are ever mid-paint under the beam.
+        pub fn paint_within(&self, c: &mut Canvas<'_>, style: &Style<'_>, clip: Rect) {
                 //   the theme's ground: every bg wash in the walk paints with this
                 c.bg = self.theme.bg;
                 if let Some(root) = self.root {
-                        self.paint_clipped(c, style, root, self.canvas_rect());
+                        let mut clip = clip;
+                        if rect_intersect(&mut clip, &self.canvas_rect()) {
+                                self.paint_clipped(c, style, root, clip);
+                        }
                 }
                 // the clip is canvas state: left narrowed it would crop whatever draws next
                 c.clear_clip();
@@ -609,8 +622,14 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 if !self.dirty || self.root.is_none() {
                         return false;
                 }
+                //   on a cleared canvas the whole tree; on a persistent one only the invalidated
+                // bounds, the rest being right already (and the whole canvas when everything is)
+                let within = if layer.draw_over { self.dirty_bounds() } else { None };
                 let Some(mut c) = layer.frame_begin(display, now_us) else { return false };
-                self.paint(&mut c, style);
+                match within {
+                        Some(r) => self.paint_within(&mut c, style, r),
+                        None => self.paint(&mut c, style),
+                }
                 drop(c);
                 self.commit(layer);
                 layer.frame_end(display);

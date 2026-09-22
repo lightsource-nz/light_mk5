@@ -399,7 +399,7 @@ The `Ui<A, N>` context ties them together.
   `focus_next`/`focus_prev`/`set_focus`. Mutation: `set_visible`/`set_enabled`/`set_min_size`/
   `set_max_size`/`set_label`/`set_text`/`widget_text`, list helpers
   `set_list_text`/`set_list_row`/`fill_list`, `set_indicator`/`set_subtitle`. Rotation:
-  `set_rotation(layer, rotation)`. Render: `paint`, `render(layer, display, style, now_us)`,
+  `set_rotation(layer, rotation)`. Render: `paint`, `paint_within`, `render(layer, display, style, now_us)`,
   `commit`, plus `is_animating`, `is_dirty`, `dirty_bounds`, `invalidate_widget`/`invalidate_all`.
   LUI: `build_lui_with`/`navigate_lui` (any event type via an `emit` closure) and `build_lui` (the
   `Ui<u16>` identity).
@@ -490,7 +490,12 @@ it means the same however the interface is rotated.*
   cleared canvas (full-repaint contract) and hands the layer only the invalidated regions via
   `commit`, then closes the frame. Widgets own their rects — a button and a label fill their
   interior with the surface/background — so a draw-over frame leaves nothing of the previous image.
-  A refused frame leaves the dirty flag and regions standing for a later pass.
+  On a layer that draws *over* (a persistent buffer, typically one the glass is scanning live) the
+  same walk is **cropped to the dirty bounds** (`paint_within`): the pixels outside are already right,
+  and each widget is a fill and then its text, so a beam crossing an unchanged-but-repainted cell
+  between the two shows it blank for a refresh — a page of cells flashed a band of them on every tap
+  until the repaint was confined to the tapped one. A refused frame leaves the dirty flag and regions
+  standing for a later pass.
 - **Animations are mutually exclusive by construction.** A **page transition** is a mirror: on OPEN
   the outgoing page slides *off* to reveal the child (a reveal), on CLOSE it slides back *on* to hide
   it (a cover) — the same page, the same edge, one motion reversed. With a back buffer the reveal

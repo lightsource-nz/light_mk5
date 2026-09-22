@@ -1408,6 +1408,56 @@ mod tests {
                 assert_eq!(ui.touch(cx, cy, false, 60_000), Touch::Tap { hit: true, emitted: Some(Ev::Item(5)) });
         }
 
+        /// On a canvas that persists between frames (`draw_over`), a render touches only the
+        /// invalidated bounds: a tap's flash repaints its cell and nothing else, so the beam of a
+        /// live framebuffer never catches an unchanged cell half-painted. A cleared canvas keeps
+        /// the full repaint, as the control shows.
+        #[test]
+        fn a_draw_over_render_repaints_only_the_dirty_bounds() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                //   a scribble in cell 7's interior, on a row above its glyph: byte (y * 8 + x / 8)
+                // of the 64-wide mono buffer, eight pixels of x 8..15 at y 32
+                const SCRIBBLE: usize = 32 * 8 + 1;
+                let run = |draw_over: bool| -> (u8, bool) {
+                        let mut buf = [0u8; 64 * 48 / 8];
+                        let (mut layer, mut display) = rig(&mut buf);
+                        layer.draw_over = draw_over;
+                        let mut ui: Ui<Ev, 8> = Ui::new();
+                        ui.set_style(&styled(&font));
+                        ui.fit(&layer);
+                        ui.navigate(&PAGE_PAD).unwrap();
+                        let mut now = 0u64;
+                        assert!(ui.render(&mut layer, &mut display, &styled(&font), now));
+                        flush(&mut layer, &mut display);
+                        let root = ui.root().unwrap();
+                        let c0 = ui.get(ui.children(root).next().unwrap()).unwrap().rect;
+                        let c6 = ui.get(ui.children(root).nth(6).unwrap()).unwrap().rect;
+                        assert!(c6.y0 < 32 && 32 < c6.y1 && c6.x0 <= 8 && 15 <= c6.x1, "the scribble lies inside cell 7");
+                        display.frame_mut().unwrap()[SCRIBBLE] = 0xFF;
+                        //   a pixel inside cell 1, away from its text: focused now (a solid fill),
+                        // flashed after the tap (the inverse)
+                        let (px, py) = ((c0.x0 + 2) as usize, (c0.y0 + 2) as usize);
+                        let pixel = |fb: &[u8]| fb[py * 8 + px / 8] & (1 << (px % 8)) != 0;
+                        let before = pixel(display.front().unwrap());
+                        //   a tap on cell 1: its flash invalidates that cell alone
+                        let (cx, cy) = (((c0.x0 + c0.x1) / 2) as u16, ((c0.y0 + c0.y1) / 2) as u16);
+                        assert_eq!(ui.touch(cx, cy, true, now + 50_000), Touch::Pending);
+                        now += 120_000;
+                        assert_eq!(ui.touch(cx, cy, false, now), Touch::Tap { hit: true, emitted: Some(Ev::Item(1)) });
+                        assert!(ui.render(&mut layer, &mut display, &styled(&font), now));
+                        flush(&mut layer, &mut display);
+                        let fb = display.front().unwrap();
+                        (fb[SCRIBBLE], pixel(fb) != before)
+                };
+                let (scribble, repainted) = run(true);
+                assert_eq!(scribble, 0xFF, "draw-over: the untouched cell kept its pixels");
+                assert!(repainted, "draw-over: the tapped cell was repainted with its flash");
+                let (scribble, repainted) = run(false);
+                assert_eq!(scribble, 0x00, "cleared canvas: the whole tree was repainted");
+                assert!(repainted);
+        }
+
         /// A cell pinned wider than its share widens its whole column -- the grid stays a grid --
         /// and the last column takes what is left, as a stack's last row would.
         #[test]
