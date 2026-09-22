@@ -368,13 +368,14 @@ impl Preview {
                 self.recompile();
         }
 
-        /// Cycle a selected frame's layout: stack -> row -> linear -> stack.
+        /// Cycle a selected frame's layout: stack -> row -> linear -> grid -> stack.
         pub fn cycle_frame_layout(&mut self) {
                 if let Some(c) = self.selected_child_mut() {
                         if c.is_frame() {
                                 c.layout = Some(match c.layout.as_deref() {
                                         Some("row") => "linear",
-                                        Some("linear") => "stack",
+                                        Some("linear") => "grid",
+                                        Some("grid") => "stack",
                                         _ => "row",
                                 }
                                 .to_owned());
@@ -438,7 +439,7 @@ impl Preview {
                 self.recompile();
         }
 
-        /// Set a selected frame's layout (`stack`/`row`/`linear`).
+        /// Set a selected frame's layout (`stack`/`row`/`linear`/`grid`).
         pub fn set_selected_layout(&mut self, layout: &str) {
                 if let Some(c) = self.selected_child_mut() {
                         if c.is_frame() {
@@ -493,6 +494,7 @@ impl Preview {
                         title: "Page".to_owned(),
                         layout: "stack".to_owned(),
                         gap: 6,
+                        cols: None,
                         scroll: false,
                         subtitle: false,
                         children: Vec::new(),
@@ -528,6 +530,20 @@ impl Preview {
                 let cur = self.current();
                 if let Some(p) = self.design.pages.get_mut(cur) {
                         p.gap = gap;
+                }
+                self.recompile();
+        }
+
+        /// The current page's grid column count (the compiler's default when unnamed).
+        pub fn page_cols(&self) -> u8 {
+                self.design.pages.get(self.current()).and_then(|p| p.cols).unwrap_or(crush_core::lui::DEFAULT_GRID_COLS)
+        }
+
+        /// Set the current page's grid column count.
+        pub fn set_page_cols(&mut self, cols: u8) {
+                let cur = self.current();
+                if let Some(p) = self.design.pages.get_mut(cur) {
+                        p.cols = Some(cols);
                 }
                 self.recompile();
         }
@@ -835,6 +851,23 @@ impl Preview {
         pub fn selected_layout_label(&self) -> Option<String> {
                 let c = self.selected_child()?;
                 c.is_frame().then(|| c.layout.clone().unwrap_or_else(|| "stack".to_owned()))
+        }
+
+        /// A frame's grid column count for the inspector (`None` off a frame; the compiler's
+        /// default when the frame names none).
+        pub fn selected_cols(&self) -> Option<u8> {
+                let c = self.selected_child()?;
+                c.is_frame().then(|| c.cols.unwrap_or(crush_core::lui::DEFAULT_GRID_COLS))
+        }
+
+        /// Set a selected frame's grid column count.
+        pub fn set_selected_cols(&mut self, cols: u8) {
+                if let Some(c) = self.selected_child_mut() {
+                        if c.is_frame() {
+                                c.cols = Some(cols);
+                        }
+                }
+                self.recompile();
         }
 
         /// A frame's scroll name for the inspector (`None` off a frame).

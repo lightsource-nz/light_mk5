@@ -8,13 +8,13 @@
 //!   convention, see LGF fonts and LTH themes), `orientation` u8 (0 portrait, 1 landscape),
 //!   `page_count` u16, `root` u16, device `width`/`height`/`corner_radius` u16 each.
 //! - Page-offset table: `page_count` * u32, each the byte offset of a page from the blob start.
-//! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `scroll` u8, `subtitle` u8,
-//!   `descent` u8 (the entry transition edge; 0 = the toolkit default), `child_count` u8, then each
-//!   child.
+//! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `cols` u8 (a grid's column
+//!   count), `scroll` u8, `subtitle` u8, `descent` u8 (the entry transition edge; 0 = the toolkit
+//!   default), `child_count` u8, then each child.
 //! - Child: a common prefix -- `kind` u8, `nav` u8, `nav_page` u16, `event` u16, `tag` u8, `min_w`
 //!   u16, `min_h` u16, `max_w` u16, `max_h` u16, `grow` u8 -- then, by kind:
-//!   - a FRAME: `layout` u8, `gap` u8, `scroll` u8 (flags), `child_count` u8, then that many LEAF
-//!     children (a frame's children are leaves -- nesting is one level deep).
+//!   - a FRAME: `layout` u8, `gap` u8, `cols` u8, `scroll` u8 (flags), `child_count` u8, then that
+//!     many LEAF children (a frame's children are leaves -- nesting is one level deep).
 //!   - a BUTTON/LABEL (leaf): `text` (u8 len + bytes).
 //!
 //! Strings are inline and length-prefixed, so a reader returns `&str` views into the blob with no
@@ -26,10 +26,11 @@ use crate::design::Design;
 /// The blob magic: "LUI3", Light UI. The magic is now the frozen format-family tag; the schema
 /// revision is carried in the [`VERSION`] header byte, not by bumping the magic.
 pub const MAGIC: &[u8; 4] = b"LUI3";
-/// The schema version in the header, matching light-ui's `lui::VERSION`. Version 2 adds a per-page
+/// The schema version in the header, matching light-ui's `lui::VERSION`. Version 2 added a per-page
 /// descent byte (the entry transition) over version 1 (the one-level nesting layout once called
-/// LUIv3); the shared blob-header convention with LGF fonts and LTH themes.
-pub const VERSION: u8 = 2;
+/// LUIv3); version 3 adds a `cols` byte (a grid's column count) to every page and frame; the shared
+/// blob-header convention with LGF fonts and LTH themes.
+pub const VERSION: u8 = 3;
 /// The fixed header length.
 pub const HEADER_LEN: usize = 16;
 
@@ -37,6 +38,9 @@ pub const HEADER_LEN: usize = 16;
 pub const LAYOUT_STACK: u8 = 0;
 pub const LAYOUT_ROW: u8 = 1;
 pub const LAYOUT_LINEAR: u8 = 2;
+pub const LAYOUT_GRID: u8 = 3;
+/// A grid's column count when the design names none.
+pub const DEFAULT_GRID_COLS: u8 = 2;
 
 // Child kinds.
 pub const KIND_BUTTON: u8 = 0;
@@ -78,7 +82,17 @@ fn layout_code(s: &str) -> u8 {
         match s {
                 "row" => LAYOUT_ROW,
                 "linear" => LAYOUT_LINEAR,
+                "grid" => LAYOUT_GRID,
                 _ => LAYOUT_STACK,
+        }
+}
+
+/// The `cols` byte: a grid's column count (the default when unnamed), 0 for any other layout.
+fn cols_byte(layout: &str, cols: Option<u8>) -> u8 {
+        if layout == "grid" {
+                cols.unwrap_or(DEFAULT_GRID_COLS)
+        } else {
+                0
         }
 }
 
@@ -132,8 +146,10 @@ fn put_child(b: &mut Vec<u8>, c: &ChildDef, actions: &[crate::design::ActionDef]
                 if depth > 0 {
                         return Err(format!("frame nesting is one level deep; a frame with {} children nests further", c.children.len()));
                 }
-                b.push(layout_code(c.layout.as_deref().unwrap_or("stack")));
+                let layout = c.layout.as_deref().unwrap_or("stack");
+                b.push(layout_code(layout));
                 b.push(c.gap.unwrap_or(6));
+                b.push(cols_byte(layout, c.cols));
                 b.push(scroll_code(c.scroll.as_deref()));
                 if c.children.len() > u8::MAX as usize {
                         return Err("a frame has too many children for the format".to_owned());
@@ -177,6 +193,7 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
                 put_str(&mut b, &page.title)?;
                 b.push(layout_code(&page.layout));
                 b.push(page.gap);
+                b.push(cols_byte(&page.layout, page.cols));
                 b.push(page.scroll as u8);
                 b.push(page.subtitle as u8);
                 b.push(descent_code(page_descent[i]));
@@ -245,18 +262,19 @@ mod tests {
                 assert_eq!(u16::from_le_bytes([blob[12], blob[13]]), 640, "device height");
                 assert_eq!(u16::from_le_bytes([blob[14], blob[15]]), 8, "device corner");
 
-                // page 0 body: title "Main", stack, gap 6, scroll 0, subtitle 1, 2 children
+                // page 0 body: title "Main", stack, gap 6, cols 0, scroll 0, subtitle 1, 2 children
                 let off0 = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
                 assert_eq!(blob[off0], 4, "title length 'Main'");
                 assert_eq!(&blob[off0 + 1..off0 + 5], b"Main");
                 assert_eq!(blob[off0 + 5], LAYOUT_STACK);
                 assert_eq!(blob[off0 + 6], 6, "gap");
-                assert_eq!(blob[off0 + 7], 0, "no scroll");
-                assert_eq!(blob[off0 + 8], 1, "subtitle");
-                assert_eq!(blob[off0 + 9], DESCENT_NONE, "no descent");
-                assert_eq!(blob[off0 + 10], 2, "child count");
+                assert_eq!(blob[off0 + 7], 0, "cols: not a grid");
+                assert_eq!(blob[off0 + 8], 0, "no scroll");
+                assert_eq!(blob[off0 + 9], 1, "subtitle");
+                assert_eq!(blob[off0 + 10], DESCENT_NONE, "no descent");
+                assert_eq!(blob[off0 + 11], 2, "child count");
                 // first child: button "Go" goto 1, event 5, tag 9; the common prefix is 16 bytes then text
-                let c0 = off0 + 11;
+                let c0 = off0 + 12;
                 assert_eq!(blob[c0], KIND_BUTTON);
                 assert_eq!(blob[c0 + 1], NAV_GOTO);
                 assert_eq!(u16::from_le_bytes([blob[c0 + 2], blob[c0 + 3]]), 1, "goto page 1");
@@ -278,19 +296,20 @@ mod tests {
                 .unwrap();
                 let blob = compile(&d).unwrap();
                 let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
-                // page body: title "P" (2), layout/gap/scroll/subtitle/descent (5), child_count (1)
-                let c = off + 2 + 5 + 1;
+                // page body: title "P" (2), layout/gap/cols/scroll/subtitle/descent (6), child_count (1)
+                let c = off + 2 + 6 + 1;
                 assert_eq!(blob[c], KIND_FRAME);
                 // common prefix: max_w at +11, grow at +15
                 assert_eq!(u16::from_le_bytes([blob[c + 11], blob[c + 12]]), 50, "frame max_w");
                 assert_eq!(blob[c + 15], 1, "frame grows");
-                // frame body follows the 16-byte prefix: layout, gap, scroll, child_count
+                // frame body follows the 16-byte prefix: layout, gap, cols, scroll, child_count
                 assert_eq!(blob[c + 16], LAYOUT_LINEAR);
                 assert_eq!(blob[c + 17], 4, "gap");
-                assert_eq!(blob[c + 18], SCROLL_HORIZONTAL);
-                assert_eq!(blob[c + 19], 2, "two leaf children");
+                assert_eq!(blob[c + 18], 0, "cols: not a grid");
+                assert_eq!(blob[c + 19], SCROLL_HORIZONTAL);
+                assert_eq!(blob[c + 20], 2, "two leaf children");
                 // first sub-child: button "A" event 1, its own 16-byte prefix then text
-                let s0 = c + 20;
+                let s0 = c + 21;
                 assert_eq!(blob[s0], KIND_BUTTON);
                 assert_eq!(u16::from_le_bytes([blob[s0 + 4], blob[s0 + 5]]), 1, "sub event");
                 assert_eq!(blob[s0 + 16], 1, "text len 'A'");
@@ -308,7 +327,7 @@ mod tests {
                 .unwrap();
                 let blob = compile(&d).unwrap();
                 let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
-                let c = off + 2 + 5 + 1; // title "A", the 5 page bytes, child_count
+                let c = off + 2 + 6 + 1; // title "A", the 6 page bytes, child_count
                 assert_eq!(blob[c], KIND_BUTTON);
                 assert_eq!(blob[c + 1], NAV_GOTO, "the action's goto");
                 assert_eq!(u16::from_le_bytes([blob[c + 2], blob[c + 3]]), 1, "goto page 1");
@@ -324,9 +343,37 @@ mod tests {
                 .unwrap();
                 let blob2 = compile(&with_t).unwrap();
                 let p1 = u32::from_le_bytes([blob2[20], blob2[21], blob2[22], blob2[23]]) as usize;
-                // page 1 body: title "B"(2), layout/gap/scroll/subtitle(4), then descent
-                assert_eq!(blob2[p1 + 2 + 4], DESCENT_BOTTOM, "the transition landed on the opened page");
+                // page 1 body: title "B"(2), layout/gap/cols/scroll/subtitle(5), then descent
+                assert_eq!(blob2[p1 + 2 + 5], DESCENT_BOTTOM, "the transition landed on the opened page");
                 let _ = off1;
+        }
+
+        #[test]
+        fn a_grid_writes_its_column_count_on_pages_and_frames() {
+                //   a grid page naming its columns, holding a grid frame that names none
+                let d = design::parse(
+                        r#"{ "pages": [ { "title": "Pad", "layout": "grid", "cols": 3, "gap": 4, "children": [
+                                { "layout": "grid", "children": [ { "button": "a" }, { "button": "b" } ] }
+                        ] } ] }"#,
+                )
+                .unwrap();
+                let blob = compile(&d).unwrap();
+                let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
+                // page body: title "Pad" (4), then layout, gap, cols
+                assert_eq!(blob[off + 4], LAYOUT_GRID);
+                assert_eq!(blob[off + 5], 4, "gap");
+                assert_eq!(blob[off + 6], 3, "the page's column count");
+                // the frame: after the 6 page bytes and the child count, its 16-byte prefix, then
+                // layout, gap, cols
+                let c = off + 4 + 6 + 1;
+                assert_eq!(blob[c], KIND_FRAME);
+                assert_eq!(blob[c + 16], LAYOUT_GRID);
+                assert_eq!(blob[c + 18], DEFAULT_GRID_COLS, "an unnamed column count takes the default");
+                //   and a non-grid page writes 0, whatever cols says
+                let d = design::parse(r#"{ "pages": [ { "title": "S", "cols": 5, "children": [] } ] }"#).unwrap();
+                let blob = compile(&d).unwrap();
+                let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
+                assert_eq!(blob[off + 2 + 2], 0, "cols is a grid's alone");
         }
 
         #[test]

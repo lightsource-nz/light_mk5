@@ -856,6 +856,7 @@ impl<A: Copy + 'static, const N: usize> Ui<A, N> {
                                 match child.layout() {
                                         lui::code::LAYOUT_ROW => self.layout_row(frame, child.gap()),
                                         lui::code::LAYOUT_LINEAR => self.layout_linear(frame, child.gap()),
+                                        lui::code::LAYOUT_GRID => self.layout_grid(frame, child.cols(), child.gap()),
                                         _ => self.layout_stack(frame, child.gap()),
                                 }
                         } else {
@@ -867,6 +868,7 @@ impl<A: Copy + 'static, const N: usize> Ui<A, N> {
                 match page.layout() {
                         lui::code::LAYOUT_ROW => self.layout_row(win, page.gap()),
                         lui::code::LAYOUT_LINEAR => self.layout_linear(win, page.gap()),
+                        lui::code::LAYOUT_GRID => self.layout_grid(win, page.cols(), page.gap()),
                         _ => self.layout_stack(win, page.gap()),
                 }
                 self.relayout();
@@ -1003,6 +1005,23 @@ mod tests {
         static NOGROW_STRIP: Desc<Ev> = Desc::frame().row(0).scroll(scroll::HORIZONTAL).children(&[&COL_1, &COL_2, &COL_3, &COL_4, &COL_5]);
         static NOGROW_ROW: Desc<Ev> = Desc::frame().row(2).children(&[&PIN, &NOGROW_STRIP, &PIN_R]);
         static PAGE_NOGROW: Page<Ev> = Page::new(&NOGROW_ROW, None);
+
+        //   a keypad: seven cells in three columns, so the last row is short; a scrolling grid of
+        // pinned-tall cells; and a grid with one cell pinned wide
+        static K1: Desc<Ev> = Desc::button("1").emit(Ev::Item(1));
+        static K2: Desc<Ev> = Desc::button("2").emit(Ev::Item(2));
+        static K3: Desc<Ev> = Desc::button("3").emit(Ev::Item(3));
+        static K4: Desc<Ev> = Desc::button("4").emit(Ev::Item(4));
+        static K5: Desc<Ev> = Desc::button("5").emit(Ev::Item(5));
+        static K6: Desc<Ev> = Desc::button("6").emit(Ev::Item(6));
+        static K7: Desc<Ev> = Desc::button("7").emit(Ev::Item(7));
+        static PAD: Desc<Ev> = Desc::frame().grid(3, 2).children(&[&K1, &K2, &K3, &K4, &K5, &K6, &K7]);
+        static PAGE_PAD: Page<Ev> = Page::new(&PAD, None);
+        static TALL_PAD: Desc<Ev> = Desc::frame().grid(2, 0).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5]);
+        static PAGE_TALL_PAD: Page<Ev> = Page::new(&TALL_PAD, None);
+        static WIDE: Desc<Ev> = Desc::button("W").emit(Ev::Alpha).min_size(40, 0);
+        static WIDE_PAD: Desc<Ev> = Desc::frame().grid(2, 0).children(&[&WIDE, &K2, &K3, &K4]);
+        static PAGE_WIDE_PAD: Page<Ev> = Page::new(&WIDE_PAD, None);
 
         //   the same stack content (layout seed would be Left) pinned to each cardinal, to
         // prove a per-page override beats the seed and the tree default
@@ -1335,6 +1354,120 @@ mod tests {
                 assert!(gr.x1 > nr.x1, "grow pushed the trailing pin to the edge");
         }
 
+        /// A grid fills its cells row-major into equal columns and rows, the last line of each
+        /// axis absorbing the division remainder so the cells reach the content edges; a short
+        /// last row leaves its trailing cells empty rather than stretching. Sibling order is the
+        /// focus order, so a keypad cycles 1..7, and a cell answers a tap with its own event.
+        #[test]
+        fn a_grid_fills_cells_row_major_and_the_last_line_takes_the_remainder() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                ui.navigate(&PAGE_PAD).unwrap();
+                let root = ui.root().unwrap();
+                let vp = ui.viewport(root);
+                let cells: StdVec<Rect> = ui.children(root).map(|c| ui.get(c).unwrap().rect).collect();
+                assert_eq!(cells.len(), 7);
+                let gap = 2;
+                // the first row: three cells side by side, the gap between, all at the content top
+                assert_eq!((cells[0].x0, cells[0].y0), (vp.x0, vp.y0));
+                assert_eq!(cells[1].x0, cells[0].x1 + 1 + gap);
+                assert_eq!(cells[2].x0, cells[1].x1 + 1 + gap);
+                assert!(cells[0].y0 == cells[1].y0 && cells[1].y0 == cells[2].y0);
+                // the columns are equal and the last one reaches the content's right edge
+                assert_eq!(cells[0].x1 - cells[0].x0, cells[1].x1 - cells[1].x0);
+                assert_eq!(cells[2].x1, vp.x1);
+                // the second row sits under the first, cell under cell, the gap between
+                assert_eq!(cells[3].y0, cells[0].y1 + 1 + gap);
+                assert_eq!((cells[3].x0, cells[3].x1), (cells[0].x0, cells[0].x1));
+                assert_eq!((cells[4].x0, cells[4].x1), (cells[1].x0, cells[1].x1));
+                // the seventh cell starts the short third row alone, in the first column, and that
+                // last row reaches the content's bottom edge (it took the remainder)
+                assert_eq!((cells[6].x0, cells[6].x1), (cells[0].x0, cells[0].x1));
+                assert_eq!(cells[6].y0, cells[3].y1 + 1 + gap);
+                assert_eq!(cells[6].y1, vp.y1);
+                assert!(cells[6].y1 - cells[6].y0 >= cells[0].y1 - cells[0].y0, "the remainder never shrinks the last row below its share");
+                // the content extent is exactly the grid, so a non-scrolling grid never scrolls
+                let win = ui.get(root).unwrap().window().unwrap().clone();
+                assert_eq!((win.content_w, win.content_h), (vp.x1 - vp.x0 + 1, vp.y1 - vp.y0 + 1));
+                assert!(!ui.scroll_by(root, 0, 10));
+                // focus runs in sibling order -- reading order across the rows
+                assert_eq!(ui.activate(), Some(Ev::Item(1)));
+                for expect in 2..=7 {
+                        ui.focus_next();
+                        assert_eq!(ui.activate(), Some(Ev::Item(expect)));
+                }
+                // a tap on the middle cell of the middle row lands on cell 5
+                let r = cells[4];
+                let (cx, cy) = (((r.x0 + r.x1) / 2) as u16, ((r.y0 + r.y1) / 2) as u16);
+                assert_eq!(ui.touch(cx, cy, true, 0), Touch::Pending);
+                assert_eq!(ui.touch(cx, cy, false, 60_000), Touch::Tap { hit: true, emitted: Some(Ev::Item(5)) });
+        }
+
+        /// A cell pinned wider than its share widens its whole column -- the grid stays a grid --
+        /// and the last column takes what is left, as a stack's last row would.
+        #[test]
+        fn a_pinned_cell_widens_its_column_without_breaking_the_grid() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                ui.navigate(&PAGE_WIDE_PAD).unwrap();
+                let root = ui.root().unwrap();
+                let vp = ui.viewport(root);
+                let cells: StdVec<Rect> = ui.children(root).map(|c| ui.get(c).unwrap().rect).collect();
+                // the pinned cell is 40 wide, and so is the cell beneath it
+                assert_eq!(cells[0].x1 - cells[0].x0 + 1, 40);
+                assert_eq!((cells[2].x0, cells[2].x1), (cells[0].x0, cells[0].x1));
+                // the second column starts where the first ends and reaches the edge with the rest
+                assert_eq!(cells[1].x0, cells[0].x1 + 1);
+                assert_eq!(cells[1].x1, vp.x1);
+                assert_eq!((cells[3].x0, cells[3].x1), (cells[1].x0, cells[1].x1));
+                assert_eq!(cells[3].y1, vp.y1);
+        }
+
+        /// Rows pinned taller than their share overflow a scrolling grid, and a drag moves the
+        /// whole grid within the same clamp the stack uses: the last row rests at the viewport's
+        /// bottom and never passes it.
+        #[test]
+        fn a_scrolling_grid_overflows_and_a_drag_moves_it_within_the_clamp() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                ui.navigate(&PAGE_TALL_PAD).unwrap();
+                let root = ui.root().unwrap();
+                let win = ui.get(root).unwrap().window().unwrap().clone();
+                // five cells at 20 px in two columns: three rows, 60 px, in a 42 px viewport
+                assert_eq!(win.content_h, 60);
+                let cells: StdVec<WidgetId> = ui.children(root).collect();
+                let y_before = ui.get(cells[0]).unwrap().rect.y0;
+                assert_eq!(ui.get(cells[1]).unwrap().rect.y0, y_before, "the second cell shares the first row");
+                assert_eq!(ui.get(cells[2]).unwrap().rect.y0, y_before + 20, "the third starts the second row");
+                // a drag upward pulls every cell with it
+                assert_eq!(ui.touch(32, 30, true, 0), Touch::Pending);
+                assert_eq!(ui.touch(32, 10, true, 10_000), Touch::Drag);
+                assert_eq!(ui.get(cells[0]).unwrap().rect.y0, y_before - 18, "moved as far as the clamp allows");
+                assert_eq!(ui.get(cells[1]).unwrap().rect.y0, y_before - 18);
+                assert_eq!(ui.touch(32, 10, false, 20_000), Touch::DragEnd);
+                // scrolling past the end is clamped: the last row rests at the viewport's bottom
+                let vp = ui.viewport(root);
+                assert_eq!(ui.get(cells[4]).unwrap().rect.y1, vp.y1);
+                assert!(!ui.scroll_by(root, 0, 1), "nothing left to scroll");
+                // and never sideways: a grid's columns fit their window
+                assert!(!ui.scroll_by(root, 10, 0));
+        }
+
         #[test]
         fn a_row_page_drops_in_vertically_and_lifts_out_while_a_stack_page_slides() {
                 let blob = font_blob();
@@ -1377,7 +1510,7 @@ mod tests {
         }
 
         //   a minimal LUI blob assembled by hand -- crush's compiler is std/heavy and lives in
-        // another crate, so the reader/transition are tested off a literal blob in the v2 layout:
+        // another crate, so the reader/transition are tested off a literal blob in the v3 layout:
         // two Linear pages, one button each carrying an app-event id
         fn lui_blob() -> StdVec<u8> {
                 fn put_str(b: &mut StdVec<u8>, s: &str) {
@@ -1389,6 +1522,7 @@ mod tests {
                         put_str(&mut b, title);
                         b.push(crate::lui::code::LAYOUT_LINEAR);
                         b.push(2); // gap
+                        b.push(0); // cols
                         b.push(0); // scroll
                         b.push(0); // subtitle
                         b.push(0); // descent
@@ -1409,7 +1543,7 @@ mod tests {
                 let bodies = [page("One", "Go", 7), page("Two", "Back", 8)];
                 let mut blob = StdVec::new();
                 blob.extend_from_slice(b"LUI3");
-                blob.push(2); // schema version
+                blob.push(crate::lui::VERSION); // schema version
                 blob.push(0); // orientation (portrait)
                 blob.extend_from_slice(&2u16.to_le_bytes()); // page_count
                 blob.extend_from_slice(&0u16.to_le_bytes()); // root
@@ -1498,6 +1632,7 @@ mod tests {
                 put_str(&mut body, "P");
                 body.push(crate::lui::code::LAYOUT_LINEAR);
                 body.push(2); // gap
+                body.push(0); // cols
                 body.push(0); // scroll
                 body.push(0); // subtitle
                 body.push(0); // descent
@@ -1505,10 +1640,11 @@ mod tests {
                 prefix(&mut body, crate::lui::code::KIND_BUTTON, 5, false);
                 put_str(&mut body, "top");
                 //   the frame: UNtagged (like the real scrolling strip), grows; then
-                // layout/gap/scroll/count, then two leaf rows
+                // layout/gap/cols/scroll/count, then two leaf rows
                 prefix(&mut body, crate::lui::code::KIND_FRAME, 0, true);
                 body.push(crate::lui::code::LAYOUT_LINEAR);
                 body.push(2); // gap
+                body.push(0); // cols
                 body.push(crate::scroll::HORIZONTAL);
                 body.push(2); // two children
                 prefix(&mut body, crate::lui::code::KIND_BUTTON, 0x30, false);
@@ -1518,7 +1654,7 @@ mod tests {
 
                 let mut blob = StdVec::new();
                 blob.extend_from_slice(b"LUI3");
-                blob.push(2); // schema version
+                blob.push(crate::lui::VERSION); // schema version
                 blob.push(0); // orientation (portrait)
                 blob.extend_from_slice(&1u16.to_le_bytes()); // page_count
                 blob.extend_from_slice(&0u16.to_le_bytes()); // root
@@ -1550,6 +1686,69 @@ mod tests {
                 //   the strip's rows, built under the frame, are found by their own tags
                 assert_eq!(ui.widget_text(ui.find(0x30).expect("row 0")), Some("R0"));
                 assert_eq!(ui.widget_text(ui.find(0x31).expect("row 1")), Some("R1"));
+        }
+
+        //   one grid page of four cells in two columns, in the v3 layout
+        fn grid_lui_blob() -> StdVec<u8> {
+                fn put_str(b: &mut StdVec<u8>, s: &str) {
+                        b.push(s.len() as u8);
+                        b.extend_from_slice(s.as_bytes());
+                }
+                let mut body = StdVec::new();
+                put_str(&mut body, "Pad");
+                body.push(crate::lui::code::LAYOUT_GRID);
+                body.push(2); // gap
+                body.push(2); // cols
+                body.push(0); // scroll
+                body.push(0); // subtitle
+                body.push(0); // descent
+                body.push(4); // four cells
+                for label in ["1", "2", "3", "4"] {
+                        body.push(crate::lui::code::KIND_BUTTON);
+                        body.push(crate::lui::code::NAV_NONE);
+                        body.extend_from_slice(&0u16.to_le_bytes()); // nav_page
+                        body.extend_from_slice(&0u16.to_le_bytes()); // event
+                        body.push(0); // tag
+                        body.extend_from_slice(&[0; 8]); // min/max
+                        body.push(0); // grow
+                        put_str(&mut body, label);
+                }
+                let mut blob = StdVec::new();
+                blob.extend_from_slice(b"LUI3");
+                blob.push(crate::lui::VERSION);
+                blob.push(0); // orientation (portrait)
+                blob.extend_from_slice(&1u16.to_le_bytes()); // page_count
+                blob.extend_from_slice(&0u16.to_le_bytes()); // root
+                blob.extend_from_slice(&64u16.to_le_bytes()); // width
+                blob.extend_from_slice(&48u16.to_le_bytes()); // height
+                blob.extend_from_slice(&0u16.to_le_bytes()); // corner
+                blob.extend_from_slice(&((16 + 4) as u32).to_le_bytes()); // page 0 offset
+                blob.extend_from_slice(&body);
+                blob
+        }
+
+        /// A blob page whose layout is a grid builds into the grid layout with the blob's column
+        /// count: the data path reaches the same layout the descriptor path does.
+        #[test]
+        fn build_lui_with_lays_a_grid_page_out_by_its_column_count() {
+                let fb = font_blob();
+                let font = Font::parse(&fb).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let data: &'static [u8] = StdVec::leak(grid_lui_blob());
+                let page = crate::Lui::parse(data).unwrap().page(0).unwrap();
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                ui.build_lui_with(&page, |i, _| Some(Ev::Item(i as u8))).unwrap();
+                let root = ui.root().unwrap();
+                assert_eq!(ui.get(root).unwrap().window().unwrap().layout, Layout::Grid { cols: 2, gap: 2 });
+                let cells: StdVec<Rect> = ui.children(root).map(|c| ui.get(c).unwrap().rect).collect();
+                assert_eq!(cells.len(), 4);
+                assert_eq!(cells[1].y0, cells[0].y0, "two cells share the first row");
+                assert_eq!(cells[1].x0, cells[0].x1 + 3);
+                assert_eq!(cells[2].x0, cells[0].x0, "the third starts the second row");
+                assert_eq!(cells[2].y0, cells[0].y1 + 3);
         }
 
         /// A per-page [`Descent`] override and the tree-wide default both steer the transition,

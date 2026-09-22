@@ -16,7 +16,24 @@
     { "name": "Item4", "event": 19 },
     { "name": "Item5", "event": 20 },
     { "name": "Item6", "event": 21 },
-    { "name": "Item7", "event": 22 }
+    { "name": "Item7", "event": 22 },
+    { "name": "PadOpen", "goto": 3 },
+    { "name": "Key1", "event": 32 },
+    { "name": "Key2", "event": 33 },
+    { "name": "Key3", "event": 34 },
+    { "name": "KeyA", "event": 35 },
+    { "name": "Key4", "event": 36 },
+    { "name": "Key5", "event": 37 },
+    { "name": "Key6", "event": 38 },
+    { "name": "KeyB", "event": 39 },
+    { "name": "Key7", "event": 40 },
+    { "name": "Key8", "event": 41 },
+    { "name": "Key9", "event": 42 },
+    { "name": "KeyC", "event": 43 },
+    { "name": "KeyStar", "event": 44 },
+    { "name": "Key0", "event": 45 },
+    { "name": "KeyHash", "event": 46 },
+    { "name": "KeyD", "event": 47 }
   ],
   "pages": [
     {
@@ -28,7 +45,8 @@
         { "button": "Beta", "action": "Toggle1", "tag": 2 },
         { "button": "Gamma", "action": "Toggle2", "tag": 3 },
         { "button": "More >", "action": "MoreOpen" },
-        { "button": "List >", "action": "ListOpen" }
+        { "button": "List >", "action": "ListOpen" },
+        { "button": "Keypad >", "action": "PadOpen" }
       ]
     },
     {
@@ -56,6 +74,30 @@
         { "button": "Item 6", "action": "Item6", "min_h": 56 },
         { "button": "Item 7", "action": "Item7", "min_h": 56 },
         { "button": "< Back", "action": "Back", "min_h": 56 }
+      ]
+    },
+    {
+      "title": "Keypad",
+      "layout": "grid",
+      "cols": 4,
+      "gap": 4,
+      "children": [
+        { "button": "1", "action": "Key1" },
+        { "button": "2", "action": "Key2" },
+        { "button": "3", "action": "Key3" },
+        { "button": "A", "action": "KeyA" },
+        { "button": "4", "action": "Key4" },
+        { "button": "5", "action": "Key5" },
+        { "button": "6", "action": "Key6" },
+        { "button": "B", "action": "KeyB" },
+        { "button": "7", "action": "Key7" },
+        { "button": "8", "action": "Key8" },
+        { "button": "9", "action": "Key9" },
+        { "button": "C", "action": "KeyC" },
+        { "button": "*", "action": "KeyStar" },
+        { "button": "0", "action": "Key0" },
+        { "button": "#", "action": "KeyHash" },
+        { "button": "D", "action": "KeyD" }
       ]
     }
   ]

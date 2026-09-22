@@ -215,7 +215,7 @@ impl EditorApp {
                                         ui.label("Layout");
                                         let cur = self.preview.page_layout();
                                         egui::ComboBox::from_id_salt("page_layout").selected_text(&cur).show_ui(ui, |ui| {
-                                                for opt in ["stack", "row", "linear"] {
+                                                for opt in ["stack", "row", "linear", "grid"] {
                                                         if ui.selectable_label(cur == opt, opt).clicked() {
                                                                 self.preview.set_page_layout(opt);
                                                         }
@@ -226,6 +226,13 @@ impl EditorApp {
                                         let mut gap = self.preview.page_gap();
                                         if ui.add(egui::DragValue::new(&mut gap).range(0..=64).prefix("gap ")).changed() {
                                                 self.preview.set_page_gap(gap);
+                                        }
+                                        //   a grid's column count, beside its gap; the other layouts have none
+                                        if self.preview.page_layout() == "grid" {
+                                                let mut cols = self.preview.page_cols();
+                                                if ui.add(egui::DragValue::new(&mut cols).range(1..=16).prefix("cols ")).changed() {
+                                                        self.preview.set_page_cols(cols);
+                                                }
                                         }
                                 });
                                 let mut scroll = self.preview.page_scroll();
@@ -349,12 +356,18 @@ impl EditorApp {
                         if is_frame {
                                 let cur = layout.unwrap_or_else(|| "stack".to_owned());
                                 egui::ComboBox::from_label("Layout").selected_text(&cur).show_ui(ui, |ui| {
-                                        for opt in ["stack", "row", "linear"] {
+                                        for opt in ["stack", "row", "linear", "grid"] {
                                                 if ui.selectable_label(cur == opt, opt).clicked() {
                                                         self.preview.set_selected_layout(opt);
                                                 }
                                         }
                                 });
+                                if cur == "grid" {
+                                        let mut cols = self.preview.selected_cols().unwrap_or(2);
+                                        if ui.add(egui::DragValue::new(&mut cols).range(1..=16).prefix("cols ")).changed() {
+                                                self.preview.set_selected_cols(cols);
+                                        }
+                                }
                                 let cur = scroll.unwrap_or_else(|| "none".to_owned());
                                 egui::ComboBox::from_label("Scroll").selected_text(&cur).show_ui(ui, |ui| {
                                         for opt in ["none", "vertical", "horizontal"] {

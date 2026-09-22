@@ -392,7 +392,8 @@ The `Ui<A, N>` context ties them together.
   `create_window`/`create_button`/`create_label`, `build(desc)`, `destroy`, `find(tag)`, `get`,
   `root`, `focused`, `child_ids`. Navigation: `navigate`, `reload`, `navigate_returning`,
   `navigate_back_to`, `navigate_back`, `set_default_descent`, `page`. Layout:
-  `layout_stack`/`layout_row`/`layout_linear`, `set_layout_axis`, `set_corner_radius`, `relayout`.
+  `layout_stack`/`layout_row`/`layout_linear`/`layout_grid`, `set_layout_axis`,
+  `set_corner_radius`, `relayout`.
   Scrolling: `set_scroll`, `scroll_to`/`scroll_by`/`scroll_into_view`. Input:
   `touch(x, y, touching, now_us)`, `press_at`, `swipe_direction`, `activate`,
   `focus_next`/`focus_prev`/`set_focus`. Mutation: `set_visible`/`set_enabled`/`set_min_size`/
@@ -403,13 +404,14 @@ The `Ui<A, N>` context ties them together.
   LUI: `build_lui_with`/`navigate_lui` (any event type via an `emit` closure) and `build_lui` (the
   `Ui<u16>` identity).
 - **Descriptors (`const`, in flash):** `Desc<A>` (a builder: `window`/`frame`/`button`/`label`,
-  `emit`/`navigate`/`back`, `rounded`/`shaded`, `stack`/`row`/`linear`, `scroll`, `min_size`/
-  `max_size`/`grow`, `rect`, `tag`, `subtitle`, `children`); `Page<A>` (content + `parent` +
+  `emit`/`navigate`/`back`, `rounded`/`shaded`, `stack`/`row`/`linear`/`grid`, `scroll`,
+  `min_size`/`max_size`/`grow`, `rect`, `tag`, `subtitle`, `children`); `Page<A>` (content + `parent` +
   `descend`). Macro **`file_list!`** generates a `pub static` slice of row descriptors for a
   selectable list.
 - **Runtime widget model:** `Widget<A>`, `Kind` (`Window`/`Button`/`Label`), `Window`, `Button<A>`,
   `Label`, `Nav<A>` (`Stay`/`To`/`Back`), `WidgetId`, `TextSlot`, `Shade`, `IndicatorShape`
-  (`Dot`/`Play`), `Layout` (`None`/`Stack`/`Row`/`Linear`), `Axis`, `Descent`, `scroll` flag module.
+  (`Dot`/`Play`), `Layout` (`None`/`Stack`/`Row`/`Linear`/`Grid`), `Axis`, `Descent`, `scroll` flag
+  module.
 - **Style:** `Style<'f>` (a `Theme` plus `Fonts`), `Fonts<'f>` (`uniform`/`new`, one face per
   `FontRole`), `FontRole` (`Title`/`Body`). Re-exports `Theme`.
 - **Outcomes:** `Touch<A>` (`None`/`Pending`/`Drag`/`DragEnd`/`Tap { hit, emitted }`), `SwipeDir`,
@@ -438,8 +440,16 @@ The `Ui<A, N>` context ties them together.
   once instantiates portrait or landscape from the outside via `set_layout_axis`. A `min_size` is
   what makes a stack *overflow* (and scroll) rather than shrink without limit; min wins over max. In
   a horizontal layout `grow` children take the surplus, letting pinned buttons flank a stretching
-  one. A `viewport` helper is the single source painting, hit-testing, the stack layout and the
-  scroll clamp all agree on for where content is allowed to be.
+  one. `Grid { cols, gap }` fills its children row-major into `cols` equal columns and as many equal
+  rows as they need, `gap` apart on both axes — a keypad, a palette — and pins *both* axes: it is
+  the one layout whose shape does not follow the tree's `Axis`. A column is as wide as the widest
+  bound among its cells and a row as tall as the tallest, so one pinned cell resizes its line
+  rather than breaking the grid; the last column, and the last row of a non-scrolling grid, absorb
+  the division remainders (as a stack's last row does); cells pinned taller than their share
+  overflow and scroll vertically under `scroll::VERTICAL` with the same clamp as a stack. A short
+  last row leaves its trailing cells empty; sibling order is reading order, so focus cycles across
+  the rows. A `viewport` helper is the single source painting, hit-testing, the stack layout and
+  the scroll clamp all agree on for where content is allowed to be.
 - **Scrolling.** A scrolling window clips its children to its viewport in both painting and
   hit-testing (what cannot be seen must not respond); rects stay absolute — scrolling shifts every
   rect under the window. The rounded bottom corners belong to the *container*: a scrolling window
@@ -519,11 +529,12 @@ it means the same however the interface is rotated.*
 authored, compiled by `crush` to the LUI3 format, embedded or loaded, and read at runtime with no UI
 source touched.
 
-- **`Lui<'a>`** parses and validates the blob (magic `b"LUI3"`, `VERSION` 2), exposing
+- **`Lui<'a>`** parses and validates the blob (magic `b"LUI3"`, `VERSION` 3), exposing
   `page_count`, `root`, `device` (`width, height, corner_radius`), `landscape`, and `page(i)` located
   through an offset table without scanning. **`LuiPage<'a>`** carries the window (title, layout, gap,
-  scroll, subtitle, per-page `descent`) and its **`LuiChild<'a>`** children — buttons, labels, and
-  one level of `frame` (a container with its own layout and a flat list of leaves). Every string is a
+  `cols` for a grid, scroll, subtitle, per-page `descent`) and its **`LuiChild<'a>`** children —
+  buttons, labels, and one level of `frame` (a container with its own layout, gap, `cols` and a flat
+  list of leaves). Every string is a
   zero-copy `&str` view into the blob; a blob that nests deeper than one level, which the compiler
   never emits, is rejected as truncated.
 - **`Ui::build_lui_with`** turns a page into a live widget tree of any event type via an `emit`

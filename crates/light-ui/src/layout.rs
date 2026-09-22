@@ -338,6 +338,114 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
                 self.invalidate_widget(id);
         }
+        /// Divide the window's content area into `cols` equal columns and as many equal rows as
+        /// the visible children fill row-major, `gap` pixels apart on both axes: a keypad, a
+        /// palette, a page of icons. Both axes are pinned -- a grid ignores the tree's
+        /// [`Axis`] -- and the cells are as uniform as the children's `min`/`max` bounds allow: a
+        /// column is as wide as the widest bound among its cells and a row as tall as the
+        /// tallest, so one pinned cell resizes its line rather than breaking the grid. The last
+        /// column, and the last row of a non-scrolling grid, absorb the division remainders so
+        /// the cells reach the content edges. Rows pinned taller than their share overflow, and a
+        /// window marked [`scroll::VERTICAL`] scrolls them, the clamp working as the stack's does
+        /// (and [`scroll::HORIZONTAL`] the same for pinned columns). No corner-flush treatment:
+        /// a grid's cells are all alike.
+        pub fn layout_grid(&mut self, id: WidgetId, cols: u8, gap: u8) {
+                if let Some(win) = self.w_mut(id).window_mut() {
+                        win.layout = Layout::Grid { cols, gap };
+                }
+                self.lay_grid(id, cols, gap);
+        }
+        fn lay_grid(&mut self, id: WidgetId, cols: u8, gap: u8) {
+                let gap = i32::from(gap);
+                let content = self.viewport(id);
+                let (scroll_v, scroll_h) = {
+                        let win = self.w(id).window().expect("a window");
+                        (win.scroll & scroll::VERTICAL != 0, win.scroll & scroll::HORIZONTAL != 0)
+                };
+                let kids: Vec<WidgetId, N> = self.children(id).filter(|c| self.w(*c).visible).collect();
+                let count = kids.len() as i32;
+                if count == 0 || rect_empty(&content) {
+                        return;
+                }
+                // 0 columns is nonsense; and a grid never carries an empty trailing column
+                let cols = i32::from(cols).max(1).min(count);
+                let rows = (count + cols - 1) / cols;
+                let total_w = content.x1 - content.x0 + 1;
+                let total_h = content.y1 - content.y0 + 1;
+                let mut col_w = (total_w - gap * (cols - 1)) / cols;
+                if col_w < 1 {
+                        if !scroll_h {
+                                warn!("ui: window content ({} px) too narrow for {} grid columns", total_w, cols);
+                        }
+                        col_w = 1;
+                }
+                let mut row_h = (total_h - gap * (rows - 1)) / rows;
+                if row_h < 1 {
+                        if !scroll_v {
+                                warn!("ui: window content ({} px) too short for {} grid rows", total_h, rows);
+                        }
+                        row_h = 1;
+                }
+                //   every line's size settled before anything is placed, so the extent is known and
+                // the offset can be clamped against it. A line takes the largest of its cells'
+                // bounded shares; the last line of a non-scrolling axis takes the remainder
+                // instead, as a stack's last row does, so a pinned line before it shrinks the
+                // last rather than pushing it out of the window
+                let mut widths: Vec<i32, N> = Vec::new();
+                for col in 0..cols {
+                        let last = col + 1 == cols;
+                        let share = if last && !scroll_h { (total_w - widths.iter().sum::<i32>() - gap * (cols - 1)).max(1) } else { col_w };
+                        let w = kids.iter().skip(col as usize).step_by(cols as usize).map(|&c| Self::row_width(self.w(c), share)).max().unwrap_or(share);
+                        let _ = widths.push(w);
+                }
+                let mut heights: Vec<i32, N> = Vec::new();
+                for row in 0..rows {
+                        let last = row + 1 == rows;
+                        let share = if last && !scroll_v { (total_h - heights.iter().sum::<i32>() - gap * (rows - 1)).max(1) } else { row_h };
+                        let h = kids.iter().skip((row * cols) as usize).take(cols as usize).map(|&c| Self::row_height(self.w(c), share)).max().unwrap_or(share);
+                        let _ = heights.push(h);
+                }
+                let content_w = widths.iter().sum::<i32>() + gap * (cols - 1);
+                let content_h = heights.iter().sum::<i32>() + gap * (rows - 1);
+                let (scroll_x, scroll_y) = {
+                        let win = self.w_mut(id).window_mut().expect("a window");
+                        win.content_w = content_w;
+                        win.content_h = content_h;
+                        let mut max_sx = content_w - total_w;
+                        let mut max_sy = content_h - total_h;
+                        if !scroll_h || max_sx < 0 {
+                                max_sx = 0;
+                        }
+                        if !scroll_v || max_sy < 0 {
+                                max_sy = 0;
+                        }
+                        win.scroll_x = win.scroll_x.clamp(0, max_sx);
+                        win.scroll_y = win.scroll_y.clamp(0, max_sy);
+                        (win.scroll_x, win.scroll_y)
+                };
+                let mut y = content.y0 - scroll_y;
+                for (row, &h) in heights.iter().enumerate() {
+                        let mut x = content.x0 - scroll_x;
+                        for (col, &w) in widths.iter().enumerate() {
+                                let Some(&c) = kids.get(row * cols as usize + col) else { break };
+                                let cw = self.w_mut(c);
+                                cw.rect = Rect::new(x, y, x + w - 1, y + h - 1);
+                                cw.hit_slop_y1 = 0;
+                                if let Kind::Button(b) = &mut cw.kind {
+                                        b.corner_radius = 0;
+                                        b.corners = light_draw::corner::NONE;
+                                }
+                                x += w + gap;
+                        }
+                        y += h + gap;
+                }
+                // a child that is itself a laid-out window was arranged against the rect it
+                // had BEFORE this pass moved it: re-lay its interior against the new one
+                for &c in kids.iter() {
+                        self.relayout_window(c);
+                }
+                self.invalidate_widget(id);
+        }
         /// Re-run whichever layout the window recorded. A no-op for hand-placed children.
         pub(crate) fn relayout_window(&mut self, id: WidgetId) {
                 let Some(win) = self.w(id).window() else { return };
@@ -345,6 +453,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         Layout::Stack { gap } => self.layout_stack(id, gap),
                         Layout::Row { gap } => self.layout_row(id, gap),
                         Layout::Linear { gap } => self.layout_linear(id, gap),
+                        Layout::Grid { cols, gap } => self.layout_grid(id, cols, gap),
                         Layout::None => {}
                 }
         }

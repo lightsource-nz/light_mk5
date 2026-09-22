@@ -33,6 +33,10 @@ pub enum Layout {
         /// tree axis re-lays it the other way without the descriptor changing. This is how a
         /// tree is authored once and instantiated portrait or landscape from the outside.
         Linear { gap: u8 },
+        /// Equal cells in `cols` columns, filled row-major, `gap` pixels apart on both axes:
+        /// a keypad, a palette, a page of icons. Pins BOTH axes regardless of the tree's
+        /// [`Axis`]; a grid is the one layout whose shape does not follow the orientation.
+        Grid { cols: u8, gap: u8 },
 }
 /// The axis a generic [`Layout::Linear`] runs along: a whole tree's primary layout
 /// direction, set with [`Ui::set_layout_axis`]. `Vertical` -- the default -- stacks children

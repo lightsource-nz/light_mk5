@@ -1,7 +1,7 @@
 //! The widget demo every touch board runs -- the APPLICATION, with no hardware in it.
 //!
-//! Three pages (toggles, a detail page, a scrolling list), driven by touch with swipe-back,
-//! reorientable from an IMU, themed, and instrumented from the console. A tangible demo --
+//! Four pages (toggles, a detail page, a scrolling list, a keypad on a grid), driven by touch
+//! with swipe-back, reorientable from an IMU, themed, and instrumented from the console. A tangible demo --
 //! the 1.69, the 2.8, the 3.49 bar, the 4.0 square -- is a hardware-bound module that
 //! constructs the concrete parts and owns everything this crate must not: pins, the display
 //! driver and its quirks, the touch controller, board peripherals, the shell ABI, the panic
@@ -37,13 +37,15 @@ use light_ui::{Fonts, Lui, LuiChild, Style, SwipeDir, Touch, Ui};
 pub use light_input::drivers::cst816t::Event as TouchSample;
 pub use light_ui::Shade;
 
-/// Widget arena size: the deepest page is the list (a window and nine rows).
-pub const UI_WIDGETS: usize = 12;
+/// Widget arena size: the fullest page is the keypad (a window and sixteen cells).
+pub const UI_WIDGETS: usize = 18;
 /// The backlight scale every board's PWM runs, `0..=MAX` per-mille.
 pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
 
 pub const LABEL_OFF: [&str; 3] = ["Alpha", "Beta", "Gamma"];
 pub const LABEL_ON: [&str; 3] = ["Alpha *", "Beta *", "Gamma *"];
+/// The keypad's keys in grid order (four columns, row-major): what [`UiAction::Key`] indexes.
+pub const KEY_LABELS: [&str; 16] = ["1", "2", "3", "A", "4", "5", "6", "B", "7", "8", "9", "C", "*", "0", "#", "D"];
 
 // --- the event bus ------------------------------------------------------------------------
 
@@ -120,6 +122,8 @@ pub enum UiAction {
         Toggle(u8),
         /// A list row.
         Item(u8),
+        /// A keypad cell, by its grid position (see [`KEY_LABELS`]).
+        Key(u8),
         /// A drag scrolled a window: the finger's movement is spent, and the touch module
         /// must not let its release classify as a swipe as well.
         DragConsumed,
@@ -163,12 +167,14 @@ pub fn touch_reads_held() -> bool {
 /// - `1..=3`  the three toggles
 /// - `4`      dim, `5` bright
 /// - `16..=22` the seven list items
+/// - `32..=47` the sixteen keypad cells, in grid order
 pub fn ui_event<X: Copy>(event: u16, dim: u16) -> Option<DemoEvent<X>> {
         Some(match event {
                 1..=3 => DemoEvent::Ui(UiAction::Toggle((event - 1) as u8)),
                 4 => DemoEvent::Command(Command::Backlight(dim)),
                 5 => DemoEvent::Command(Command::Backlight(BACKLIGHT_LEVEL_MAX)),
                 16..=22 => DemoEvent::Ui(UiAction::Item((event - 15) as u8)),
+                32..=47 => DemoEvent::Ui(UiAction::Key((event - 32) as u8)),
                 _ => return None,
         })
 }
@@ -406,6 +412,12 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                                 info!("button {i} toggled {}", if self.toggled[i] { "on" } else { "off" });
                         }
                         DemoEvent::Ui(UiAction::Item(n)) => info!("list item {n} pressed"),
+                        DemoEvent::Ui(UiAction::Key(k)) => {
+                                //   the cell's place in the grid as well as its key, so a tap on the
+                                // wrong cell reads as a layout fault rather than a labelling one
+                                let label = KEY_LABELS.get(usize::from(k)).copied().unwrap_or("?");
+                                info!("key {label} pressed (row {}, column {})", k / 4 + 1, k % 4 + 1);
+                        }
                         DemoEvent::Command(Command::Stats) => {
                                 info!(
                                         "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us, max push {} us",

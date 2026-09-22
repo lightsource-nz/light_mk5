@@ -187,10 +187,11 @@ logic (a recorder, an app's own console commands).
 
 ## The worked examples
 
-- **Widget demo** (`light_app_ui_demo`) — three pages (toggles, a detail page, a scrolling list) on
-  every touch board, driven by touch with swipe-back, reorientable from the IMU, themed, and
-  instrumented from the console. Its interface is an LUI design shared across the four boards. The
-  reference application for the display/UI/input/audio stack.
+- **Widget demo** (`light_app_ui_demo`) — four pages (toggles, a detail page, a scrolling list, a
+  keypad on a grid — each a layout the toolkit offers, exercised on glass) on every touch board,
+  driven by touch with swipe-back, reorientable from the IMU, themed, and instrumented from the
+  console. Its interface is an LUI design shared across the four boards. The reference application
+  for the display/UI/input/audio stack.
 - **Dictaphone** (`light_dictaphone_core` + portrait/landscape interface crates) — WAV record and
   playback to a FAT card through the audio codec, a recordings list, an RTC, in two UI orientations
   over one engine and one shared board crate.

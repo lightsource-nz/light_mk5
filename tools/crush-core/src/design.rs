@@ -99,10 +99,14 @@ impl Default for Device {
 #[serde(deny_unknown_fields)]
 pub struct PageDef {
         pub title: String,
+        /// The window's child arrangement: `stack` (the default), `row`, `linear`, or `grid`.
         #[serde(default = "default_layout")]
         pub layout: String,
         #[serde(default = "default_gap")]
         pub gap: u8,
+        /// A `grid` layout's column count (defaults to 2); ignored by the other layouts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cols: Option<u8>,
         /// The window scrolls vertically (its content can exceed the screen).
         #[serde(default, skip_serializing_if = "is_false")]
         pub scroll: bool,
@@ -156,13 +160,16 @@ pub struct ChildDef {
         /// Take the surplus a linear layout leaves after the fixed/min-sized siblings.
         #[serde(default, skip_serializing_if = "is_false")]
         pub grow: bool,
-        /// A frame's child arrangement (`stack`/`row`/`linear`); defaults to `stack`. Only read
-        /// when `children` is non-empty.
+        /// A frame's child arrangement (`stack`/`row`/`linear`/`grid`); defaults to `stack`. Only
+        /// read when `children` is non-empty.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub layout: Option<String>,
         /// A frame's gap between children (defaults to 6). Only read when `children` is non-empty.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub gap: Option<u8>,
+        /// A `grid` frame's column count (defaults to 2); ignored by the other layouts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cols: Option<u8>,
         /// A frame's scroll axis: `vertical`, `horizontal`, or absent for none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub scroll: Option<String>,
@@ -190,6 +197,7 @@ impl ChildDef {
                         grow: false,
                         layout: None,
                         gap: None,
+                        cols: None,
                         scroll: None,
                         children: Vec::new(),
                 }

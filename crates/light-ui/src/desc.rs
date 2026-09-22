@@ -190,6 +190,13 @@ impl<A: Copy> Desc<A> {
                 self.layout = Layout::Linear { gap };
                 self
         }
+        /// Lay children as equal cells in `cols` columns, row-major, `gap` apart on both axes
+        /// -- a keypad, a palette. Pins both axes whatever the tree's [`Axis`]. See
+        /// [`Layout::Grid`] and [`Ui::layout_grid`].
+        pub const fn grid(mut self, cols: u8, gap: u8) -> Self {
+                self.layout = Layout::Grid { cols, gap };
+                self
+        }
         pub const fn scroll(mut self, flags: u8) -> Self {
                 self.scroll = flags;
                 self
@@ -295,6 +302,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         Layout::Stack { gap } => self.layout_stack(id, gap),
                         Layout::Row { gap } => self.layout_row(id, gap),
                         Layout::Linear { gap } => self.layout_linear(id, gap),
+                        Layout::Grid { cols, gap } => self.layout_grid(id, cols, gap),
                         Layout::None => {}
                 }
                 Ok(id)

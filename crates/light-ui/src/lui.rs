@@ -15,6 +15,8 @@ pub mod code {
         pub const LAYOUT_STACK: u8 = 0;
         pub const LAYOUT_ROW: u8 = 1;
         pub const LAYOUT_LINEAR: u8 = 2;
+        /// A grid: the page's or frame's `cols` byte is its column count.
+        pub const LAYOUT_GRID: u8 = 3;
         /// Child kinds. A FRAME is a container with its own layout and a flat list of leaf children
         /// (nesting is one level deep).
         pub const KIND_BUTTON: u8 = 0;
@@ -37,9 +39,10 @@ pub mod code {
 
 const MAGIC: [u8; 4] = *b"LUI3";
 /// The schema version carried in the header (byte 4), matching crush's `lui::VERSION` -- the shared
-/// blob-header convention across LGF fonts, LTH themes and LUI UIs. Version 2 adds a per-page descent
-/// byte (the entry transition) over version 1; a future incompatible change bumps this, not the magic.
-pub const VERSION: u8 = 2;
+/// blob-header convention across LGF fonts, LTH themes and LUI UIs. Version 2 added a per-page
+/// descent byte (the entry transition) over version 1; version 3 adds a `cols` byte to every page
+/// and frame (a grid's column count); a future incompatible change bumps this, not the magic.
+pub const VERSION: u8 = 3;
 const HEADER_LEN: usize = 16;
 /// A child's common prefix: kind, nav, nav_page, event, tag, min_w, min_h, max_w, max_h, grow.
 const CHILD_PREFIX_LEN: usize = 16;
@@ -116,13 +119,14 @@ impl<'a> Lui<'a> {
         }
 }
 
-/// A page view: a window (title, layout, gap, scroll, subtitle, descent) and its children.
+/// A page view: a window (title, layout, gap, cols, scroll, subtitle, descent) and its children.
 #[derive(Clone, Copy)]
 pub struct LuiPage<'a> {
         blob: &'a [u8],
         title: &'a str,
         layout: u8,
         gap: u8,
+        cols: u8,
         scroll: bool,
         subtitle: bool,
         descent: u8,
@@ -135,11 +139,12 @@ impl<'a> LuiPage<'a> {
                 let (title, at) = read_str(blob, off)?;
                 let layout = *blob.get(at)?;
                 let gap = *blob.get(at + 1)?;
-                let scroll = *blob.get(at + 2)? != 0;
-                let subtitle = *blob.get(at + 3)? != 0;
-                let descent = *blob.get(at + 4)?;
-                let child_count = usize::from(*blob.get(at + 5)?);
-                Some(Self { blob, title, layout, gap, scroll, subtitle, descent, child_count, children_at: at + 6 })
+                let cols = *blob.get(at + 2)?;
+                let scroll = *blob.get(at + 3)? != 0;
+                let subtitle = *blob.get(at + 4)? != 0;
+                let descent = *blob.get(at + 5)?;
+                let child_count = usize::from(*blob.get(at + 6)?);
+                Some(Self { blob, title, layout, gap, cols, scroll, subtitle, descent, child_count, children_at: at + 7 })
         }
 
         pub fn title(&self) -> &'a str {
@@ -150,6 +155,10 @@ impl<'a> LuiPage<'a> {
         }
         pub fn gap(&self) -> u8 {
                 self.gap
+        }
+        /// A grid page's column count; meaningless for any other layout.
+        pub fn cols(&self) -> u8 {
+                self.cols
         }
         pub fn scroll(&self) -> bool {
                 self.scroll
@@ -197,6 +206,7 @@ pub struct LuiChild<'a> {
         //   frame fields; `frame_count` is 0 for a leaf
         frame_layout: u8,
         frame_gap: u8,
+        frame_cols: u8,
         frame_scroll: u8,
         frame_count: usize,
         frame_children_at: usize,
@@ -214,6 +224,10 @@ impl<'a> LuiChild<'a> {
         /// A frame's gap between children.
         pub fn gap(&self) -> u8 {
                 self.frame_gap
+        }
+        /// A grid frame's column count; meaningless for any other layout or a leaf.
+        pub fn cols(&self) -> u8 {
+                self.frame_cols
         }
         /// A frame's scroll flags (`crate::scroll::*`).
         pub fn scroll(&self) -> u8 {
@@ -264,7 +278,7 @@ fn parse_child(b: &[u8], at: usize, depth: u8) -> Option<(LuiChild<'_>, usize)> 
         let max_h = u16::from_le_bytes([*b.get(at + 13)?, *b.get(at + 14)?]);
         let grow = *b.get(at + 15)? != 0;
         let body = at + CHILD_PREFIX_LEN;
-        let common = |text, frame_layout, frame_gap, frame_scroll, frame_count, frame_children_at| LuiChild {
+        let common = |text, frame_layout, frame_gap, frame_cols, frame_scroll, frame_count, frame_children_at| LuiChild {
                 kind,
                 nav,
                 nav_page,
@@ -279,6 +293,7 @@ fn parse_child(b: &[u8], at: usize, depth: u8) -> Option<(LuiChild<'_>, usize)> 
                 blob: b,
                 frame_layout,
                 frame_gap,
+                frame_cols,
                 frame_scroll,
                 frame_count,
                 frame_children_at,
@@ -289,9 +304,10 @@ fn parse_child(b: &[u8], at: usize, depth: u8) -> Option<(LuiChild<'_>, usize)> 
                 }
                 let frame_layout = *b.get(body)?;
                 let frame_gap = *b.get(body + 1)?;
-                let frame_scroll = *b.get(body + 2)?;
-                let frame_count = usize::from(*b.get(body + 3)?);
-                let children_at = body + 4;
+                let frame_cols = *b.get(body + 2)?;
+                let frame_scroll = *b.get(body + 3)?;
+                let frame_count = usize::from(*b.get(body + 4)?);
+                let children_at = body + 5;
                 //   walk the children to find where this frame ends (the next sibling); its
                 // children carry no further nesting
                 let mut p = children_at;
@@ -299,10 +315,10 @@ fn parse_child(b: &[u8], at: usize, depth: u8) -> Option<(LuiChild<'_>, usize)> 
                         let (_, next) = parse_child(b, p, depth - 1)?;
                         p = next;
                 }
-                Some((common("", frame_layout, frame_gap, frame_scroll, frame_count, children_at), p))
+                Some((common("", frame_layout, frame_gap, frame_cols, frame_scroll, frame_count, children_at), p))
         } else {
                 let (text, next) = read_str(b, body)?;
-                Some((common(text, 0, 0, 0, 0, body), next))
+                Some((common(text, 0, 0, 0, 0, 0, body), next))
         }
 }
 
@@ -454,13 +470,14 @@ mod tests {
                 b
         }
 
-        //   a hand-built blob: two pages, matching crush's v2 layout, so the reader is tested
+        //   a hand-built blob: two pages, matching crush's v3 layout, so the reader is tested
         // without depending on the compiler (which is std/heavy)
         fn blob() -> Vec<u8> {
                 let mut body0 = Vec::new();
                 put_str(&mut body0, "Main");
                 body0.push(code::LAYOUT_STACK);
                 body0.push(6); // gap
+                body0.push(0); // cols
                 body0.push(0); // scroll
                 body0.push(0); // subtitle
                 body0.push(0); // descent
@@ -470,8 +487,9 @@ mod tests {
 
                 let mut body1 = Vec::new();
                 put_str(&mut body1, "Second");
-                body1.push(code::LAYOUT_STACK);
+                body1.push(code::LAYOUT_GRID);
                 body1.push(4); // gap
+                body1.push(3); // cols
                 body1.push(0); // scroll
                 body1.push(0); // subtitle
                 body1.push(0); // descent
@@ -503,6 +521,7 @@ mod tests {
 
                 let p1 = lui.page(1).unwrap();
                 assert_eq!(p1.title(), "Second");
+                assert_eq!((p1.layout(), p1.cols()), (code::LAYOUT_GRID, 3), "a grid page carries its column count");
                 assert_eq!(p1.children().count(), 0);
                 assert!(lui.page(2).is_none());
         }
@@ -514,15 +533,17 @@ mod tests {
                 put_str(&mut body, "P");
                 body.push(code::LAYOUT_STACK);
                 body.push(6); // gap
+                body.push(0); // cols
                 body.push(0); // scroll
                 body.push(0); // subtitle
                 body.push(0); // descent
                 body.push(3); // three top-level children
                 push_child(&mut body, code::KIND_BUTTON, code::NAV_NONE, 0, 0, 0, "Go");
-                // a frame: prefix, then layout/gap/scroll/count, then two leaves
+                // a frame: prefix, then layout/gap/cols/scroll/count, then two leaves
                 push_prefix(&mut body, code::KIND_FRAME, code::NAV_NONE, 0, 0, 7);
                 body.push(code::LAYOUT_LINEAR);
                 body.push(4); // gap
+                body.push(0); // cols
                 body.push(crate::scroll::HORIZONTAL);
                 body.push(2); // two leaf children
                 push_child(&mut body, code::KIND_BUTTON, code::NAV_NONE, 0, 1, 0, "A");
@@ -567,9 +588,9 @@ mod tests {
         fn reads_the_page_descent() {
                 let mut data = blob();
                 let off = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
-                //   page 0 "Main": title (5 bytes) then layout/gap/scroll/subtitle (4), so the descent
-                // byte is at off + 9
-                data[off + 9] = code::DESCENT_BOTTOM;
+                //   page 0 "Main": title (5 bytes) then layout/gap/cols/scroll/subtitle (5), so the
+                // descent byte is at off + 10
+                data[off + 10] = code::DESCENT_BOTTOM;
                 let lui = Lui::parse(&data).unwrap();
                 assert_eq!(lui.page(0).unwrap().descent(), Some(crate::Descent::FromBottom));
                 assert!(lui.page(1).unwrap().descent().is_none(), "0 is the toolkit default");
@@ -595,6 +616,7 @@ mod tests {
                         put_str(&mut b, title);
                         b.push(code::LAYOUT_STACK);
                         b.push(6); // gap
+                        b.push(0); // cols
                         b.push(0); // scroll
                         b.push(0); // subtitle
                         b.push(0); // descent

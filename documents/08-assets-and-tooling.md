@@ -99,11 +99,12 @@ is 8; a deeper chain is reported as a probable cycle.
 previews it) and `lui` (which compiles it). It is `device` (screen width/height/corner_radius), an
 `orientation` (`portrait` default, or `landscape` — the design's own copy of the toolkit's layout
 axis so a preview matches the device without guessing the firmware's rotation), an `actions`
-registry, a `root` page index, and a `Vec<PageDef>`. A `PageDef` is a title, layout, gap, scroll and
-subtitle flags, and a flat list of `ChildDef`. A `ChildDef` is a button, a label, or a **frame** — a
-container with its own layout/gap/scroll grouping a flat list of children **one level deep** (a
-frame's children are leaves, never frames). `deny_unknown_fields` holds throughout; serialisation
-drops defaults so a round-trip stays terse.
+registry, a `root` page index, and a `Vec<PageDef>`. A `PageDef` is a title, layout (`stack`, `row`,
+`linear` or `grid`), gap, a grid's `cols` (its column count, 2 when unnamed), scroll and subtitle
+flags, and a flat list of `ChildDef`. A `ChildDef` is a button, a label, or a **frame** — a container
+with its own layout/gap/cols/scroll grouping a flat list of children **one level deep** (a frame's
+children are leaves, never frames). `deny_unknown_fields` holds throughout; serialisation drops
+defaults so a round-trip stays terse.
 
 An `ActionDef` is the design's mirror of the firmware's behaviour: a named action carrying an app
 `event` id, a `goto`/`back` navigation, and an optional `transition` edge. A button names one action
@@ -180,7 +181,7 @@ Two commands sit directly on `crush-core` and take no context:
 
 The three formats share one convention: a four-byte **magic** that is the frozen format-family tag,
 followed immediately by a **u8 schema version**. A format revision bumps the version byte, *not* the
-magic — the LUI magic is `LUI3` yet its current schema version is 2. Each format is owned jointly by
+magic — the LUI magic is `LUI3` yet its current schema version is 3. Each format is owned jointly by
 its `crush`-side writer and its firmware-side reader, which must agree; the readers are strict about
 the version and reject what they do not understand. Authoring is strict (unknown keys are errors);
 runtime is tolerant (an unknown binary key is skipped for forward compatibility).
@@ -208,22 +209,24 @@ A colour is a 2-byte RGB565; a surface is a `from`/`to` pair; a null surface emi
 
 ### LUI — UI designs
 
-Written by `crush-core::lui`, read by light-ui's `lui` module. Magic `LUI3`, version 2 (version 1 was
-the one-level-nesting layout; version 2 added the per-page descent byte). All little-endian:
+Written by `crush-core::lui`, read by light-ui's `lui` module. Magic `LUI3`, version 3 (version 1 was
+the one-level-nesting layout; version 2 added the per-page descent byte; version 3 added the `cols`
+byte on pages and frames). All little-endian:
 
 - **Header (16 bytes):** magic, version u8, orientation u8 (0 portrait, 1 landscape), page_count
   u16, root u16, and device width/height/corner_radius u16 each.
 - **Page-offset table:** `page_count` u32 offsets from the blob start.
-- **Pages:** each a length-prefixed title, then layout/gap/scroll/subtitle/descent bytes and a child
-  count, then its children.
+- **Pages:** each a length-prefixed title, then layout/gap/cols/scroll/subtitle/descent bytes and a
+  child count, then its children.
 - **Child:** a common prefix (kind, nav, nav_page, event, tag, min/max width/height, grow), then by
-  kind — a frame carries its own layout/gap/scroll and a count of **leaf** children; a button or
-  label carries its length-prefixed text.
+  kind — a frame carries its own layout/gap/cols/scroll and a count of **leaf** children; a button
+  or label carries its length-prefixed text.
 
 Strings are inline and length-prefixed so the reader returns `&str` views into the blob with no copy,
 the same pattern as LGF. The nav byte encodes none/back/goto; the descent byte encodes the edge a
-page enters from (top/bottom/left/right) or 0 for the toolkit default; the layout and scroll codes
-match light-ui's own modules. Frame nesting is one level deep by construction, enforced at compile.
+page enters from (top/bottom/left/right) or 0 for the toolkit default; the layout (stack/row/linear/
+grid) and scroll codes match light-ui's own modules, and `cols` is a grid's column count (0 for any
+other layout). Frame nesting is one level deep by construction, enforced at compile.
 
 ## light-host-gui: rendering a UI on the desktop
 
