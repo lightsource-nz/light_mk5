@@ -14,7 +14,16 @@
 # stop draining the CDC FIFO. A console that waits for space then stalls with it (measured on an
 # SDK console: 13.2 s against a per-line writer, 1.7 s against a buffered one); the framework's
 # console drops lines instead, so a slow reader loses log rather than stalling the board. Either
-# way the observer must not perturb the thing it is observing.
+# way the observer must not perturb the thing it is observing. `-Out` keeps one writer open for
+# the run and flushes each CHUNK -- not each line, and not once at the end: a capture that is
+# interrupted, that times out, or that the board cuts short still holds everything it saw, and a
+# long one can be read while it runs.
+#
+#   The port can vanish mid-capture -- the board reboots, or is replugged -- and .NET throws out
+# of the read when it does. That ends the capture; it must not lose it. The transcript stands,
+# the reason is reported, and only an empty one is an error. Diagnosed from a board that reset
+# itself during a 150 s capture: the exception escaped, the file was never written, and an
+# interaction that had worked perfectly looked like a console that saw nothing.
 #
 #   Sending commands. `-Send` writes one or more console commands and captures each reply, so a
 # script (or an agent) can drive the board's CLI non-interactively -- the same open/DTR/buffered
@@ -72,23 +81,43 @@ $sp.DtrEnable = $true          # again after Open(), as some drivers reset it on
 
 $sb = New-Object System.Text.StringBuilder
 $matched = $false
+#   why the port stopped answering, when it did: set by Read-Chunk, reported at the end
+$gone = $null
+#   one writer for the whole run, flushed per chunk -- see the header
+$writer = if ($Out) { [System.IO.StreamWriter]::new($Out, $false) } else { $null }
+
+#   every read goes through here: a device that disappears returns nothing and records why,
+# so the loops end on their own terms with the transcript intact
+function Read-Chunk {
+        param([System.IO.Ports.SerialPort]$From, [ref]$Gone)
+        try {
+                return $From.ReadExisting()
+        } catch {
+                $Gone.Value = $_.Exception.Message
+                return ''
+        }
+}
+
 try {
         if ($Send) {
                 if (-not $Quiet) { Write-Host "driving $($chosen.Device): $($Send.Count) command(s) (DTR asserted)" }
                 #   let the board settle and its boot output land, then drain it so the transcript
                 # is just the command replies (use a plain capture if the boot log is what you want)
                 Start-Sleep -Milliseconds 700
-                [void]$sp.ReadExisting()
+                [void](Read-Chunk -From $sp -Gone ([ref]$gone))
                 foreach ($cmd in $Send) {
+                        if ($gone) { break }
                         $sp.WriteLine($cmd)                 # trailing newline = Enter to the line reader
                         if (-not $Quiet) { Write-Host "> $cmd" }
                         $startLen = $sb.Length
                         $lastData = Get-Date
                         $deadline = (Get-Date).AddMilliseconds($SettleMs)
                         while ((Get-Date) -lt $deadline) {
-                                $chunk = $sp.ReadExisting()
+                                $chunk = Read-Chunk -From $sp -Gone ([ref]$gone)
+                                if ($gone) { break }
                                 if ($chunk.Length -gt 0) {
                                         [void]$sb.Append($chunk)
+                                        if ($writer) { $writer.Write($chunk); $writer.Flush() }
                                         if (-not $Quiet) { Write-Host -NoNewline $chunk }
                                         $lastData = Get-Date
                                         if ($Until -and $sb.ToString() -match $Until) { $matched = $true; break }
@@ -104,9 +133,11 @@ try {
                 if (-not $Quiet) { Write-Host "capturing $($chosen.Device) for ${Seconds}s (DTR asserted)" }
                 $deadline = (Get-Date).AddSeconds($Seconds)
                 while ((Get-Date) -lt $deadline) {
-                        $chunk = $sp.ReadExisting()
+                        $chunk = Read-Chunk -From $sp -Gone ([ref]$gone)
+                        if ($gone) { break }
                         if ($chunk.Length -gt 0) {
                                 [void]$sb.Append($chunk)
+                                if ($writer) { $writer.Write($chunk); $writer.Flush() }
                                 if (-not $Quiet) { Write-Host -NoNewline $chunk }
                                 if ($Until -and $sb.ToString() -match $Until) { $matched = $true; break }
                         } else {
@@ -115,13 +146,17 @@ try {
                 }
         }
 } finally {
+        #   the writer first: whatever was captured reaches the file even if the loop above left
+        # by an exception, which is the whole point of streaming it
+        if ($writer) { try { $writer.Flush(); $writer.Dispose() } catch { } }
         try { $sp.Close() } catch { }
 }
 
 $text = $sb.ToString()
-if ($Out) {
-        [System.IO.File]::WriteAllText($Out, $text)
-        if (-not $Quiet) { Write-Host "`nwrote $($text.Length) chars to $Out" }
+if ($Out -and -not $Quiet) { Write-Host "`nwrote $($text.Length) chars to $Out" }
+#   a port that went away is how a capture ENDS, not how it fails: say so and keep the transcript
+if ($gone) {
+        Write-Warning "$($chosen.Device) stopped answering after $($text.Length) chars -- the board rebooted or was unplugged ($gone)."
 }
 
 if ($Until -and -not $matched) {

@@ -96,7 +96,12 @@ font, or a theme is data: an authored file and one call, no firmware source touc
 - `scripts/console.ps1` / `debug.ps1` — open the board's console / a debug session. `console.ps1`
   captures output for a window (`-Seconds`, `-Until`), or drives the CLI non-interactively with
   `-Send "cmd"` (or a list) — sending each command and capturing its reply — so a script, CI, or an
-  agent can read `stats` and issue commands without a terminal.
+  agent can read `stats` and issue commands without a terminal. A capture with `-Out` is **streamed**
+  to the file as it arrives (flushed per chunk, never per line — a per-line writer stalls the console
+  it is reading), so a run that is interrupted, times out, or is cut short by the board still holds
+  what it saw, and a long capture can be read while it runs. A port that **disappears** mid-capture —
+  the board rebooting or being unplugged — ends the capture rather than failing it: the transcript
+  stands and the reason is reported.
 - **A debugger reset is a whole-chip reboot.** The repository's OpenOCD configurations for the
   dual-core chips debug core 0 alone (examining core 1 stalls the firmware), and the stock reset
   would then reset core 0 alone: core 1 keeps running the old image while the new core 0 zeroes
