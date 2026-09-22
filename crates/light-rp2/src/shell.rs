@@ -25,6 +25,17 @@ unsafe extern "C" {
         //   the host role has no console path into the bootloader -- its flash path is the probe
         #[cfg(feature = "usb-console")]
         fn light_shell_reset_to_bootsel() -> !;
+        fn light_shell_core1_stack_free() -> usize;
+        fn light_shell_core1_stack_size() -> usize;
+}
+
+/// Core 1's stack headroom: `(unused, total)` in bytes, from the paint the shell laid down
+/// before launching the core. An overrun here lands in whatever `.bss` the linker placed below
+/// the stack -- once a scanout engine's DMA control word -- and the console that would report
+/// it is the core that overran, so this is read back and logged instead.
+pub fn core1_stack_headroom() -> (usize, usize) {
+        // SAFETY: two reads of shell-owned statics
+        unsafe { (light_shell_core1_stack_free(), light_shell_core1_stack_size()) }
 }
 
 /// Is the BOOTSEL button pressed right now? The shell reads it flash-safe (interrupts off, chip
@@ -234,6 +245,16 @@ impl Transports<'_> {
                 }
         }
 
+        /// Whether anything is listening: a UART always might be; a USB host once it has raised
+        /// DTR on the port.
+        fn listening(&self) -> bool {
+                #[cfg(feature = "usb-console")]
+                if self.serial.dtr() {
+                        return true;
+                }
+                self.uart.is_some()
+        }
+
         /// A line to every transport. One that has no room drops it -- never waited for.
         fn write(&mut self, bytes: &[u8]) {
                 if let Some(u) = self.uart.as_mut() {
@@ -297,9 +318,19 @@ pub fn core1_main(mut push: impl FnMut(u8), uart: Option<Uart>) -> ! {
         #[cfg(not(feature = "usb-console"))]
         let mut t = Transports { uart, _lt: core::marker::PhantomData };
 
+        //   the stack headroom, once the boot's deepest paths have run and someone is listening
+        // (a line before that is dropped with the rest of the boot's): the number that sizes the
+        // shell's array, and the one thing this core cannot report about itself after the fact
+        const HEADROOM_REPORT_US: u64 = 3_000_000;
+        let mut headroom_reported = false;
         loop {
                 CORE1_TICKS.fetch_add(1, Ordering::Relaxed);
                 t.poll();
+                if !headroom_reported && crate::now_us() >= HEADROOM_REPORT_US && t.listening() {
+                        headroom_reported = true;
+                        let (free, total) = core1_stack_headroom();
+                        light_core::info!("core 1: {} of {} stack bytes never touched", free, total);
+                }
                 // the log drain: a line a transport cannot take is dropped, never waited for
                 log::drain(4, |record| {
                         let mut line = StackString::<160>::new();

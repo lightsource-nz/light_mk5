@@ -160,12 +160,42 @@ static void core1_main(void)
 // its own death (diagnosed on the 3.49 with an on-screen core-1 heartbeat and a painted
 // stack watermark: the heartbeat froze as the watermark hit zero). With core 1's stack
 // here, SCRATCH_X is vacant runway: a core-0 excursion overwrites nothing that lives.
-static uint32_t core1_stack[PICO_CORE1_STACK_SIZE / sizeof(uint32_t)];
+//
+//   AND IT IS 8 KB, sized by the shell rather than by PICO_CORE1_STACK_SIZE (which also sizes
+// the linker's SCRATCH_X reservation and cannot exceed 4 KB). The Rust console loop -- the USB
+// device stack, its CDC class and the log formatting -- runs deeper than the 4 KB the C-era
+// console needed: 5.3 KB measured on a 480x480 board through enumeration, so it overran that
+// by more than a kilobyte into whatever .bss the linker placed below the array. On one board
+// that was harmless; on another it was the scanout engine's DMA control word, and the board
+// went dark with no console to say why. The array is painted before launch so the headroom can
+// be read back (light_shell_core1_stack_free, reported once by the console after boot) and this
+// size stays a measured one.
+#define LIGHT_CORE1_STACK_SIZE 0x2000
+#define STACK_PAINT 0xC1C1C1C1u
+static uint32_t core1_stack[LIGHT_CORE1_STACK_SIZE / sizeof(uint32_t)];
+
+//   how much of core 1's stack has never been touched: the painted words still standing from the
+// bottom of the array. The stack grows down from the top, so this is the headroom under the
+// deepest call so far
+size_t light_shell_core1_stack_free(void)
+{
+        size_t words = 0;
+        while (words < LIGHT_CORE1_STACK_SIZE / sizeof(uint32_t) && core1_stack[words] == STACK_PAINT)
+                ++words;
+        return words * sizeof(uint32_t);
+}
+
+size_t light_shell_core1_stack_size(void)
+{
+        return LIGHT_CORE1_STACK_SIZE;
+}
 
 int main(void)
 {
         info.clk_sys_hz = clock_get_hz(clk_sys);
         info.clk_peri_hz = clock_get_hz(clk_peri);
+        for (size_t i = 0; i < LIGHT_CORE1_STACK_SIZE / sizeof(uint32_t); ++i)
+                core1_stack[i] = STACK_PAINT;
         //   core 1 first, so the console is running before the application's first log line.
         // Reset before launch, or a warm restart of core 0 hangs in the FIFO handshake
         multicore_reset_core1();

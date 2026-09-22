@@ -440,12 +440,19 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
 - **The enumeration state is the "on external power" signal.** `light_rp2::shell::usb_mounted()`
   reports whether the device is configured — the only such signal on boards with no VBUS-sense pin,
   which the power manager gates power-off on.
-- **Stack placement is load-bearing.** Core 1's stack is a static array in ordinary RAM, not the
-  linker's `SCRATCH_X` default that sits directly below core 0's stack: a deep core-0 call chain was
-  found landing on core 1's live frames, killing core 1 (the console) alone while the application ran
-  on. Each core's stack is 4 KB with an MPU guard region at its base, so an overflow is a hard fault
-  at the offending instruction rather than a silent overwrite. Module state lives in `.bss`, not on
-  the stack.
+- **Stack placement is load-bearing, and core 1's stack is measured.** Core 1's stack is a static
+  array in ordinary RAM, not the linker's `SCRATCH_X` default that sits directly below core 0's
+  stack: a deep core-0 call chain was found landing on core 1's live frames, killing core 1 (the
+  console) alone while the application ran on. Core 0's stack is 4 KB (its scratch bank); core 1's
+  array is 8 KB, sized by the shell itself (the SDK's `PICO_CORE1_STACK_SIZE` only sizes the linker's
+  unused reservation). There is **no MPU guard** on either (the SDK's faulted core 1 at boot when
+  tried, and would guard the linker's symbols rather than the array), so an overflow is *silent*: the
+  Rust console loop measured 5.3 KB deep through enumeration, and at 4 KB it overran into whatever
+  `.bss` the linker placed below the array — on one board harmless, on another the scanout engine's
+  DMA control word, and the board went dark with no console to say why. So the shell paints the
+  array before launch, `light_rp2::shell::core1_stack_headroom()` reads back the untouched bytes, and
+  the console logs `core 1: N of M stack bytes never touched` once after boot, when a host is
+  listening. Module state lives in `.bss`, not on the stack.
 - **A hard fault records itself.** The shell's handler copies the stacked frame and the faulting core
   into `light_shell_fault[core]` and hands the fact to the panic relay before halting, where a
   debugger can read it. The SDK's default handler breakpoints, which with no debugger attached is a
