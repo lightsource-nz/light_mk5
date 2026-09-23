@@ -56,10 +56,12 @@ function(light_partition_table NAME)
         set(pt "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.uf2")
         #   --singleton: this table IS the device's map, not one of several a loader might choose
         # between, which is what lets the ROM trust it as the only description of the flash
+        #   picotool is an IMPORTED target, so naming it in DEPENDS asks ninja for a FILE it has
+        # no rule to make; the dependency has to be on the target that builds it
         add_custom_command(
                 OUTPUT "${pt}"
                 COMMAND picotool partition create --singleton --sign "${P_SIGN}" "${layout_abs}" "${pt}"
-                DEPENDS "${layout_abs}" "${P_SIGN}" picotool
+                DEPENDS "${layout_abs}" "${P_SIGN}" ${picotool_BUILD_TARGET}
                 COMMENT "partition table ${NAME} (signed) -> UF2"
                 VERBATIM
         )

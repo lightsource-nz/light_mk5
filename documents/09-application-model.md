@@ -2,7 +2,7 @@
 
 How an application is structured on the framework: where its logic lives, how a board instantiates
 it, and how its interface is authored as data. This is the model the worked examples in the tree —
-the widget demo, the dictaphone, the crossfire USB-MIDI host — all follow.
+the widget demo and the dictaphone — all follow.
 
 ## Responsibility
 
@@ -195,10 +195,10 @@ logic (a recorder, an app's own console commands).
 - **Dictaphone** (`light_dictaphone_core` + portrait/landscape interface crates) — WAV record and
   playback to a FAT card through the audio codec, a recordings list, an RTC, in two UI orientations
   over one engine and one shared board crate.
-- **Crossfire** (`light_app_crossfire`) — a USB-MIDI forwarder between every instrument on a USB host
-  port, with a small OLED display of two pages (live status, and uptime and traffic counters) turned
-  by the board's BOOTSEL button; runs on an RP2040/RP2350 board. The reference application for the
-  USB-host and MIDI stack, and for a board whose only input is BOOTSEL.
+- **The USB host-role probe** (`usb_host_probe`) — the smallest firmware that puts a native USB port
+  in its host role and reports what enumerates. It carries no application: it exists so the host
+  seam is built and exercised by this repository, rather than only by the products that use it. The
+  reference for bringing the host stack up and draining its events.
 
 ## Design decisions and constraints
 

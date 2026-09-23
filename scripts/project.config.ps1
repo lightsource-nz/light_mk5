@@ -18,12 +18,10 @@
                 # ones stay warm: build/flash with -Preset conf-light_mk5-<board>-release
                 'conf-light_mk5-touch169-release' = 'build-touch169-release'
                 'conf-light_mk5-pico2-release'    = 'build-pico2-release'
-                # crossfire: the Pico 2 with its USB port in the host role, own tree
-                'conf-light_mk5-crossfire-debug'  = 'build-crossfire'
-                # the RP2040 Pico: the pico2 demo and crossfire (the product board), each
-                # its own tree; build/flash with -Preset
+                # the USB host-role probe: a Pico 2 with its native port hosting, own tree
+                'conf-light_mk5-usb-host-probe-debug' = 'build-usb-host-probe'
+                # the RP2040 Pico runs the pico2 demo; build/flash with -Preset
                 'conf-light_mk5-pico-debug'           = 'build-pico'
-                'conf-light_mk5-crossfire-pico-debug' = 'build-crossfire-pico'
                 # the same boards on the RP2350's Hazard3 cores: build/flash with -Preset
                 'conf-light_mk5-pico2-riscv-debug'    = 'build-pico2-riscv'
                 'conf-light_mk5-touch169-riscv-debug' = 'build-touch169-riscv'
@@ -35,11 +33,9 @@
         Targets = @{
                 'light_h7'   = @{ Preset = 'conf-light_mk5-mini-stm32h7-debug'; Flash = 'swd' }
                 'light_f411' = @{ Preset = 'conf-light_mk5-blackpill-debug'; Flash = 'swd' }
-                # crossfire's two tangible boards: a Pico 2 wearing the Waveshare
-                # Pico-OLED-1.3 display board, and the stock RP2040 Pico product board --
-                # one hardware module each, both instantiating the light_app_crossfire crate
-                'crossfire_pico2' = @{ Preset = 'conf-light_mk5-crossfire-debug'; Flash = 'swd' }
-                'crossfire_pico'  = @{ Preset = 'conf-light_mk5-crossfire-pico-debug'; Flash = 'swd' }
+                # the host-role probe: the smallest firmware that exercises the port's USB host
+                # stack, so the role is built here and not only by the products that use it
+                'usb_host_probe' = @{ Preset = 'conf-light_mk5-usb-host-probe-debug'; Flash = 'swd' }
                 # uf2 because the 1.69 exposes no SWD pads
                 'ui_demo_touch169' = @{ Preset = 'conf-light_mk5-touch169-debug'; Flash = 'uf2' }
                 'ui_demo_touch28'  = @{ Preset = 'conf-light_mk5-touch28-debug'; Flash = 'uf2' }
@@ -102,12 +98,12 @@
                         Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
                         CMAKE_BUILD_TYPE  = 'Release'
                 }
-                'conf-light_mk5-crossfire-debug'  = @{
+                'conf-light_mk5-usb-host-probe-debug' = @{
                         LIGHT_PLATFORM      = 'TARGET'
                         LIGHT_BOARD         = 'pico2'
                         PICO_PLATFORM       = 'rp2350-arm-s'
                         Rust_CARGO_TARGET   = 'thumbv8m.main-none-eabi'
-                        LIGHT_PICO2_APP = 'crossfire'
+                        LIGHT_PICO2_APP = 'usb_host_probe'
                 }
                 'conf-light_mk5-pico2-riscv-debug'    = @{
                         LIGHT_PLATFORM    = 'TARGET'
@@ -120,13 +116,6 @@
                         LIGHT_BOARD       = 'pico'
                         PICO_PLATFORM     = 'rp2040'
                         Rust_CARGO_TARGET = 'thumbv6m-none-eabi'
-                }
-                'conf-light_mk5-crossfire-pico-debug' = @{
-                        LIGHT_PLATFORM      = 'TARGET'
-                        LIGHT_BOARD         = 'pico'
-                        PICO_PLATFORM       = 'rp2040'
-                        Rust_CARGO_TARGET   = 'thumbv6m-none-eabi'
-                        LIGHT_PICO2_APP = 'crossfire'
                 }
                 'conf-light_mk5-touch169-riscv-debug' = @{
                         LIGHT_PLATFORM    = 'TARGET'
@@ -163,7 +152,7 @@
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
                         Chip   = 'RP235x'
                 }
-                'conf-light_mk5-crossfire-debug' = @{
+                'conf-light_mk5-usb-host-probe-debug' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
                         Chip   = 'RP235x'
@@ -174,11 +163,6 @@
                         Chip   = 'RP235x_riscv'
                 }
                 'conf-light_mk5-pico-debug' = @{
-                        Config = 'openocd-rp2040.cfg'
-                        Svd    = '../pico-sdk/src/rp2040/hardware_regs/RP2040.svd'
-                        Chip   = 'RP2040'
-                }
-                'conf-light_mk5-crossfire-pico-debug' = @{
                         Config = 'openocd-rp2040.cfg'
                         Svd    = '../pico-sdk/src/rp2040/hardware_regs/RP2040.svd'
                         Chip   = 'RP2040'

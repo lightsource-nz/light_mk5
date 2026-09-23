@@ -12,7 +12,7 @@ same shape carries the bare-CMSIS STM32 ports, where a small C shell stands in f
 It runs today on the RP2040 and the RP2350 (both its Arm and Hazard3 cores), and on the STM32H743
 and STM32F411 over bare CMSIS; a host build exercises the portable crates under `cargo test`
 against a mocked board. It is hardware-verified across the Waveshare RP2350 touch boards (1.69,
-2.8, 3.49, 4.0), a Pico-OLED rig, and the crossfire USB-MIDI host.
+2.8, 3.49, 4.0), and a Pico-OLED rig.
 
 ## Licence
 

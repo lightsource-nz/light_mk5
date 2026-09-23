@@ -21,6 +21,7 @@
 #include <hardware/structs/ioqspi.h>
 #include <hardware/structs/sio.h>
 #include <hardware/sync.h>
+#include <boot/picoboot_constants.h>
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
@@ -80,6 +81,31 @@ static bool __not_in_flash_func(bootsel_sample)(void)
         hw_write_masked(&ioqspi_hw->io[cs_index].ctrl, GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB, IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
         restore_interrupts(flags);
         return pressed;
+}
+
+//   WHAT THE BOOT ROM DID, and why. On a chip that chooses between images the question "which
+// one am I?" has an answer only the ROM holds: which partition it booted, whether that image is
+// still on probation, and -- when it refused one -- a diagnostic word saying what it made of the
+// partition it was asked about. Reading it is a bootrom call, so it belongs here with the rest of
+// the ROM surface. Zero means the ROM did not answer, which is every chip without this facility.
+uint32_t light_shell_boot_info(uint32_t *out_diagnostic, uint32_t *out_params)
+{
+#if PICO_RP2350
+        boot_info_t info;
+        if (!rom_get_boot_info(&info))
+                return 0;
+        if (out_diagnostic)
+                *out_diagnostic = info.boot_diagnostic;
+        if (out_params) {
+                out_params[0] = info.reboot_params[0];
+                out_params[1] = info.reboot_params[1];
+        }
+        return info.boot_word;
+#else
+        (void) out_diagnostic;
+        (void) out_params;
+        return 0;
+#endif
 }
 
 bool light_shell_bootsel(void)
@@ -203,4 +229,18 @@ int main(void)
         while (!core1_ready)
                 tight_loop_contents();
         light_app_main(&info);
+}
+
+//   REBOOT ASKING ABOUT A PARTITION. The ROM's diagnostic word describes whatever partition it
+// was ASKED about, and the asking is done by the reboot that precedes the boot: this reboots the
+// normal way, naming the partition whose fate the next boot should report. Never returns when it
+// succeeds; a failure returns the ROM's error so a caller can say so.
+int light_shell_reboot_diagnosing(uint32_t partition)
+{
+#if PICO_RP2350
+        return rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_NORMAL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 10, partition, 0);
+#else
+        (void) partition;
+        return -1;
+#endif
 }

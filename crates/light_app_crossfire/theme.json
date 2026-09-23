@@ -1,5 +1,0 @@
-{
-	"name": "crossfire",
-	"extends": "default",
-	"metrics": { "screen_radius": 6 }
-}

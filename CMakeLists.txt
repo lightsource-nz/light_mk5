@@ -59,7 +59,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         # the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/firmware/Cargo.toml
-                CRATES light_app_ui_demo_touch169 light_app_ui_demo_touch28 light_app_ui_demo_touch349 light_app_dictaphone_touch349 light_app_dictaphone_wide_touch349 light_app_lui_touch349 light_app_ui_demo_touch4 light_app_pico2 light_app_crossfire_pico light_app_crossfire_pico2 light_app_h7 light_app_f411
+                CRATES light_app_ui_demo_touch169 light_app_ui_demo_touch28 light_app_ui_demo_touch349 light_app_dictaphone_touch349 light_app_dictaphone_wide_touch349 light_app_lui_touch349 light_app_ui_demo_touch4 light_app_pico2 light_app_usb_host_probe light_app_h7 light_app_f411
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
@@ -106,18 +106,16 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_4")
                         add_subdirectory(module/ui_demo_touch4)
                 elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico")
-                        #   two applications share the Picos: the pico2 demo, and crossfire
-                        # with the native port in its host role. One per tree -- they
-                        # configure the shell differently -- chosen by the preset
-                        set(LIGHT_PICO2_APP "pico2" CACHE STRING "which application a Pico tree builds: pico2 (the pico2 demo) or crossfire")
-                        if(LIGHT_PICO2_APP STREQUAL "crossfire")
-                                #   the app is one portable crate; the module is the
-                                # TANGIBLE crossfire this tree's chip names
-                                if(PICO_BOARD STREQUAL "pico")
-                                        add_subdirectory(module/crossfire_pico)
-                                else()
-                                        add_subdirectory(module/crossfire_pico2)
-                                endif()
+                        #   two firmwares share the Picos: the pico2 demo, and the USB
+                        # host-role probe, which puts the native port in its host role so
+                        # that role is built by this repository and not only by the products
+                        # that use it. One per tree -- they configure the shell differently
+                        # -- chosen by the preset
+                        set(LIGHT_PICO2_APP "pico2" CACHE STRING "which firmware a Pico tree builds: pico2 (the demo) or usb_host_probe")
+                        if(LIGHT_PICO2_APP STREQUAL "usb_host_probe")
+                                #   the probe is an RP2350 firmware: the host stack this port
+                                # carries exists only on that chip
+                                add_subdirectory(module/usb_host_probe)
                         else()
                                 add_subdirectory(module/light_pico2)
                         endif()

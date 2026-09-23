@@ -31,8 +31,7 @@ members = [
         "../module/dictaphone_wide_touch349/rust",
         "../module/light_lui_touch349/rust",
         "../module/light_pico2/rust",
-        "../module/crossfire_pico/rust",
-        "../module/crossfire_pico2/rust",
+        "../module/usb_host_probe/rust",
         "../module/light_h7/rust",
         "../module/light_f411/rust",
 ]

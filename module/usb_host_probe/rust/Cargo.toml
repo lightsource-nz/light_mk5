@@ -1,0 +1,18 @@
+[package]
+workspace = "../../../firmware"
+#   _app suffix: the plain name is the CMake EXECUTABLE (which must match the module directory --
+# light-flash.ps1 finds module/<target>/<target>.uf2), and CMake target names share one namespace
+# with Corrosion's crate targets
+name = "light_app_usb_host_probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the framework's USB host-role probe: brings the host stack up on a Pico 2 and reports what enumerates, so the role stays exercised by a build that owns no application"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+light-core = { path = "../../../crates/light-core" }
+light-midi = { path = "../../../crates/light-midi" }
+light-rp2 = { path = "../../../crates/light-rp2", features = ["usb-host", "rp2350"] }

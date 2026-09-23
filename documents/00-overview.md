@@ -18,9 +18,9 @@ cooperative module runtime, a widget toolkit rendered to a panel, touch/IMU/gest
 storage and filesystems, real-time clock, power management, and a console — as portable Rust
 libraries that run unchanged across several chips, and on the host under `cargo test`.
 
-The framework is used by lightsource's own products; the applications in the tree (the widget demo,
-the dictaphone, the crossfire USB-MIDI host) are both real applications and the worked examples of
-how an application is built on it.
+The framework is used by lightsource's own products, which live in their own repositories and
+consume it; the applications in this tree (the widget demo, the dictaphone) are both real
+applications and the worked examples of how an application is built on it.
 
 ## Core principles
 
@@ -186,7 +186,7 @@ The reference ports run on the RP2040 and RP2350 (both the Arm and Hazard3 cores
 and STM32F411 over bare CMSIS; a consumer adds a chip by writing a port (see
 [07-ports-and-shell.md](07-ports-and-shell.md)). A host build exercises the portable crates under
 `cargo test` against a mocked board. Hardware-verified across a range of RP2350 touch boards of
-differing sizes, an OLED-panel board, and the crossfire USB-MIDI host.
+differing sizes, and an OLED-panel board.
 
 ---
 

@@ -26,7 +26,6 @@ members = [
         #   hardware-independent applications: the logic of an app as a portable crate,
         # instantiated by a hardware-bound firmware crate per tangible board. The dictaphone
         # splits once more -- an engine crate, and one interface crate per orientation over it
-        "crates/light_app_crossfire",
         "crates/light_dictaphone_core",
         "crates/light_app_dictaphone",
         "crates/light_app_dictaphone_wide",

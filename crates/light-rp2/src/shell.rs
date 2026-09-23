@@ -357,3 +357,56 @@ pub fn core1_main(mut push: impl FnMut(u8), uart: Option<Uart>) -> ! {
                 }
         }
 }
+
+// --- what the boot ROM did ------------------------------------------------------------------
+
+unsafe extern "C" {
+        fn light_shell_boot_info(out_diagnostic: *mut u32, out_params: *mut u32) -> u32;
+        fn light_shell_reboot_diagnosing(partition: u32) -> i32;
+}
+
+/// The boot the firmware is running in, as the ROM describes it. On a chip that chooses between
+/// image slots this is the only answer to "which image am I?", and when the ROM REFUSED an image
+/// it is the only account of why: `diagnostic` is its verdict on the partition it was asked
+/// about ([`reboot_diagnosing`]). `None` where the chip's ROM offers no such facility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootInfo {
+        /// How this boot was entered (the ROM's boot-type code).
+        pub boot_type: u8,
+        /// The partition booted from, or `None` when the image was not in one.
+        pub partition: Option<u8>,
+        /// Try-before-you-buy and flash-update flags: a nonzero value means this image is still
+        /// on probation and will be discarded unless it commits itself.
+        pub tbyb_and_update: u8,
+        /// The partition the ROM was asked to diagnose, or `None`.
+        pub diagnostic_partition: Option<u8>,
+        /// The ROM's verdict on that partition.
+        pub diagnostic: u32,
+}
+
+pub fn boot_info() -> Option<BootInfo> {
+        let mut diagnostic = 0u32;
+        let mut params = [0u32; 2];
+        // SAFETY: the shell's bootrom call, which writes only the two outputs
+        let word = unsafe { light_shell_boot_info(&mut diagnostic, params.as_mut_ptr()) };
+        if word == 0 {
+                return None;
+        }
+        let bytes = word.to_le_bytes();
+        let signed = |b: u8| (b as i8 >= 0).then_some(b);
+        Some(BootInfo {
+                diagnostic_partition: signed(bytes[0]),
+                boot_type: bytes[1],
+                partition: signed(bytes[2]),
+                tbyb_and_update: bytes[3],
+                diagnostic,
+        })
+}
+
+/// Reboot, asking the ROM to report on `partition` in the boot that follows: the diagnostic word
+/// describes whatever partition it was asked about, and the asking happens at the reboot rather
+/// than afterwards. Returns only on failure, with the ROM's error.
+pub fn reboot_diagnosing(partition: u8) -> i32 {
+        // SAFETY: the shell's bootrom call; it does not return when it succeeds
+        unsafe { light_shell_reboot_diagnosing(u32::from(partition)) }
+}

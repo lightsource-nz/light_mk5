@@ -399,42 +399,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "light_app_crossfire"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-midi",
- "light-ui",
-]
-
-[[package]]
-name = "light_app_crossfire_pico"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-rp2",
- "light_app_crossfire",
-]
-
-[[package]]
-name = "light_app_crossfire_pico2"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-rp2",
- "light_app_crossfire",
-]
-
-[[package]]
 name = "light_app_dictaphone_touch349"
 version = "0.1.0"
 dependencies = [
@@ -583,6 +547,15 @@ dependencies = [
  "light-rtc",
  "light-ui",
  "light_app_ui_demo",
+]
+
+[[package]]
+name = "light_app_usb_host_probe"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-midi",
+ "light-rp2",
 ]
 
 [[package]]
