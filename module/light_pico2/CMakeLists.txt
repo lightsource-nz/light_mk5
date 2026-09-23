@@ -11,6 +11,18 @@ target_link_libraries(light_pico2 PRIVATE
         light_app_pico2
 )
 
+#   the device's flash map: an A/B pair for the application and a data partition for the
+# assets, signed so the boot ROM will accept it as the only description of this flash. The
+# image below is signed against the same key -- see documents/11-secure-boot-and-update.md
+light_partition_table(light_pico2_partitions
+        LAYOUT ${CMAKE_CURRENT_LIST_DIR}/partitions.json
+        FOR light_pico2
+)
+
+#   the application image, signed and stamped with the release's version: what the ROM
+# verifies before it runs, and what it compares between the A and B slots
+light_seal_image(light_pico2)
+
 #   the OLED's font: the Pico-OLED-1.3's real geometry (64x128 over 17.2x32.3 mm),
 # at 12 px -- the 128-pixel-wide logical row fits ten cells of it
 light_add_font(light_pico2_font
