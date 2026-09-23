@@ -74,6 +74,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightTheme.cmake)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightUi.cmake)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightSecure.cmake)
+        include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightBootloader.cmake)
 
         if(LIGHT_SYSTEM STREQUAL "PICO_SDK")
                 add_subdirectory(module/light_shell)
@@ -118,6 +119,13 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                                 add_subdirectory(module/usb_host_probe)
                         else()
                                 add_subdirectory(module/light_pico2)
+                        endif()
+                        #   and the bootloader, whichever firmware this tree builds: it is a
+                        # separate image that goes at the start of flash, and the application
+                        # it loads is flashed into a slot behind it. Only the RP2350 has the
+                        # boot facilities it stands on
+                        if(NOT PICO_PLATFORM MATCHES "^rp2040")
+                                add_subdirectory(module/light_bootloader)
                         endif()
                 endif()
         elseif(LIGHT_SYSTEM STREQUAL "CMSIS")

@@ -2,24 +2,31 @@
 
 Firmware is **signed when it is built and verified by the hardware before it runs** — every boot, not
 only when it is programmed. An update is delivered as a whole image into a slot the running firmware
-is not executing from, and becomes the image that boots only after it has proved itself. The
-framework carries no bootloader of its own: the chip's own verified-boot facility is both the root of
-trust and the slot selector, and the build produces images and a partition map it accepts.
+is not executing from, and becomes the image that boots only after it has proved itself.
+
+The hardware is the root of trust: it verifies the first thing it runs, against a key it holds in
+one-time memory. That first thing is a small **bootloader** the framework supplies, because hardware
+that verifies an image does not thereby choose between two of them — a device with an A/B pair needs
+something to compare the slots' versions, pick one, and hand over. The bootloader does only that, on
+the chip's own facilities, and is itself verified before it runs.
 
 ```mermaid
-graph LR
-    build["build: image + assets"] --> sign["sign (private key)"]
-    sign --> image[["signed image"]]
-    image -->|download, family-routed| slot["inactive slot"]
-    slot --> verify{"hardware verify<br/>vs key hash in one-time memory"}
-    verify -->|valid, newer| probation["runs on probation"]
-    verify -->|invalid or revoked| refused["refused, previous image boots"]
-    probation -->|application commits| settled["the image that boots"]
-    probation -->|never commits| refused
+graph TD
+    rom{{"hardware: verify vs key hash<br/>in one-time memory"}} -->|valid| boot["bootloader<br/>(signed, carries the flash map)"]
+    rom -->|invalid| stop(["refused: nothing runs"])
+    boot -->|compares slot versions| pick{"pick a slot"}
+    pick --> a["slot A"]
+    pick --> b["slot B"]
+    a --> chain["verify and hand over"]
+    b --> chain
+    chain --> probation["the application runs,<br/>on probation"]
+    probation -->|commits itself| settled(["the image that boots from now on"])
+    probation -->|never commits| previous(["discarded: the previous image boots"])
 ```
 
-*The private key signs; immutable hardware verifies. A new image is on probation until the
-application commits it, so an image that cannot run is discarded rather than kept.*
+*Immutable hardware verifies the bootloader; the bootloader picks between the slots and verifies
+what it hands over to. A new image is on probation until it commits itself, so an image that cannot
+run is discarded rather than kept.*
 
 ---
 
@@ -34,10 +41,12 @@ between them.
 
 ## Public surface
 
-- **Build.** `light_partition_table(<target> LAYOUT <json> [SIGN <key>])` produces the device's
-  signed partition map; `light_seal_image(<target> [ENCRYPT])` signs a target's image and stamps its
-  version, taking the version the build already derives from the repository. The signing key is
-  selected by the build, defaulting to the development key.
+- **Build.** `light_seal_image(<target> [VERSION] [ENCRYPT])` signs a target's image and stamps the
+  version a device compares between slots; `light_bootloader_map(<bootloader> LAYOUT <json>)` embeds
+  the flash map in the bootloader that reads it, so the two are one signed artefact. Both default to
+  the development key, overridden for a release.
+- **The bootloader** is a firmware target of the framework's, built per chip family: it loads the
+  map, picks the better of an A/B pair, and chains to it. An application names no part of it.
 - **Assets.** The blob helpers (`light_add_font`, `light_add_theme`, `light_add_ui`) emit into the
   data partition rather than into the firmware image; the port resolves a partition to a
   `&'static [u8]` at runtime, which is what the portable readers already take.
@@ -76,9 +85,16 @@ between them.
 
 ## Notable design decisions and constraints
 
-- **No bootloader of the framework's own.** A second stage would itself have to be verified, kept in
-  step with the images it loads, and made un-erasable — all of which the chip's boot facility
-  already does. The framework supplies a signed partition map and signed images instead.
+- **The bootloader exists because choosing is not verifying.** Hardware verifies the one image it is
+  pointed at; it does not compare two slots' versions and elect one. So the framework supplies a
+  bootloader that does exactly that and nothing else — load the flash map, pick the better of an A/B
+  pair, hand over — on the chip's own facilities, itself signed and verified before it runs. It is
+  kept deliberately small and free of application concerns, because it is the one image a device can
+  never recover from by an update.
+- **The flash map travels inside the bootloader.** The map and the code that reads it are one signed
+  artefact, so a device cannot hold a map its bootloader disagrees with, and verifying the
+  bootloader verifies the map. The first slot therefore begins after the bootloader, not at the
+  start of flash.
 - **The bench path and the field path are the same mechanism.** An update is delivered through the
   chip's ordinary image-download route, routed to the right partition by the image's family, so a
   developer's flash and a field update differ in who initiates them, not in what happens.
@@ -91,10 +107,13 @@ between them.
 ### Reference implementation — the RP2350 port
 
 The part-specific facts live with the port ([07-ports-and-shell.md](07-ports-and-shell.md)); in
-outline: images and the partition table are signed with **secp256k1/SHA-256** by the build's
-`seal`/`partition` steps, and the boot ROM verifies them against a **SHA-256 of the public key held
-in OTP** once secure boot is enabled there. The ROM selects between the A/B slots by version, runs a
-**try-before-you-buy** image on probation until the firmware calls the ROM's buy routine, and offers
-partition-permission-checked flash operations for staging. Downloads are routed to a partition by
-**UF2 family**, which is what makes the data partition separately updatable. A rollback counter, a
-glitch detector and debug-disable all live in the same one-time memory.
+outline: images are signed with **secp256k1/SHA-256**, and the boot ROM verifies what it finds at
+the start of flash against a **SHA-256 of the public key held in OTP** once secure boot is enabled
+there. **The ROM boots the image at the start of flash and does not search the partitions for one**
+— it is the bootloader there, with the map embedded in it, that loads the map, picks the better of
+the A/B pair (the ROM offers the comparison as a routine) and chains to the chosen slot, which the
+ROM verifies in turn. An image may be marked **try-before-you-buy**, which runs it on probation
+until the firmware calls the ROM's buy routine; the ROM also offers partition-permission-checked
+flash operations for staging, and a reboot that names the slot to boot. Downloads are routed to a
+partition by **UF2 family**, which is what makes the data partition separately updatable. A
+rollback counter, a glitch detector and debug-disable all live in the same one-time memory.

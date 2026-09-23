@@ -36,6 +36,9 @@
                 # the host-role probe: the smallest firmware that exercises the port's USB host
                 # stack, so the role is built here and not only by the products that use it
                 'usb_host_probe' = @{ Preset = 'conf-light_mk5-usb-host-probe-debug'; Flash = 'swd' }
+                # the bootloader: the image at the start of flash that picks between the
+                # application slots. Built in the Pico 2 trees beside whatever they build
+                'light_bootloader' = @{ Preset = 'conf-light_mk5-pico2-debug'; Flash = 'swd' }
                 # uf2 because the 1.69 exposes no SWD pads
                 'ui_demo_touch169' = @{ Preset = 'conf-light_mk5-touch169-debug'; Flash = 'uf2' }
                 'ui_demo_touch28'  = @{ Preset = 'conf-light_mk5-touch28-debug'; Flash = 'uf2' }
