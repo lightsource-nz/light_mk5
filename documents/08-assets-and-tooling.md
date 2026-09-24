@@ -276,8 +276,12 @@ other layout). Frame nesting is one level deep by construction, enforced at comp
 ### LAP — asset packs
 
 `light-assets` owns the LAP format: a `no_std` zero-copy reader (`Pack`, a `Copy` view that borrows
-the region) and an `alloc`-gated `build::Builder`, which crush's `pack build` drives. Magic `LAP1`,
-version 1. A 48-byte header carries the entry count, the pack's total length and a 32-byte
+the region) and an `alloc`-gated `build::Builder`, which crush's `pack build` drives. Neither owns a
+hash — both take a `light_core::hal::Sha256` engine from the caller, because a chip may have the
+algorithm in silicon and a portable implementation of the same thing costs several kilobytes of
+image doing worse what the hardware does for nothing. `soft::SoftSha256`, behind the `soft-sha256`
+feature, is the portable one, for the host tool and for a port whose chip has no such block. Magic
+`LAP1`, version 1. A 48-byte header carries the entry count, the pack's total length and a 32-byte
 **SHA-256**; then a directory of 24-byte entries (a 16-byte NUL-padded ASCII name, a u32 offset from
 the pack start, a u32 length), then the blobs, each starting on a four-byte boundary.
 

@@ -328,7 +328,7 @@ fn pack_build(output: &std::path::Path, entries: &[String], digest: Option<&std:
                         .map_err(|e| format!("entry '{name}' ({file}) cannot go in a pack: {e:?}"))?;
                 log::debug(&format!("pack entry '{name}': {} bytes from {file}", bytes.len()));
         }
-        let blob = builder.build();
+        let blob = builder.build(light_assets::soft::SoftSha256::new());
         let pack = light_assets::Pack::open_unchecked(&blob).map_err(|e| format!("the pack just built does not read back: {e:?}"))?;
 
         write_out(output, &blob)?;

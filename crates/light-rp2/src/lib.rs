@@ -48,6 +48,8 @@ pub mod pwm_audio;
 pub mod qspi;
 #[cfg(feature = "rp2350")]
 pub mod rgb;
+#[cfg(feature = "rp2350")]
+pub mod sha256;
 pub mod shell;
 pub mod spi;
 pub mod spi_bus;

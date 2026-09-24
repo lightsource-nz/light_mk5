@@ -9,8 +9,13 @@ description = "the LAP asset pack: a no_std zero-copy reader over a directory of
 default = []
 #   the writer needs Vec; the firmware reader does not. crush turns this on
 alloc = []
+#   SHA-256 in software, for a host tool and for a port whose chip has none. A port with the
+#   algorithm in silicon implements the same trait over it and leaves this off -- see
+#   light_core::hal::Sha256
+soft-sha256 = ["dep:sha2"]
 
 [dependencies]
+light-core = { path = "../light-core" }
 #   a pack is read out of memory the firmware image does not cover, so the firmware checks it
 # against a digest the image carries -- and a digest wants a hash the whole world agrees on
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false, optional = true }

@@ -276,6 +276,25 @@ impl<T: BlockDevice + ?Sized> BlockDevice for &mut T {
         }
 }
 
+/// A SHA-256 over a stream of byte ranges.
+///
+/// Here rather than in the crate that hashes because a chip may have the algorithm in silicon,
+/// and where it does, a portable implementation of the same thing is several kilobytes of image
+/// doing worse what the hardware does for nothing. Ports with the block implement this over it;
+/// everything else takes the software implementation the caller supplies.
+///
+/// One engine is one hash. `finish` consumes it, so a half-finished hash cannot be picked up and
+/// continued by something that did not start it -- which, on a board where the block is shared
+/// with a boot facility, is the failure that produces a right-looking wrong answer.
+pub trait Sha256 {
+        /// Add bytes to the hash. Called any number of times; the split between calls does not
+        /// change the result.
+        fn update(&mut self, bytes: &[u8]);
+
+        /// The digest, in the standard byte order.
+        fn finish(self) -> [u8; 32];
+}
+
 /// A QSPI display bus: four data lines, a clock, chip select -- and no D/C wire, so a
 /// register write is ONE chip-select frame carrying a serial command header and its data,
 /// which is why this is not [`SpiDisplayBus`] with more pins. The AXS15231B is the first

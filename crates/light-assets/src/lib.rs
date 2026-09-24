@@ -43,7 +43,36 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-use sha2::{Digest, Sha256};
+pub use light_core::hal::Sha256;
+
+/// SHA-256 in software, for a host tool and for a port whose chip cannot do it.
+///
+/// A chip with the algorithm in silicon implements [`Sha256`] over it instead and leaves this
+/// feature off -- several kilobytes of image doing worse what the hardware does for nothing.
+#[cfg(feature = "soft-sha256")]
+pub mod soft {
+        use sha2::Digest;
+
+        /// The portable engine.
+        #[derive(Default)]
+        pub struct SoftSha256(sha2::Sha256);
+
+        impl SoftSha256 {
+                pub fn new() -> Self {
+                        Self::default()
+                }
+        }
+
+        impl super::Sha256 for SoftSha256 {
+                fn update(&mut self, bytes: &[u8]) {
+                        self.0.update(bytes);
+                }
+
+                fn finish(self) -> [u8; super::DIGEST_LEN] {
+                        self.0.finalize().into()
+                }
+        }
+}
 
 pub const MAGIC: [u8; 4] = *b"LAP1";
 /// The schema version in the header (byte 4) -- the shared blob-header convention (`magic` then a
@@ -87,21 +116,24 @@ pub struct Pack<'a> {
 }
 
 impl<'a> Pack<'a> {
-        /// Open the pack at the start of `region`, checking it against `expected`.
+        /// Open the pack at the start of `region`, checking it against `expected` with `digest`.
         ///
         /// `region` may be larger than the pack -- it usually is, being a whole partition or
         /// window -- and only the pack's own extent is read.
-        pub fn open(region: &'a [u8], expected: &[u8; DIGEST_LEN]) -> Result<Self, PackError> {
+        ///
+        /// The engine is the caller's because a chip may have SHA-256 in silicon: a port with the
+        /// block hands one in over it, and one without hands in
+        /// [`soft::SoftSha256`](crate::soft::SoftSha256).
+        pub fn open<D: Sha256>(region: &'a [u8], expected: &[u8; DIGEST_LEN], mut digest: D) -> Result<Self, PackError> {
                 let pack = Self::open_unchecked(region)?;
                 if pack.digest() != expected {
                         return Err(PackError::DigestMismatch);
                 }
                 //   the header says what the digest is; whether the content agrees is the
                 // question tampering turns on
-                let mut h = Sha256::new();
-                h.update(&pack.blob[..16]);
-                h.update(&pack.blob[HEADER_LEN..]);
-                if h.finalize().as_slice() != expected {
+                digest.update(&pack.blob[..16]);
+                digest.update(&pack.blob[HEADER_LEN..]);
+                if digest.finish() != *expected {
                         return Err(PackError::DigestMismatch);
                 }
                 Ok(pack)
@@ -254,11 +286,11 @@ pub mod build {
                         Ok(())
                 }
 
-                /// Emit the pack.
+                /// Emit the pack, sealing it with `digest`.
                 ///
                 /// Entries are sorted here rather than demanded of the caller, so a build that
                 /// lists its assets in a different order still produces the same bytes.
-                pub fn build(&self) -> Vec<u8> {
+                pub fn build<D: Sha256>(&self, mut digest: D) -> Vec<u8> {
                         let mut sorted: Vec<&([u8; NAME_LEN], Vec<u8>)> = self.entries.iter().collect();
                         sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -289,18 +321,18 @@ pub mod build {
                         out.extend_from_slice(&directory);
                         out.extend_from_slice(&payload);
 
-                        let mut h = Sha256::new();
-                        h.update(&out[..16]);
-                        h.update(&out[HEADER_LEN..]);
-                        out[16..HEADER_LEN].copy_from_slice(&h.finalize());
+                        digest.update(&out[..16]);
+                        digest.update(&out[HEADER_LEN..]);
+                        out[16..HEADER_LEN].copy_from_slice(&digest.finish());
                         out
                 }
         }
 }
 
-#[cfg(all(test, feature = "alloc"))]
+#[cfg(all(test, feature = "alloc", feature = "soft-sha256"))]
 mod tests {
         use super::build::Builder;
+        use super::soft::SoftSha256;
         use super::*;
         use alloc::vec;
 
@@ -309,7 +341,7 @@ mod tests {
                 for (n, v) in pairs {
                         b.add(n, v).expect("name is usable");
                 }
-                b.build()
+                b.build(SoftSha256::new())
         }
 
         fn digest_of(bytes: &[u8]) -> [u8; DIGEST_LEN] {
@@ -321,7 +353,7 @@ mod tests {
         fn a_built_pack_reads_back_every_blob_it_was_given() {
                 let bytes = pack_of(&[("font", &[1, 2, 3]), ("theme", &[9; 70]), ("ui", &[4, 5])]);
                 let d = digest_of(&bytes);
-                let p = Pack::open(&bytes, &d).expect("its own digest matches");
+                let p = Pack::open(&bytes, &d, SoftSha256::new()).expect("its own digest matches");
                 assert_eq!(p.len(), 3);
                 assert_eq!(p.get("font"), Ok(&[1u8, 2, 3][..]));
                 assert_eq!(p.get("theme"), Ok(&[9u8; 70][..]));
@@ -347,7 +379,7 @@ mod tests {
         fn a_pack_opened_against_another_packs_digest_is_refused() {
                 let mine = pack_of(&[("font", &[1, 2, 3])]);
                 let theirs = pack_of(&[("font", &[3, 2, 1])]);
-                assert_eq!(Pack::open(&theirs, &digest_of(&mine)), Err(PackError::DigestMismatch));
+                assert_eq!(Pack::open(&theirs, &digest_of(&mine), SoftSha256::new()), Err(PackError::DigestMismatch));
         }
 
         #[test]
@@ -356,7 +388,7 @@ mod tests {
                 let d = digest_of(&bytes);
                 let last = bytes.len() - 1;
                 bytes[last] ^= 0xff;
-                assert_eq!(Pack::open(&bytes, &d), Err(PackError::DigestMismatch));
+                assert_eq!(Pack::open(&bytes, &d, SoftSha256::new()), Err(PackError::DigestMismatch));
         }
 
         #[test]
@@ -374,7 +406,7 @@ mod tests {
                 let d = digest_of(&bytes);
                 let mut region = vec![0xffu8; 4096];
                 region[..bytes.len()].copy_from_slice(&bytes);
-                let p = Pack::open(&region, &d).expect("the trailing blank storage is not part of it");
+                let p = Pack::open(&region, &d, SoftSha256::new()).expect("the trailing blank storage is not part of it");
                 assert_eq!(p.as_bytes().len(), bytes.len());
                 assert_eq!(p.get("font"), Ok(&[7u8; 11][..]));
         }
@@ -406,11 +438,34 @@ mod tests {
         }
 
         #[test]
+        fn the_software_engine_is_really_sha_256() {
+                //   the standard's own vector, so an engine implemented over a chip's hardware can
+                // be held to the same one
+                let mut h = SoftSha256::new();
+                h.update(b"abc");
+                assert_eq!(
+                        h.finish(),
+                        [
+                                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+                                0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+                        ]
+                );
+                //   split across calls, and over a length that crosses a block boundary
+                let long = [0x5au8; 200];
+                let (mut whole, mut split) = (SoftSha256::new(), SoftSha256::new());
+                whole.update(&long);
+                split.update(&long[..7]);
+                split.update(&long[7..64]);
+                split.update(&long[64..]);
+                assert_eq!(whole.finish(), split.finish(), "the split between updates does not change the result");
+        }
+
+        #[test]
         fn the_digest_is_a_sha_256_of_the_two_documented_ranges() {
                 let bytes = pack_of(&[("font", &[1, 2, 3])]);
-                let mut h = Sha256::new();
+                let mut h = SoftSha256::new();
                 h.update(&bytes[..16]);
                 h.update(&bytes[HEADER_LEN..]);
-                assert_eq!(&bytes[16..HEADER_LEN], h.finalize().as_slice());
+                assert_eq!(bytes[16..HEADER_LEN], h.finish()[..]);
         }
 }

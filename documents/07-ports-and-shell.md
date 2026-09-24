@@ -125,6 +125,10 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
     console);
   - `usb_host` (feature `usb-host`) — the USB-MIDI host role: the ecosystem's host stack over its
     controller driver for this chip, behind `light_midi::Host` (below).
+- `sha256` (RP2350 only) — `Sha256Hw`, a `light_core::hal::Sha256` over the chip's accelerator.
+  The block compresses; the driver does everything around it — gathering bytes into whole words,
+  waiting for each write, and appending the standard padding. It is shared with the boot facility,
+  so one hash at a time and no boot-ROM routine part-way through one.
 - `assets` — `region()`, the storage a product's assets were written to, as a `&'static [u8]` for
   `light-assets` to read a pack out of. Two things portable code cannot do: ask the boot ROM where
   the flash map set that region aside, and make it addressable. The chip reads storage through four

@@ -36,6 +36,11 @@ is written against these, never against a concrete peripheral. The core ones:
 - **`AudioStream`** — the transport contract an audio module drives (stream push/free, capture,
   active gating), so an app's audio logic is independent of the concrete I2S port (see
   [04-audio-and-midi.md](04-audio-and-midi.md)).
+- **`Sha256`** — a SHA-256 over a stream of byte ranges (`update`, and a `finish` that consumes the
+  engine). A trait rather than a portable implementation because a chip may have the algorithm in
+  silicon, where one is several kilobytes of image doing worse what the hardware does for nothing;
+  the crate that hashes takes an engine from its caller, and a port without the block supplies the
+  software one (see [08-assets-and-tooling.md](08-assets-and-tooling.md)).
 - **`Idle`** — what the runtime calls when every module is idle (e.g. a `Breathe` low-power wait).
 
 A port also supplies one `critical_section` implementation. That single item — plus the `hal` impls
