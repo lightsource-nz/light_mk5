@@ -71,6 +71,17 @@ impl log::Log for Relay {
         }
 
         fn log(&self, record: &log::Record) {
+                //   THROWN AWAY BEFORE IT COSTS A PLACE IN THE RATE BELOW. The driver is asked
+                // for everything down to its per-command chatter, because the level that decides
+                // what is worth seeing is the framework's and not this crate's -- so most of what
+                // arrives here is discarded a moment later by that level. Rationing those too
+                // spends the ration on lines nobody can see, and what reaches the console is a
+                // run of summaries with nothing left to summarise.
+                let level = level_of(record.level());
+                if !light_core::log::enabled(level) {
+                        return;
+                }
+
                 //   HELD TO A RATE, because a driver reporting a condition a thousand times a
                 // second is describing ONE condition, not a thousand. The radio's does exactly
                 // that when a busy network outruns the buffers between it and the stack, and the
@@ -89,14 +100,15 @@ impl log::Log for Relay {
                                 return;
                         }
                         RELAY_LAST_MS.store(now_ms, Ordering::Relaxed);
-                        let held = RELAY_HELD.swap(0, Ordering::Relaxed);
-                        if held > 0 {
-                                light_core::log::push(light_core::log::Level::Warn, "radio", format_args!("{held} further lines in the last moment were not repeated"));
+                        match RELAY_HELD.swap(0, Ordering::Relaxed) {
+                                0 => {}
+                                1 => light_core::log::push(light_core::log::Level::Warn, "radio", format_args!("one further line in the last moment was not repeated")),
+                                held => light_core::log::push(light_core::log::Level::Warn, "radio", format_args!("{held} further lines in the last moment were not repeated")),
                         }
                 }
                 //   the target is the driver's module path, which is of no use to anyone reading a
                 // console -- what matters is that this came from the radio
-                light_core::log::push(level_of(record.level()), "radio", *record.args());
+                light_core::log::push(level, "radio", *record.args());
         }
 
         fn flush(&self) {}
