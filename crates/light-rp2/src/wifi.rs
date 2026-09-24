@@ -57,11 +57,31 @@ embassy_time_driver::time_driver_impl!(static CLOCK: Clock = Clock);
 // the twenty lines: a radio refuses ONE command out of a conversation of hundreds, names the
 // reason in a log line, and reports nothing whatsoever through its return values -- so without
 // this a bring-up is guesswork, and with it the answer is on the console with everything else.
-/// The closest together two relayed lines may be. Slow enough that a flood cannot cost the loop
-/// its time, quick enough that a console still feels like it is reporting as things happen.
-const RELAY_MIN_GAP_MS: u32 = 200;
-static RELAY_LAST_MS: AtomicU32 = AtomicU32::new(0);
-static RELAY_HELD: AtomicU32 = AtomicU32::new(0);
+/// The driver's own words for a packet it had nowhere to put. Matched exactly; see the note in
+/// `Relay::log` for why this is recognised by its text and what happens if it ever changes.
+const NO_ROOM_FOR_PACKET: &str = "failed to push rxd packet to the channel.";
+
+/// How many packets the radio had nowhere to put. Not an error count -- the ones that matter are
+/// sent again -- but the measure of how hard the path between the radio and the stack is being
+/// pushed, which is exactly what a transfer wants to report.
+static DROPPED: AtomicU32 = AtomicU32::new(0);
+
+/// A hash of a line, taken as it is formatted so that the line itself never has to be kept.
+fn digest(args: core::fmt::Arguments) -> u32 {
+        struct Hash(u32);
+        impl core::fmt::Write for Hash {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                        for b in s.as_bytes() {
+                                self.0 = (self.0 ^ u32::from(*b)).wrapping_mul(0x0100_0193);
+                        }
+                        Ok(())
+                }
+        }
+        let mut h = Hash(0x811c_9dc5);
+        let _ = core::fmt::write(&mut h, args);
+        h.0
+}
+
 
 struct Relay;
 
@@ -77,35 +97,31 @@ impl log::Log for Relay {
                 // arrives here is discarded a moment later by that level. Rationing those too
                 // spends the ration on lines nobody can see, and what reaches the console is a
                 // run of summaries with nothing left to summarise.
-                let level = level_of(record.level());
+                //   NOT EVERY WARNING FROM A DRIVER IS ONE. This part reports a packet it had
+                // nowhere to put as a warning, and during a transfer it says so dozens of times
+                // -- while the transfer succeeds. A line that appears that often in the normal
+                // course of a thing working is not a warning, whatever it was labelled; it is
+                // detail, and it belongs at the level where detail lives. Left as it was, it
+                // buried the result the transfer was run to produce.
+                //
+                //   Saying so HERE rather than in the driver, because the level is the driver's
+                // and changing it there would mean carrying a copy of the driver for one word.
+                // The line is recognised by its text, so if a later version words it differently
+                // it simply goes back to being a warning: wrong, but visible, which is the right
+                // way round for a guess like this to fail.
+                //
+                //   It is still counted. How often it happens is the measure of how hard the
+                // path is being pushed, and that belongs with the transfer's own report rather
+                // than scattered through the log.
+                let mut level = level_of(record.level());
+                if record.level() == log::Level::Warn && digest(*record.args()) == digest(format_args!("{NO_ROOM_FOR_PACKET}")) {
+                        DROPPED.fetch_add(1, Ordering::Relaxed);
+                        level = light_core::log::Level::Debug;
+                }
                 if !light_core::log::enabled(level) {
                         return;
                 }
 
-                //   HELD TO A RATE, because a driver reporting a condition a thousand times a
-                // second is describing ONE condition, not a thousand. The radio's does exactly
-                // that when a busy network outruns the buffers between it and the stack, and the
-                // reporting is not free: every line costs this loop the time to format it and the
-                // console the time to carry it, which makes the loop slower, which makes the
-                // condition worse. It also buries everything else that was worth reading.
-                //
-                //   Nothing is quietly lost: what was not repeated is counted, and the count is
-                // told with the next line that gets through. Errors are never held back -- they
-                // do not arrive in floods, and the one that matters must not wait behind a rate.
-                if record.level() != log::Level::Error {
-                        let now_ms = (crate::now_us() / 1000) as u32;
-                        let last = RELAY_LAST_MS.load(Ordering::Relaxed);
-                        if now_ms.wrapping_sub(last) < RELAY_MIN_GAP_MS {
-                                RELAY_HELD.fetch_add(1, Ordering::Relaxed);
-                                return;
-                        }
-                        RELAY_LAST_MS.store(now_ms, Ordering::Relaxed);
-                        match RELAY_HELD.swap(0, Ordering::Relaxed) {
-                                0 => {}
-                                1 => light_core::log::push(light_core::log::Level::Warn, "radio", format_args!("one further line in the last moment was not repeated")),
-                                held => light_core::log::push(light_core::log::Level::Warn, "radio", format_args!("{held} further lines in the last moment were not repeated")),
-                        }
-                }
                 //   the target is the driver's module path, which is of no use to anyone reading a
                 // console -- what matters is that this came from the radio
                 light_core::log::push(level, "radio", *record.args());
@@ -699,6 +715,8 @@ impl Radio {
                 let tx = TX.init([0; 1024]);
                 let mut socket = embassy_net::tcp::TcpSocket::new(stack, rx, tx);
 
+                //   counted for this fetch alone, so the number reported is this transfer's
+                DROPPED.store(0, Ordering::Relaxed);
                 let address = embassy_net::IpAddress::v4(ip[0], ip[1], ip[2], ip[3]);
                 let mut length = 0u32;
                 let work = async {
@@ -789,10 +807,11 @@ impl Radio {
 
                         let total_us = crate::now_us() - began;
                         light_core::info!(
-                                "fetch: {reads} reads averaging {} bytes; {} ms writing it down, {} ms waiting for more",
+                                "fetch: {reads} reads averaging {} bytes; {} ms writing it down, {} ms waiting for more; {} packets had nowhere to go",
                                 if reads > 0 { taken / reads } else { 0 },
                                 sunk_us / 1000,
-                                total_us.saturating_sub(sunk_us) / 1000
+                                total_us.saturating_sub(sunk_us) / 1000,
+                                DROPPED.load(Ordering::Relaxed)
                         );
                         Ok(taken)
                 };
