@@ -68,6 +68,12 @@ pub enum Command {
                 #[command(subcommand)]
                 cmd: PackCmd,
         },
+        /// Wireless parts: lift the firmware a radio is uploaded at power-up out of its
+        /// vendor header, so it can be delivered as an asset rather than linked into an image
+        Radio {
+                #[command(subcommand)]
+                cmd: RadioCmd,
+        },
         /// Run commands from a script, a single --command, or an interactive prompt
         Console(ConsoleArgs),
 }
@@ -92,6 +98,22 @@ pub enum PackCmd {
         Info {
                 /// The LAP pack
                 input: PathBuf,
+        },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RadioCmd {
+        /// Cut a vendor's combined firmware header into the two blobs a radio is given: the
+        /// image uploaded into its RAM, and the regulatory limits loaded after it
+        Firmware {
+                /// The vendor's combined header, carrying the array and the two lengths
+                input: PathBuf,
+                /// Where the uploaded image goes
+                #[arg(long = "firmware", value_name = "FILE")]
+                firmware: PathBuf,
+                /// Where the regulatory blob goes
+                #[arg(long = "clm", value_name = "FILE")]
+                clm: PathBuf,
         },
 }
 
@@ -295,6 +317,9 @@ pub fn run_command(ctx: &mut Context, command: Command) -> CmdResult {
                         PackCmd::Build { output, entry, digest } => pack_build(&output, &entry, digest.as_deref()),
                         PackCmd::Info { input } => pack_info(&input),
                 },
+                Command::Radio { cmd } => match cmd {
+                        RadioCmd::Firmware { input, firmware, clm } => radio_firmware(&input, &firmware, &clm),
+                },
                 Command::Console(_) => Err("console cannot be nested".into()),
         }
 }
@@ -342,6 +367,21 @@ fn pack_build(output: &std::path::Path, entries: &[String], digest: Option<&std:
                 blob.len(),
                 hex(pack.digest())
         ));
+        Ok(())
+}
+
+/// Cut a radio's two blobs out of the vendor header that carries both.
+fn radio_firmware(input: &std::path::Path, firmware: &std::path::Path, clm: &std::path::Path) -> CmdResult {
+        let text = std::fs::read_to_string(input).map_err(|e| format!("could not read '{}': {e}", input.display()))?;
+        let split = crush_core::radio::split(&text).map_err(|e| format!("'{}': {e}", input.display()))?;
+        log::info(&format!(
+                "radio firmware from '{}': {} bytes of image, {} bytes of regulatory data",
+                input.display(),
+                split.firmware.len(),
+                split.clm.len()
+        ));
+        write_out(firmware, &split.firmware)?;
+        write_out(clm, &split.clm)?;
         Ok(())
 }
 

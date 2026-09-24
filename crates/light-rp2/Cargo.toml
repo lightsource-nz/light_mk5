@@ -22,6 +22,10 @@ usb-host = ["dep:light-midi", "dep:cotton-usb-host", "dep:futures", "dep:defmt"]
 # it, run from the core-1 loop in src/shell.rs. Every board whose native USB port is a device
 # carries it; a host-role board (usb-host) leaves it off and its console is the UART alone
 usb-console = ["dep:usb-device", "dep:usbd-serial"]
+#   the wireless part some boards of this family carry: the ecosystem's driver for it over a bus
+# this crate builds out of PIO (src/wifi.rs), plus the clock facility that driver asks the
+# application to supply. A board without the part leaves this off and links none of it
+wifi = ["dep:cyw43", "dep:embassy-time-driver", "dep:embedded-hal-1", "dep:embassy-net-driver", "dep:log"]
 
 [dependencies]
 light-core = { path = "../light-core" }
@@ -39,6 +43,18 @@ critical-section = { version = "1.2", features = ["restore-state-bool"] }
 # model, and the CDC-ACM class the console rides on. Both no_std, no allocation
 usb-device = { version = "0.3", optional = true }
 usbd-serial = { version = "0.2", optional = true }
+#   the wireless part's driver, its view of a network interface, and the clock facility it is
+# written against -- a microsecond tick, which is what this chip's timer already counts for the
+# framework's own log, so src/wifi.rs supplies it in four lines
+#   with `log`, because a radio that refuses says so through its driver's logging and nowhere
+# else: the failure that matters here is one command out of a conversation of hundreds answering
+# with a status, and without the driver's own account of it there is nothing to go on. src/wifi.rs
+# forwards it into the framework's log, so it arrives on the same console as everything else
+cyw43 = { version = "0.5", default-features = false, features = ["log"], optional = true }
+log = { version = "0.4", default-features = false, optional = true }
+embassy-net-driver = { version = "0.2", optional = true }
+embassy-time-driver = { version = "0.2", features = ["tick-hz-1_000_000"], optional = true }
+embedded-hal-1 = { package = "embedded-hal", version = "1.0", optional = true }
 #   the Cortex-M0+ has no atomic read-modify-write instructions: portable-atomic's
 # critical-section fallback provides swap/fetch_add there through THIS crate's spinlock
 # section, and compiles to the native instructions everywhere else

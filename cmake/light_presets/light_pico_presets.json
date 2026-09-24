@@ -49,6 +49,17 @@
             }
         },
         {
+            "name": "conf-light-pico2-w",
+            "description": "The same chip as conf-light-pico2, on the variant of the board that carries a radio. The difference is not the processor -- it is that the pin carrying the indicator on the plain board is the radio's chip select here, and that the platform's own board definition says so.",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "pico2_w"
+            }
+        },
+        {
             "name": "conf-light-waveshare-touch169",
             "inherits": [
                 "conf-light-pico-base"

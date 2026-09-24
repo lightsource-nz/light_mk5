@@ -8,5 +8,6 @@
 
 pub mod design;
 pub mod lui;
+pub mod radio;
 pub mod render;
 pub mod theme;

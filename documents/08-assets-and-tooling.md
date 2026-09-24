@@ -216,6 +216,19 @@ half-written or edited reports it and stops, because a copy of the assets kept i
 safety net would undo the reason for taking them out of it, and an interface with no font is not an
 interface.
 
+**An asset need not be something the framework compiled.** Some parts a board carries hold no
+firmware of their own and are handed an image by the processor at every power-up — a wireless part
+is the usual case, and a quarter of a megabyte the usual size. Such an image is an asset in every
+sense that matters here: it is large, it changes on the vendor's schedule rather than the
+product's, and linking it into the firmware would put it in *both* slots of an A/B pair and drag it
+through every signing. So `light_add_radio_firmware(<name>)` lifts it out of the vendor's own
+source drop and declares it as two ordinary asset targets — the image, and the regulatory data that
+follows it — to be named in an `ENTRIES` list like any other blob, inheriting the pack's digest and
+its separate updatability. The one piece of care it takes is where the second blob begins: the
+vendor's driver reads it from a padded boundary after the first, not from the byte after it, and a
+reader that simply concatenated them would upload a shifted image and get no radio and no reason
+why.
+
 **Reaching the region** is the port's business, not the toolkit's: it is where a region set aside
 for data is, and whether it is addressable at all, that differ per chip. See
 [07-ports-and-shell.md](07-ports-and-shell.md) for the seam and

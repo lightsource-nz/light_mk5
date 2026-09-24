@@ -73,6 +73,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightFont.cmake)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightTheme.cmake)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightUi.cmake)
+        include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightRadio.cmake)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightSecure.cmake)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightBootloader.cmake)
 

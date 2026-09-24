@@ -125,6 +125,14 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
     console);
   - `usb_host` (feature `usb-host`) — the USB-MIDI host role: the ecosystem's host stack over its
     controller driver for this chip, behind `light_midi::Host` (below).
+- `update` (RP2350 only) — `FlashSlot::inactive()`, the application slot that is not running, as a
+  `light_core::hal::UpdateTarget`. Writes go through the boot ROM rather than the flash registers,
+  for three reasons that are each their own bug otherwise: the ROM checks the write against the
+  flash map's permissions, so one that strays outside the slot is refused rather than performed; it
+  addresses storage rather than the running image's window, which matters because the slot being
+  written is by definition the one that window does not cover; and it parks the other core, which
+  is not optional when storage cannot be read while it is being written and the other core is
+  running its code out of it.
 - `sha256` (RP2350 only) — `Sha256Hw`, a `light_core::hal::Sha256` over the chip's accelerator.
   The block compresses; the driver does everything around it — gathering bytes into whole words,
   waiting for each write, and appending the standard padding. It is shared with the boot facility,
@@ -250,6 +258,38 @@ and the way the stack is driven.
   from the stack's topology, so a status display can show which socket an instrument is in.
 - **Nothing resets the controller.** Hot-plug, hub-level and per-port, is handled by the stack; the
   application has no root-port workaround to run.
+
+### The wireless part — `wifi` (feature `wifi`)
+
+Some boards of this family carry a radio, which is a **second chip with no firmware of its own**:
+it is powered, handed a quarter of a megabyte of image, and only then is there a radio. The image
+travels as an asset in the data partition rather than inside the firmware
+([08-assets-and-tooling.md](08-assets-and-tooling.md)); what this port supplies is the bus, the
+clock the ecosystem driver expects, and the driving of a stack written for an executor this
+framework does not have.
+
+- **The bus is built out of PIO, because no peripheral can do it.** The part speaks a protocol that
+  is SPI in shape but **half duplex on one wire**: the host clocks a command out, reverses the pin,
+  and clocks the answer back on the same wire. That is eight instructions, with the two bit counts
+  loaded per transfer. Two variants of the program exist, chosen by the resulting rate — the
+  difference is one clock edge, and the wrong one for the rate corrupts occasional replies while
+  leaving everything else looking correct.
+- **THE QUEUES ARE FILLED BY DMA, NEVER BY THE PROCESSOR, AND THIS IS NOT ABOUT THROUGHPUT.**
+  Feeding them from a polled loop silently corrupts the data: measured on the reference part, a
+  round trip came back with **the last bit of every word after the eighth cleared** — the same
+  offsets every time, at different addresses, with the bus's own status word reporting no error and
+  short transfers unaffected. Nothing above the bus can recognise that for what it is; what it
+  looks like several layers up is a radio refusing one command out of hundreds for no reason. A
+  single channel carries both directions, since they never overlap.
+- **The clock the driver asks for is four lines**: the chip already counts microseconds for the
+  framework's log, and the second of the two functions — the one that exists to wake a sleeping
+  executor — does nothing, because there is no executor and every future is polled once a pass.
+- **The driver's own account of itself is forwarded into the framework's log**, capped below its
+  per-transfer level. A radio that refuses reports the reason there and nowhere else, so discarding
+  it turns every bring-up into guesswork.
+- **On a board where the radio is fitted, the pin that carries the indicator on the plain variant
+  is the radio's chip select.** The indicator such a board has hangs off the radio's own pins, so
+  it belongs to the radio's module and not to the board's wiring.
 
 ### Its `critical-section` implementation
 
@@ -398,6 +438,14 @@ The whole boundary is a handful of functions.
   literal-pool read handed the console loop a pointer made of a spin count, and it died silently.
   The read is bracketed by the SDK's multicore lockout, the mechanism its own flash writes use.
 
+- `light_shell_update_slot`, `light_shell_flash_erase` / `_program` / `_read`,
+  `light_shell_reboot_update`, `light_shell_commit` — replacing the device's own firmware. Every
+  one is a boot-ROM routine, which is why they are here: finding the slot that is not running,
+  writing it under the map's permissions, starting what was written (a reboot that **names the
+  window**, which is how the bootloader is told to prefer that slot over the comparison it would
+  otherwise make), and keeping an image started on approval. The scratch space a commit needs is
+  the caller's, because it is eight kilobytes and only a product that puts its images on probation
+  ever needs it; the port names the size, in words, and an application passes what the port names.
 - `light_shell_data_region(uint32_t *offset, uint32_t *size) -> bool` — where the flash map set a
   region aside for data, for firmware that keeps its assets out of its own image. Only the boot ROM
   can be asked: the map was read at boot and is not in this image. The region is found by what it

@@ -60,6 +60,8 @@ pub mod update;
 pub mod usb_host;
 #[cfg(feature = "usb-console")]
 pub mod usb;
+#[cfg(feature = "wifi")]
+pub mod wifi;
 
 use light_core::{Clock, Idle};
 
