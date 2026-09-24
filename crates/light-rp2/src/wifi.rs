@@ -28,6 +28,7 @@ use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
+use light_core::atomic::{AtomicU32, Ordering};
 use light_core::StaticCell;
 
 use crate::gpio::{self, Output};
@@ -56,6 +57,12 @@ embassy_time_driver::time_driver_impl!(static CLOCK: Clock = Clock);
 // the twenty lines: a radio refuses ONE command out of a conversation of hundreds, names the
 // reason in a log line, and reports nothing whatsoever through its return values -- so without
 // this a bring-up is guesswork, and with it the answer is on the console with everything else.
+/// The closest together two relayed lines may be. Slow enough that a flood cannot cost the loop
+/// its time, quick enough that a console still feels like it is reporting as things happen.
+const RELAY_MIN_GAP_MS: u32 = 200;
+static RELAY_LAST_MS: AtomicU32 = AtomicU32::new(0);
+static RELAY_HELD: AtomicU32 = AtomicU32::new(0);
+
 struct Relay;
 
 impl log::Log for Relay {
@@ -64,6 +71,29 @@ impl log::Log for Relay {
         }
 
         fn log(&self, record: &log::Record) {
+                //   HELD TO A RATE, because a driver reporting a condition a thousand times a
+                // second is describing ONE condition, not a thousand. The radio's does exactly
+                // that when a busy network outruns the buffers between it and the stack, and the
+                // reporting is not free: every line costs this loop the time to format it and the
+                // console the time to carry it, which makes the loop slower, which makes the
+                // condition worse. It also buries everything else that was worth reading.
+                //
+                //   Nothing is quietly lost: what was not repeated is counted, and the count is
+                // told with the next line that gets through. Errors are never held back -- they
+                // do not arrive in floods, and the one that matters must not wait behind a rate.
+                if record.level() != log::Level::Error {
+                        let now_ms = (crate::now_us() / 1000) as u32;
+                        let last = RELAY_LAST_MS.load(Ordering::Relaxed);
+                        if now_ms.wrapping_sub(last) < RELAY_MIN_GAP_MS {
+                                RELAY_HELD.fetch_add(1, Ordering::Relaxed);
+                                return;
+                        }
+                        RELAY_LAST_MS.store(now_ms, Ordering::Relaxed);
+                        let held = RELAY_HELD.swap(0, Ordering::Relaxed);
+                        if held > 0 {
+                                light_core::log::push(light_core::log::Level::Warn, "radio", format_args!("{held} further lines in the last moment were not repeated"));
+                        }
+                }
                 //   the target is the driver's module path, which is of no use to anyone reading a
                 // console -- what matters is that this came from the radio
                 light_core::log::push(level_of(record.level()), "radio", *record.args());
@@ -466,6 +496,9 @@ pub struct Radio {
         /// Taken when the network is built on it, because the stack owns it from then on.
         device: Option<cyw43::NetDriver<'static>>,
         net: Option<Net>,
+        /// Whether a network was actually joined, which decides whether there is one to let go
+        /// of before joining another.
+        joined: bool,
 }
 
 /// The network running over the radio, once there is one.
@@ -490,7 +523,7 @@ impl Radio {
                 let (device, control, runner) = block_on(cyw43::new(state, PwrPin(pwr), spi, firmware));
                 //   the task never returns, and a future whose answer is "never" cannot be named
                 // for a static on this compiler -- so it is wrapped in one whose answer is nothing
-                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None };
+                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None, joined: false };
 
                 //   the regulatory blob is loaded by the control side TALKING TO the task side, so
                 // the two have to run together: this is the join the framework does by hand, and
@@ -547,28 +580,25 @@ impl Radio {
         /// One pass of the radio's own work, and the network's if there is one: called from the
         /// runtime loop, like every other module.
         ///
-        /// THE TWO ARE INTERLEAVED, SEVERAL TIMES OVER, once there is a network. The buffers
-        /// between the radio and the stack are few, and the radio's side of them empties the part
-        /// completely each time it runs -- so a burst that arrives while this loop was busy
-        /// elsewhere exhausts them before the stack has been given a chance to hand any back, and
-        /// the rest of the burst is dropped. Alternating the two lets a buffer be filled,
-        /// emptied and filled again inside a single pass, which is what makes the arrangement
-        /// keep up with a network rather than with this loop's slowest module.
+        /// The radio first, then the network it feeds, once each.
         ///
-        /// Dropping is not a fault -- most of what a shared network delivers unasked is of no
-        /// interest here, and anything that matters is sent again -- but a transfer that loses
-        /// packets spends its time recovering from them, and a firmware image is a megabyte.
+        ///   ALTERNATING THE TWO SEVERAL TIMES A PASS WAS TRIED AND DOES NOT HELP, which is worth
+        /// recording so that it is not tried again. The buffers between them are four, and when
+        /// they run out the radio's side warns and DISCARDS -- but it does not stop there: one
+        /// turn of it empties the part completely, discarding the whole remainder of the backlog
+        /// before it returns. So the second and later rounds find nothing left to rescue, and all
+        /// the extra turns achieve is to ask the radio the same question three more times and
+        /// report the same losses more often.
+        ///
+        ///   What would actually help is more buffers, and they belong to the driver. Until a
+        /// transfer exists whose throughput can be measured, there is nothing to weigh that
+        /// against, so the simple thing stays.
         pub fn poll(&mut self) {
                 let waker = noop_waker();
                 let mut cx = Context::from_waker(&waker);
-                //   nothing to alternate with until there is a network, and each round costs a
-                // question put to the radio over its bus
-                let rounds = if self.net.is_some() { NET_ROUNDS } else { 1 };
-                for _ in 0..rounds {
-                        let _ = self.task.as_mut().poll(&mut cx);
-                        if let Some(net) = self.net.as_mut() {
-                                let _ = net.task.as_mut().poll(&mut cx);
-                        }
+                let _ = self.task.as_mut().poll(&mut cx);
+                if let Some(net) = self.net.as_mut() {
+                        let _ = net.task.as_mut().poll(&mut cx);
                 }
         }
 
@@ -633,11 +663,26 @@ impl Radio {
         /// key exchange, and there is nothing for the rest of the firmware to do in the meantime
         /// that this would not have to be woken up for anyway.
         pub fn join(&mut self, ssid: &str, password: &str) -> Result<(), JoinError> {
+                //   LET GO OF THE LAST ONE FIRST, so that asking twice is the same as asking
+                // once. Joining while already associated is a different request from joining
+                // from idle, and not one the part is obliged to make sense of.
+                //
+                //   Only when this has actually joined something, and never speculatively: the
+                // driver treats ANY refused command as fatal, so letting go of a network that was
+                // never held risks turning a failed join into a stopped board.
+                if self.joined {
+                        let _ = self.run_until_or(LEAVE_TIMEOUT_US, |c| c.leave());
+                        self.joined = false;
+                }
+
                 //   an empty passphrase is a network that asks for none, which is a different
                 // request rather than the same one with nothing in it
                 let options = if password.is_empty() { cyw43::JoinOptions::new_open() } else { cyw43::JoinOptions::new(password.as_bytes()) };
                 match self.run_until_or(JOIN_TIMEOUT_US, |c| c.join(ssid, options)) {
-                        Some(Ok(())) => Ok(()),
+                        Some(Ok(())) => {
+                                self.joined = true;
+                                Ok(())
+                        }
                         Some(Err(_)) => Err(JoinError::Refused),
                         None => Err(JoinError::NoAnswer),
                 }
@@ -648,12 +693,8 @@ impl Radio {
 /// this is long enough that a slow network is not cut off, and short enough that a network which
 /// is not there does not hold the application indefinitely.
 const JOIN_TIMEOUT_US: u64 = 20_000_000;
-
-/// How many times the radio and the network are alternated in one pass of the runtime loop. The
-/// buffers between them number four, so this is enough to fill and empty them all without the
-/// loop's other modules getting a look in, and few enough that an idle network costs a handful of
-/// microseconds a pass.
-const NET_ROUNDS: usize = 4;
+/// How long letting go of a network is given. It is one command and an answer, not a negotiation.
+const LEAVE_TIMEOUT_US: u64 = 2_000_000;
 
 /// How many connections the network may have open at once. One to fetch with, and room beside it
 /// for whatever the address negotiation and a name lookup want.
