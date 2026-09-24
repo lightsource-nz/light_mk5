@@ -1,0 +1,9 @@
+[package]
+name = "light-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "staging a firmware image into the slot that is not running: the transport-independent half of replacing a device's own firmware"
+
+[dependencies]
+light-core = { path = "../light-core" }

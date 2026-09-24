@@ -16,6 +16,7 @@
 //! bootloader -- there is no region to find, and it says so rather than reading whatever happens
 //! to be at that address.
 
+#[cfg(feature = "rp2350")]
 use crate::pac;
 
 /// Why the assets could not be reached.
@@ -38,6 +39,7 @@ const WINDOW_MAX_SECTORS: u32 = 0x400;
 #[cfg(feature = "rp2350")]
 const SECTOR: u32 = 0x1000;
 
+#[cfg(feature = "rp2350")]
 unsafe extern "C" {
         /// The shell's boot-ROM surface: the region the flash map sets aside for data, as a byte
         /// offset from the start of storage and a size. False when this device has none.

@@ -276,6 +276,88 @@ impl<T: BlockDevice + ?Sized> BlockDevice for &mut T {
         }
 }
 
+/// Why an update could not be staged or started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateError {
+        /// This device cannot replace its own firmware: one image, one place, and no second slot
+        /// to write while the first one runs.
+        NoSlot,
+        /// The image does not fit the slot it would go in.
+        TooLarge,
+        /// More bytes arrived than the update said it would carry, or fewer.
+        WrongLength,
+        /// Storage refused the erase or the write.
+        Storage,
+        /// What was written did not read back. The slot is left erased-or-partial, which the next
+        /// attempt overwrites; nothing has been asked to boot it.
+        Corrupt,
+        /// What was staged does not look like an image this device could run, so it was not
+        /// offered to the hardware that would otherwise reject it after a reboot.
+        NotAnImage,
+        /// The hardware refused to boot or to accept the staged image.
+        Refused,
+}
+
+/// The slot a new firmware image is written into, and the steps that put one there.
+///
+/// The seam an over-the-air update, a download over a cable, or a copy from a card all end at:
+/// where the bytes are going is the port's business, and where they came from is not.
+///
+/// THE SLOT IS NEVER THE ONE RUNNING. A device that can replace its own firmware has somewhere
+/// else to put it, and writing the image that is executing is not a thing to get wrong once.
+pub trait UpdateTarget {
+        /// How many bytes the slot holds.
+        fn capacity(&self) -> u32;
+
+        /// Erase the whole slot, ready to be written from the start.
+        fn erase(&mut self) -> Result<(), UpdateError>;
+
+        /// Write `page` at `offset` within the slot. Called with whole pages in ascending order.
+        ///
+        ///   THE PAGE IS THE PORT'S TO ALTER, because on some parts what is stored is not quite
+        /// what arrived -- a mark set as it goes past, for instance. What is left in the buffer is
+        /// what the caller checks the storage against afterwards, so a port that changes it must
+        /// change it HERE and not on the way to the hardware; otherwise the read-back disagrees
+        /// with the write and a good page reads as a failure.
+        fn program(&mut self, offset: u32, page: &mut [u8]) -> Result<(), UpdateError>;
+
+        /// Read back from the slot, which is not addressable the way the running image is.
+        fn read(&mut self, offset: u32, out: &mut [u8]) -> Result<(), UpdateError>;
+
+        /// Mark what is about to be staged as running ON APPROVAL: started once, and reverted to
+        /// by the next reset unless the firmware that starts buys itself with [`commit`].
+        ///
+        /// Set before anything is written, because on most parts the mark is part of the image
+        /// and storage takes a bit one way only -- putting it in afterwards means erasing what
+        /// was just written. `Refused` from a port that cannot do it, which is an answer a caller
+        /// can act on: stage it permanently, or do not stage it at all.
+        ///
+        /// [`commit`]: UpdateTarget::commit
+        fn set_on_approval(&mut self, _on: bool) -> Result<(), UpdateError> {
+                Err(UpdateError::Refused)
+        }
+
+        /// Does what was staged look like an image this device could run? The port knows the
+        /// shape; the default answers yes, for one that does not care.
+        ///
+        /// Worth doing even though the hardware checks the image again before running it: this
+        /// one can say so while the device is still running the firmware that could report it.
+        fn accept(&mut self, _len: u32) -> Result<(), UpdateError> {
+                Ok(())
+        }
+
+        /// Start the staged image. Returns only if it could not be started.
+        fn boot(&mut self) -> UpdateError;
+
+        /// Keep the image that is running: the other half of a boot that was on approval.
+        ///
+        /// NOT ABOUT THIS SLOT. A device has one such facility and it acts on what is executing,
+        /// which by then is the image that was staged somewhere else entirely -- so this is
+        /// called by the NEW firmware once it is satisfied with itself, reaching the facility
+        /// through whatever slot it can name. Harmless where nothing is on approval.
+        fn commit(&mut self) -> Result<(), UpdateError>;
+}
+
 /// A SHA-256 over a stream of byte ranges.
 ///
 /// Here rather than in the crate that hashes because a chip may have the algorithm in silicon,

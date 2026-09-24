@@ -54,6 +54,8 @@ pub mod shell;
 pub mod spi;
 pub mod spi_bus;
 pub mod uart;
+#[cfg(feature = "rp2350")]
+pub mod update;
 #[cfg(feature = "usb-host")]
 pub mod usb_host;
 #[cfg(feature = "usb-console")]

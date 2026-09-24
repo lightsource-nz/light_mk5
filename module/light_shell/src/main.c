@@ -149,6 +149,139 @@ bool light_shell_data_region(uint32_t *out_offset, uint32_t *out_size)
 #endif
 }
 
+//   REPLACING THIS DEVICE'S OWN FIRMWARE. The four calls below are the whole of it, and every one
+// of them is a boot ROM routine, so they live here with the rest of that surface.
+#if PICO_RP2350
+//   security level: this is the image the map trusts, so it writes with the permissions the map
+// grants it. Addresses are STORAGE offsets and not the addresses the running image sees -- the
+// slot being written is, by definition, the one the address window does not cover
+#define LIGHT_CFLASH_FLAGS(op) ((cflash_flags_t) { \
+        .flags = (CFLASH_SECLEVEL_VALUE_SECURE << CFLASH_SECLEVEL_LSB) | \
+                 (CFLASH_ASPACE_VALUE_STORAGE << CFLASH_ASPACE_LSB) | \
+                 ((op) << CFLASH_OP_LSB) })
+
+//   WHICH SLOT IS NOT RUNNING, which is the only slot it is safe to write. The ROM knows which
+// partition this image booted from; the map says which is its pair. Answers false on a device
+// with no such pair -- one image, one place, and nowhere to put a new one while this one runs.
+bool light_shell_update_slot(uint32_t *out_offset, uint32_t *out_size)
+{
+        boot_info_t info;
+        if (!rom_get_boot_info(&info))
+                return false;
+        int running = (int8_t) ((info.boot_word >> 16) & 0xff);
+        if (running < 0)
+                return false;
+
+        //   the pair, from whichever end of it is running. The ROM answers "the B of this A"
+        // directly; for a B there is no such question to ask, so the map is searched for the A
+        // that claims it
+        int other = rom_get_b_partition((unsigned) running);
+        if (other < 0) {
+                other = -1;
+                for (unsigned i = 0; i < PARTITION_TABLE_MAX_PARTITIONS; i++) {
+                        if (rom_get_b_partition(i) == running) {
+                                other = (int) i;
+                                break;
+                        }
+                }
+                if (other < 0)
+                        return false;
+        }
+
+        uint32_t out[4];
+        int rc = rom_get_partition_table_info(out, count_of(out),
+                PT_INFO_PARTITION_LOCATION_AND_FLAGS | PT_INFO_SINGLE_PARTITION | ((unsigned) other << 24));
+        if (rc != 3)
+                return false;
+        uint32_t location = out[1];
+        uint32_t first = (location & PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_BITS) >> PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_LSB;
+        uint32_t last = (location & PICOBIN_PARTITION_LOCATION_LAST_SECTOR_BITS) >> PICOBIN_PARTITION_LOCATION_LAST_SECTOR_LSB;
+        if (out_offset)
+                *out_offset = first * 0x1000u;
+        if (out_size)
+                *out_size = (last + 1 - first) * 0x1000u;
+        return true;
+}
+
+//   Erase, program or read a range of storage, checked against the map's permissions so a write
+// that strays outside the slot is refused rather than performed. The ROM parks the other core for
+// the duration -- storage is not readable while it is being written, and the other core is running
+// code out of it.
+int light_shell_flash_erase(uint32_t offset, uint32_t len)
+{
+        return rom_flash_op(LIGHT_CFLASH_FLAGS(CFLASH_OP_VALUE_ERASE), XIP_BASE + offset, len, NULL);
+}
+
+int light_shell_flash_program(uint32_t offset, const uint8_t *buf, uint32_t len)
+{
+        return rom_flash_op(LIGHT_CFLASH_FLAGS(CFLASH_OP_VALUE_PROGRAM), XIP_BASE + offset, len, (uint8_t *) buf);
+}
+
+int light_shell_flash_read(uint32_t offset, uint8_t *buf, uint32_t len)
+{
+        return rom_flash_op(LIGHT_CFLASH_FLAGS(CFLASH_OP_VALUE_READ), XIP_BASE + offset, len, buf);
+}
+
+//   Start what was just written. This is not an ordinary reboot: it names the window the update
+// went into, which is how the bootloader is told to prefer that slot over the comparison it would
+// otherwise make. Does not return when it works.
+int light_shell_reboot_update(uint32_t offset)
+{
+        return rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
+                10, XIP_BASE + offset, 0);
+}
+
+//   Keep an image that was started on approval. The scratch space is the CALLER'S, because it is
+// four kilobytes and only a product that puts its images on probation ever needs it.
+int light_shell_commit(uint8_t *scratch, uint32_t scratch_len)
+{
+        return rom_explicit_buy(scratch, scratch_len);
+}
+#else
+bool light_shell_update_slot(uint32_t *out_offset, uint32_t *out_size)
+{
+        (void) out_offset;
+        (void) out_size;
+        return false;
+}
+
+int light_shell_flash_erase(uint32_t offset, uint32_t len)
+{
+        (void) offset;
+        (void) len;
+        return -1;
+}
+
+int light_shell_flash_program(uint32_t offset, const uint8_t *buf, uint32_t len)
+{
+        (void) offset;
+        (void) buf;
+        (void) len;
+        return -1;
+}
+
+int light_shell_flash_read(uint32_t offset, uint8_t *buf, uint32_t len)
+{
+        (void) offset;
+        (void) buf;
+        (void) len;
+        return -1;
+}
+
+int light_shell_reboot_update(uint32_t offset)
+{
+        (void) offset;
+        return -1;
+}
+
+int light_shell_commit(uint8_t *scratch, uint32_t scratch_len)
+{
+        (void) scratch;
+        (void) scratch_len;
+        return -1;
+}
+#endif
+
 bool light_shell_bootsel(void)
 {
         multicore_lockout_start_blocking();

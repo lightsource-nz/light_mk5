@@ -12,6 +12,7 @@ members = [
         "crates/light-core",
         "crates/light-font",
         "crates/light-assets",
+        "crates/light-update",
         "crates/light-draw",
         "crates/light-display",
         "crates/light-input",

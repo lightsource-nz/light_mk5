@@ -96,9 +96,18 @@ int main(void)
         uint32_t last = (location & PICOBIN_PARTITION_LOCATION_LAST_SECTOR_BITS) >> PICOBIN_PARTITION_LOCATION_LAST_SECTOR_LSB;
 
         //   hand over. The ROM verifies the image in that window before it runs it, so the chain
-        // of trust continues rather than ending here; it does not return if it succeeds
+        // of trust continues rather than ending here; it does not return if it succeeds.
+        //
+        //   THE BASE IS NEGATED WHEN THIS IS THE WINDOW THE UPDATE WENT TO, which is how the ROM
+        // is told that this hand-over IS the update boot rather than an ordinary one. It matters
+        // for an image delivered ON APPROVAL: such an image is only allowed to run as part of the
+        // boot that installed it, so without the sign the ROM finds a perfectly good image,
+        // refuses it as ineligible, and this bootloader hands the board to the host's -- which
+        // looks like a bad image and is nothing of the kind.
+        uint32_t window = XIP_BASE + first * SECTOR_SIZE;
+        uint32_t size = (last + 1 - first) * SECTOR_SIZE;
         rom_chain_image(WORKAREA, WORKAREA_SIZE,
-                XIP_BASE + first * SECTOR_SIZE, (last + 1 - first) * SECTOR_SIZE);
+                (update_window == window) ? (uint32_t) -(int32_t) window : window, size);
 
         //   a chain that returns is a slot whose image the ROM would not run
         give_up(4, 0);

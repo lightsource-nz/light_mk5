@@ -36,6 +36,11 @@ is written against these, never against a concrete peripheral. The core ones:
 - **`AudioStream`** — the transport contract an audio module drives (stream push/free, capture,
   active gating), so an app's audio logic is independent of the concrete I2S port (see
   [04-audio-and-midi.md](04-audio-and-midi.md)).
+- **`UpdateTarget`** — the slot a new firmware image is written into (`capacity`, `erase`,
+  `program`, `read`, `accept`, `boot`, `commit`), and never the one running. The seam an
+  over-the-air update, a download over a cable and a copy from a card all end at: where the bytes
+  go is the port's business and where they came from is not (see
+  [11-secure-boot-and-update.md](11-secure-boot-and-update.md)).
 - **`Sha256`** — a SHA-256 over a stream of byte ranges (`update`, and a `finish` that consumes the
   engine). A trait rather than a portable implementation because a chip may have the algorithm in
   silicon, where one is several kilobytes of image doing worse what the hardware does for nothing;

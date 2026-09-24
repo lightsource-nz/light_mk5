@@ -55,9 +55,12 @@ between them.
   a pack that does not hash to the digest it carries, so substituting assets means substituting a
   digest inside a signed image. See [08-assets-and-tooling.md](08-assets-and-tooling.md) for the
   format and the build calls.
-- **Update.** The port offers staging an image into the inactive slot, a reboot that asks the
-  hardware to select it, and the **commit** an application calls once it is satisfied with itself.
-  An application supplies the self-test that decides whether to commit.
+- **Update.** `light-update`'s `Update` session takes an image in whatever pieces a transport deals
+  in, writes it into the slot that is not running, reads every page back, and hands a `Staged`
+  image to the hardware to start. The slot, the writing and the hand-over are the port's, behind
+  `light_core::hal::UpdateTarget`; **where the bytes came from is nobody's business above the
+  transport that fetched them**, which is what lets a console, a cable, a card and a radio all end
+  at the same three calls. `Staged::commit` is the other half, for an image started on approval.
 
 ## Behaviour and invariants
 
@@ -71,6 +74,12 @@ between them.
 - **A new image runs on probation and must commit itself.** Until it does, a reset returns to the
   previous image. An image that hangs, panics or cannot drive its display is therefore self-
   discarding: the failure mode of a bad update is a device still running the old firmware.
+- **And it has seconds to do so, not minutes.** The hardware does not wait for a reset to undo an
+  image that never commits: it runs such an image under a watchdog, and one that has not committed
+  when the watchdog expires is dropped in favour of the previous image. On the reference part the
+  window is on the order of twenty seconds. So whatever an application checks before keeping itself
+  has to be quick and has to be early — and a commit issued after the window has closed reports
+  success having done nothing, because there was no mark left to clear.
 - **Versions do not come back.** Each image carries a version; a counter in one-time memory records
   the oldest version still accepted, so an image whose flaw has been fixed cannot be re-presented.
 - **Assets are signed as their own partition.** Fonts, themes and interfaces update independently of
@@ -117,8 +126,43 @@ between them.
 - **The bench path and the field path are the same mechanism.** An update is delivered through the
   chip's ordinary image-download route, routed to the right partition by the image's family, so a
   developer's flash and a field update differ in who initiates them, not in what happens.
-- **Over-the-air delivery is not in scope yet.** The contract above names no transport, so a
-  transport is added without revisiting any of it.
+- **A staged image is read back before anything is asked to run it.** Storage that accepts a write
+  and does not keep it is a real failure, and one that otherwise surfaces as a device rebooting
+  into an image the hardware then refuses — true, safe, and very hard to read. Caught during
+  staging it names the offset while the firmware that can report it is still the one running. And
+  nothing is offered to the hardware until the whole image is there, so a transport that gives up
+  half way leaves a slot the hardware will not run and the next attempt simply overwrites.
+- **What protects a bad image that was nonetheless written correctly is the hardware, not the
+  updater.** It verifies an image before running it and falls back to the other slot when it does
+  not like what it finds, so a damaged or unsigned image cannot take a device down. An image that
+  boots and is *wrong* — one that verifies and then fails at its job — is a different problem, and
+  the answer to it is a **probationary boot**.
+- **A probationary image is marked as it is staged, not as it is built.** The mark lives in the
+  image's own header, and the build tooling exposes no way to set it — but it is **excluded from
+  the image's hash**, so an updater can set it on the way past without invalidating a signature.
+  That is what makes it the updater's business: the port sets it page by page as the image is
+  written, which is also the only moment it can, because storage takes a bit one way only and
+  putting it in afterwards would mean erasing what was just written.
+- **A hand-over into a probationary image must say that it IS the update boot.** Such an image is
+  only allowed to run as part of the boot that installed it, so the bootloader signals that by
+  **negating the window base** it chains into when that window is the one the update went to.
+  Without the sign the hardware finds a perfectly good image, refuses it as ineligible, and the
+  bootloader hands the board to the host's — which looks like a bad image and is nothing of the
+  kind.
+- **The scratch a commit borrows is the caller's, and a commit given too little destroys the image
+  it was asked to keep.** Clearing the mark means rewriting the storage the running image sits in,
+  so the chip's facility wants a buffer to hold that storage in while it does — and it keeps its
+  own bookkeeping in the same buffer. Sized to the storage alone, the bookkeeping lands inside the
+  copy and the spoiled copy is written back over the image, **reported as a success**. Sized to
+  twice it, the same call is correct. A port therefore states the size as a constant of its own,
+  in words rather than bytes so that the alignment the facility also requires cannot be got wrong
+  either, and an application borrows that constant rather than a number it read somewhere.
+- **Over-the-air delivery is a transport, and the contract above names none.** The decisions taken
+  for the first one, on a board with a radio: a **plain HTTP fetch, with no transport security** —
+  the image is signed and the hardware verifies it before running it, so a tampered download is
+  rejected by the chip and the transport carries no trust it would have to be given; and a
+  **Rust-native network stack** over the radio rather than the platform SDK's C one, which is the
+  same direction every other transport in the framework has moved.
 - **Making a device secure is irreversible and belongs to manufacture.** Writing the key hash and
   enabling verification cannot be undone; a development board is either left open or given the
   development key, and no bench procedure writes one-time memory.
