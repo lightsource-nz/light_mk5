@@ -108,6 +108,12 @@ between them.
   does next depends on how closely it is watching its own bookkeeping. So the bootloader's work area
   goes somewhere no image loads: a peripheral's memory, or whatever region the part's own boot code
   uses for the same purpose.
+- **Writing a board is writing all of it.** Once a product is a bootloader, an application in a
+  slot and a pack in a data partition, putting the build on the bench means all three at their own
+  addresses — and an image written where it was linked rather than where the map puts it overwrites
+  the bootloader with the application. The script layer takes those addresses from the built
+  bootloader rather than from a second copy of the map (see
+  [10-build-and-release.md](10-build-and-release.md)).
 - **The bench path and the field path are the same mechanism.** An update is delivered through the
   chip's ordinary image-download route, routed to the right partition by the image's family, so a
   developer's flash and a field update differ in who initiates them, not in what happens.

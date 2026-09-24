@@ -82,9 +82,10 @@ font, or a theme is data: an authored file and one call, no firmware source touc
 - `CMakePresets.json` supplies the board configurations (each a `conf-light-<board>-debug`
   preset). The framework's preinit resolves `PICO_SDK_PATH` / `PICO_PLATFORM` / `PICO_BOARD` from the
   preset's `LIGHT_*` variables.
-- `scripts/project.config.ps1` maps each firmware **target** to its preset and its flash method
-  (`uf2` over BOOTSEL, or `swd`), and names the default target. Several targets can share one board
-  preset and build tree (e.g. several apps targeting one board share its preset and build tree).
+- `scripts/project.config.ps1` maps each firmware **target** to its preset, its flash method
+  (`uf2` over BOOTSEL, or `swd`) and, where the product has one, the target that is its
+  **bootloader**; and it names the default target. Several targets can share one board preset and
+  build tree (e.g. several apps targeting one board share its preset and build tree).
 
 ## Building and flashing
 
@@ -92,7 +93,29 @@ font, or a theme is data: an authored file and one call, no firmware source touc
 - `scripts/flash.ps1 -Target <name> [-NoBuild]` — builds if needed, then flashes. For a `uf2`
   target it resets the running board into BOOTSEL over the console's 1200-baud touch and copies the
   UF2 to the mounted volume; a halted board that no longer serves the reset needs a manual BOOTSEL
-  (hold BOOT, replug). `swd` targets flash over the debug probe.
+  (hold BOOT, replug). `swd` targets flash over the debug probe, through the same path `debug.ps1`
+  uses.
+- **Flashing a board is not always one image.** A product that verifies its firmware carries a
+  bootloader at the start of storage, an application in a slot the bootloader's map describes, and
+  — where the assets were taken out of the image — a pack in the data partition; a board given one
+  of the three does not run. What each one is and where it goes is the **flash plan**
+  (`scripts/lib/LightImage.psm1`), and both paths write all of it. A project with no bootloader
+  yields a one-entry plan and behaves as it always did. The one thing a project declares for
+  itself is which target is its bootloader (`Bootloader` beside the target's preset), because that
+  is the one thing the scripts cannot work out.
+- **The map is read back out of the built bootloader, never restated.** The map is embedded in the
+  bootloader and signed with it, which is the point of putting it there; a copy in a script would
+  be a copy to get wrong. So the plan asks `picotool` — offline, from the file — which partition
+  accepts which download family, and places each image accordingly.
+- **Images are written from their `.bin` at a known address, not `load`ed.** Two things make
+  `load` wrong once images are signed. It writes an ELF's sections where they say, which on a
+  partitioned product means writing the application over the bootloader; and sealing rewrites the
+  ELF so that the section before the data leaves no gap before it, which the flash loader reads as
+  an overlap and refuses outright. The address instead comes from the flash map where there is
+  one, and from the ELF's own program headers where there is not — so a chip whose flash does not
+  begin at the same place is right without the scripts knowing anything about it. The ELF stays as
+  the debugger's symbols. Every write is read back, and **programming is its own tool run**, so a
+  refused write is a status rather than a line of text a debug session would carry on past.
 - `scripts/console.ps1` / `debug.ps1` — open the board's console / a debug session. `console.ps1`
   captures output for a window (`-Seconds`, `-Until`), or drives the CLI non-interactively with
   `-Send "cmd"` (or a list) — sending each command and capturing its reply — so a script, CI, or an

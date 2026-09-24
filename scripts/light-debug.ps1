@@ -11,9 +11,13 @@
 # configuration including the RP2350 ones.
 #
 # HARDWARE-VERIFIED on a Pico 2 through a CMSIS-DAP probe, all three paths: -ServerOnly reaches a
-# live OpenOCD on 3333; the default path launches gdb, connects, resets and loads the image
-# (confirmed by gdb reporting every section written and a transfer rate); and -Batch runs to
-# completion and exits 0, or nonzero when a command fails.
+# live OpenOCD on 3333; the default path writes every image the board needs, reads each back, and
+# starts the result under gdb; and -Batch runs to completion and exits 0, or nonzero when a
+# command fails.
+#
+# IMAGES ARE WRITTEN WHERE THE BOARD'S MAP PUTS THEM, not where they were linked -- see the plan
+# below and lib/LightImage.psm1. This is the difference between a board that boots afterwards and
+# one whose bootloader has just been overwritten by the application.
 #
 # USAGE:  light-debug.ps1 [-Target <name>] [-Preset <name>] [-ServerOnly] [-Attach] [-NoBuild]
 #                         [-Ex <cmd>[,<cmd>...]] [-Batch] [-ProbeRs]
@@ -54,6 +58,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'lib/LightProject.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'lib/LightPlatform.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'lib/LightImage.psm1') -Force
 . (Join-Path $PSScriptRoot 'light-env.ps1') -Quiet
 
 $config = Get-LightProjectConfig -ProjectRoot ($ProjectRoot ? $ProjectRoot : (Get-LightProjectRoot))
@@ -72,29 +77,44 @@ if (-not $NoBuild) {
         & (Join-Path $PSScriptRoot 'light-build.ps1') -Target $Target -Preset $Preset -ProjectRoot $config.Root
 }
 
-#   the executable is named differently per toolchain: pico_add_extra_outputs() gives the pico
-# targets a .elf suffix, while the CMSIS targets are plain CMake executables and carry no suffix
-# at all (their .bin and .hex are objcopy'd from this file by the post-build hook in cmsis.cmake)
-#
-#   BOTH 'module/' and 'test/' are searched: consuming projects (screen-test, crossfire) put
-# their flashable targets under module/, but this framework's own demos -- the only targets
-# this project itself can debug -- live under test/ (see the root CMakeLists.txt)
-$elf = @("module/$Target/$Target.elf", "module/$Target/$Target",
-        "test/$Target/$Target.elf", "test/$Target/$Target") |
-        ForEach-Object { Join-Path $tree $_ } |
-        Where-Object { Test-Path $_ -PathType Leaf } |
-        Select-Object -First 1
-if (-not $elf) {
-        throw "no executable found for '$Target' in '$tree' (looked for $Target.elf and $Target) -- has it been built?"
-}
+#   the built executable, which is gdb's symbols. Its suffix depends on the toolchain and it lives
+# under module/ or test/ depending on whose target it is -- see Find-LightTargetElf, which the
+# plan also uses to ask an image where it was linked
+$elf = Find-LightTargetElf -Tree $tree -Target $Target
 
 #   the probe-rs path: download, reset, done. Deliberately not a server and not a debugger --
 # probe-rs's gdb server exists, but the OpenOCD path below already owns interactive debugging,
 # and two half-configured ways to do one thing is how launch.json got into the state that made
 # this script necessary
+#   WHAT GOES ON THE BOARD AND WHERE, and why it is not `load` any more.
+#
+#   Two things made `load` wrong. A product that verifies its firmware is not one image: a
+# bootloader holds the start of storage and the application lives in a slot the bootloader's map
+# describes, so writing the application at its LINK address overwrites the bootloader with it and
+# the board stops booting. And a signed image is one gdb will not load at all -- sealing rewrites
+# the ELF so that the section before the data leaves no gap before it, which reads as an overlap
+# and aborts the write. The second is the louder failure and the first is the expensive one.
+#
+#   So images are written from their .bin at an address that is known rather than inferred: out of
+# the flash map for a product that has one, and out of the ELF's own program headers for one that
+# does not -- which is what makes this right on a chip whose flash does not start where this one's
+# does. The ELF stays, as gdb's symbols.
+#
+#   Not resolved for the paths that write nothing: -Attach looks at what is already running, and
+# -ServerOnly hands the board to someone else's debugger. Neither should fail because an image
+# they were never going to write has not been built.
+$plan = ($Attach -or $ServerOnly) ? $null : (Get-LightFlashPlan -Config $config -Tree $tree -Target $Target -Form bin)
+$mapped = @($plan | Where-Object { $_.Family })
+
 if ($ProbeRs) {
         if ($ServerOnly -or $Attach -or $Ex) {
                 throw "-ProbeRs flashes and resets, nothing else; -ServerOnly, -Attach and -Ex belong to the gdb path (drop -ProbeRs to use them)"
+        }
+        #   probe-rs downloads an ELF at its own addresses, which is the wrong place on a board
+        # whose application lives in a partition. Rather than teach this path the plan as well,
+        # it says so: the default path already writes the right thing to the right place
+        if ($mapped) {
+                throw "'$Target' boots through a flash map, and -ProbeRs writes an image at its link address -- which is where the bootloader lives. Use the default path, which writes each image where the map puts it."
         }
         if (-not $debug.Chip) {
                 throw "no Chip for preset '$Preset' in scripts/project.config.ps1 -- the probe-rs path needs the chip's probe-rs name (RP235x, RP2040, STM32H743VI, ...) beside the Debug entry's Config"
@@ -204,7 +224,7 @@ $ocdArgs += @('-f', $ocdConfig)
 # answers by probing the flash banks -- on an RP2 that means calling the boot ROM to take the
 # flash out of XIP for a moment, with only core 0 halted: core 1, still running its console from
 # flash, fetches garbage and locks up. A dead console after every "-Attach" look was that. Nothing
-# is programmed on an attach, so the map is not wanted; the default load path keeps it
+# is programmed on an attach, so the map is not wanted; the default path keeps it
 if ($Attach) { $ocdArgs += @('-c', '"gdb memory_map disable"') }
 
 Write-Host "openocd: $openocd"
@@ -216,6 +236,29 @@ if ($ServerOnly) {
         Write-Host "`nstarting OpenOCD in the foreground -- attach a debugger to localhost:3333, Ctrl-C to stop"
         & $openocd @ocdArgs
         return
+}
+
+#   PROGRAMMING IS ITS OWN RUN, and not a `monitor` command inside the debug session, for a reason
+# the old path got wrong quietly: a failed `monitor` command is a line of text, not a status, so
+# gdb still exits 0 and the script still reports success. Here OpenOCD's own exit status is the
+# answer, and a refused write stops the session before a debugger is pointed at an image that is
+# not on the board.
+#
+#   Read back after every write. A silent misprogram is real -- on one board a download reported
+# success, a verify then disagreed, and the core sat in the boot ROM with nothing to run. The
+# readback costs a second or two against a morning.
+if ($plan) {
+        $programArgs = $ocdArgs + @('-c', 'init', '-c', 'reset halt')
+        foreach ($item in $plan) {
+                $where = $item.Address
+                $file = ($item.File -replace '\\', '/')
+                Write-Host ("write:   {0,-28} 0x{1:x8}  {2}" -f $item.What, $where, (Split-Path $item.File -Leaf))
+                $programArgs += @('-c', "flash write_image erase `"$file`" $where bin")
+                $programArgs += @('-c', "verify_image `"$file`" $where bin")
+        }
+        $programArgs += @('-c', 'reset init', '-c', 'shutdown')
+        & $openocd @programArgs
+        if ($LASTEXITCODE -ne 0) { throw "programming failed with code $LASTEXITCODE -- nothing was started" }
 }
 
 $server = Start-Process -FilePath $openocd -ArgumentList $ocdArgs -PassThru -NoNewWindow
@@ -239,17 +282,19 @@ try {
         $gdbArgs += @('-ex', 'target extended-remote localhost:3333')
 
         #   -Attach leaves the image on the board alone, which is what you want when debugging
-        # something already running; the default loads the ELF just built.
+        # something already running. Otherwise the images were written above, and this starts the
+        # one that was written the way the hardware would -- from the reset vector, so the stack
+        # pointer comes from the new image's vector table rather than being whatever the previous
+        # image left behind. (Continuing from a loaded entry point instead mostly works, and
+        # occasionally corrupts memory in a way that looks like a bug in whatever you were about
+        # to debug.)
         #
-        #   NOTE THE SECOND RESET, which is not redundant. `load` writes flash and sets gdb's
-        # idea of the PC to the entry point, but it does NOT re-apply the vector table: the stack
-        # pointer is still whatever the PREVIOUS image left, and on a Cortex-M that is read from
-        # the vector table at reset and nowhere else. Continuing from there runs the new code on
-        # the old stack, which mostly works and occasionally corrupts memory in a way that looks
-        # like a bug in whatever you were about to debug. Resetting after the load starts the new
-        # image the way the hardware would.
+        #   Where a map placed the images, the ELF is gdb's SYMBOLS and nothing else: it is
+        # passed below and never `load`ed. That is also what stops gdb refusing an image whose
+        # sections it dislikes -- one marker section with a bogus size is enough for that, and it
+        # says nothing about whether the image is good.
         if (-not $Attach) {
-                $gdbArgs += @('-ex', 'monitor reset init', '-ex', 'load', '-ex', 'monitor reset init')
+                $gdbArgs += @('-ex', 'monitor reset init')
         }
 
         # caller's commands last, so they can rely on the image being loaded and the target halted
