@@ -737,11 +737,22 @@ impl Radio {
                                 return Err(FetchError::Rejected);
                         }
 
-                        //   whatever of the body arrived alongside the head
+                        //   WHERE THE TIME GOES, counted rather than reasoned about: what is
+                        // spent handing the body on -- which on this board means writing it to
+                        // storage -- against what is spent waiting for the network to deliver
+                        // more. One of those is worth attacking and the other is not, and they
+                        // are indistinguishable from the outside.
+                        let began = crate::now_us();
+                        let mut sunk_us = 0u64;
+                        let mut reads = 0u32;
                         let mut taken = 0u32;
+
                         let first = &buf[body_at..have];
                         if !first.is_empty() {
-                                if !sink(Incoming::Body(first)) {
+                                let at = crate::now_us();
+                                let ok = sink(Incoming::Body(first));
+                                sunk_us += crate::now_us() - at;
+                                if !ok {
                                         return Err(FetchError::Rejected);
                                 }
                                 taken += first.len() as u32;
@@ -753,11 +764,23 @@ impl Radio {
                                 if n == 0 {
                                         return Err(FetchError::Short);
                                 }
-                                if !sink(Incoming::Body(&chunk[..n])) {
+                                reads += 1;
+                                let at = crate::now_us();
+                                let ok = sink(Incoming::Body(&chunk[..n]));
+                                sunk_us += crate::now_us() - at;
+                                if !ok {
                                         return Err(FetchError::Rejected);
                                 }
                                 taken += n as u32;
                         }
+
+                        let total_us = crate::now_us() - began;
+                        light_core::info!(
+                                "fetch: {reads} reads averaging {} bytes; {} ms writing it down, {} ms waiting for more",
+                                if reads > 0 { taken / reads } else { 0 },
+                                sunk_us / 1000,
+                                total_us.saturating_sub(sunk_us) / 1000
+                        );
                         Ok(taken)
                 };
 
@@ -791,16 +814,18 @@ impl Radio {
         /// key exchange, and there is nothing for the rest of the firmware to do in the meantime
         /// that this would not have to be woken up for anyway.
         pub fn join(&mut self, ssid: &str, password: &str) -> Result<(), JoinError> {
-                //   LET GO OF THE LAST ONE FIRST, so that asking twice is the same as asking
-                // once. Joining while already associated is a different request from joining
-                // from idle, and not one the part is obliged to make sense of.
+                //   ONCE ONLY, AND THIS IS NOT FUSSINESS. Joining assumes the part is idle: it
+                // issues commands that the part accepts only while its interface is DOWN, and
+                // answers with a refusal when it is already up and associated. The driver treats
+                // any refusal as fatal, so a second attempt does not fail -- it stops the board.
                 //
-                //   Only when this has actually joined something, and never speculatively: the
-                // driver treats ANY refused command as fatal, so letting go of a network that was
-                // never held risks turning a failed join into a stopped board.
+                //   Letting go of the network first is not enough, which is what makes this worth
+                // saying. Disassociating leaves the interface up, so the commands are refused
+                // just the same; taking it properly down and up again is not something the driver
+                // offers from here. So the honest answer is to say no and explain, rather than to
+                // try something that reads as tidy and takes the device out.
                 if self.joined {
-                        let _ = self.run_until_or(LEAVE_TIMEOUT_US, |c| c.leave());
-                        self.joined = false;
+                        return Err(JoinError::AlreadyJoined);
                 }
 
                 //   an empty passphrase is a network that asks for none, which is a different
@@ -811,7 +836,13 @@ impl Radio {
                                 self.joined = true;
                                 Ok(())
                         }
-                        Some(Err(_)) => Err(JoinError::Refused),
+                        //   the radio's own account of what went wrong, which is the difference
+                        // between looking at the name and looking at everything else
+                        Some(Err(e)) => Err(match e.status {
+                            STATUS_NO_NETWORKS => JoinError::NoSuchNetwork,
+                            STATUS_FAIL => JoinError::Rejected,
+                            other => JoinError::Refused(other),
+                        }),
                         None => Err(JoinError::NoAnswer),
                 }
         }
@@ -821,8 +852,11 @@ impl Radio {
 /// this is long enough that a slow network is not cut off, and short enough that a network which
 /// is not there does not hold the application indefinitely.
 const JOIN_TIMEOUT_US: u64 = 20_000_000;
-/// How long letting go of a network is given. It is one command and an answer, not a negotiation.
-const LEAVE_TIMEOUT_US: u64 = 2_000_000;
+
+//   what the radio says about a join it did not complete. There are more of these than the two
+// named here; the rest are carried through as their number rather than guessed at
+const STATUS_FAIL: u32 = 1;
+const STATUS_NO_NETWORKS: u32 = 3;
 
 /// How many connections the network may have open at once. One to fetch with, and room beside it
 /// for whatever the address negotiation and a name lookup want.
@@ -843,12 +877,22 @@ pub enum NetError {
 /// Why a network was not joined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JoinError {
-        /// The radio reported failure: the wrong passphrase, usually.
-        Refused,
+        /// The radio found no network of that name within range.
+        NoSuchNetwork,
+        /// The network was found and would not have us: the wrong passphrase, usually, but also
+        /// a network that is simply busy or unwilling at that moment. Told apart from not finding
+        /// it at all, because the two send you to look in completely different places.
+        Rejected,
+        /// The radio refused for a reason this does not have a name for. The code is its own.
+        Refused(u32),
         /// The radio reported nothing at all in the time allowed -- no such network within
         /// range, most often. Worth telling apart from a refusal, because the thing to check
         /// is different.
         NoAnswer,
+        /// This radio has already joined a network, and joining a second time is not something
+        /// it survives -- see `Radio::join`. Refusing is the point: the alternative is not a
+        /// failed join, it is a stopped board.
+        AlreadyJoined,
 }
 
 /// Somewhere to write a request into, so it can be built with the ordinary formatting machinery
