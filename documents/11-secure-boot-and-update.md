@@ -95,6 +95,14 @@ between them.
   artefact, so a device cannot hold a map its bootloader disagrees with, and verifying the
   bootloader verifies the map. The first slot therefore begins after the bootloader, not at the
   start of flash.
+- **The bootloader's scratch memory lies outside the memory the chosen image claims.** Handing over
+  is not a jump: the chip's boot facilities place the image's own initialised memory before they
+  enter it, and an application's memory begins at the bottom of main memory — exactly where a
+  bootloader's variables are. Scratch lent to those facilities and left in main memory is therefore
+  overwritten part-way through the hand-over by the very image being launched, and what the hardware
+  does next depends on how closely it is watching its own bookkeeping. So the bootloader's work area
+  goes somewhere no image loads: a peripheral's memory, or whatever region the part's own boot code
+  uses for the same purpose.
 - **The bench path and the field path are the same mechanism.** An update is delivered through the
   chip's ordinary image-download route, routed to the right partition by the image's family, so a
   developer's flash and a field update differ in who initiates them, not in what happens.
@@ -117,3 +125,14 @@ until the firmware calls the ROM's buy routine; the ROM also offers partition-pe
 flash operations for staging, and a reboot that names the slot to boot. Downloads are routed to a
 partition by **UF2 family**, which is what makes the data partition separately updatable. A
 rollback counter, a glitch detector and debug-disable all live in the same one-time memory.
+
+Two details of the hand-over are worth naming, because both are silent when they are wrong. The
+ROM's scan routines want a work area from the caller, and the bootloader gives them **the USB
+controller's packet memory** — the region the ROM uses for its own boot scan, and the reason it can
+apply an image's load map (which covers the bottom of main memory) without destroying what it is
+still reading. A work area in the bootloader's own variables is overwritten by that load map and the
+redundancy coprocessor stops the chip with a non-maskable interrupt, no message and no return code.
+And the A/B comparison has two forms: the plain one, and a "during update" wrapper that protects a
+pending buy's bookkeeping. The wrapper judges the chosen slot by reading the ROM's work area at
+fixed offsets, and outside a flash-update boot that judgement reports no valid image; the bootloader
+therefore uses the wrapper only on an update boot, where it is what the wrapper is for.
