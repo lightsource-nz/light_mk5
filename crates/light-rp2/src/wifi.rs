@@ -419,16 +419,20 @@ fn noop_waker() -> Waker {
         unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
 }
 
-/// Where the radio task's future lives: an opaque type, so it cannot be named for a static, but it
-/// can be written into aligned storage once and driven through `dyn Future` from then on.
+/// Where a task's future lives: an opaque type, so it cannot be named for a static, but it can be
+/// written into aligned storage once and driven through `dyn Future` from then on.
 const TASK_BYTES: usize = 8 * 1024;
 #[repr(C, align(16))]
 struct TaskStorage([MaybeUninit<u8>; TASK_BYTES]);
-static TASK: StaticCell<TaskStorage> = StaticCell::new();
 
-fn place_task<F: Future<Output = ()> + 'static>(f: F) -> Pin<&'static mut dyn Future<Output = ()>> {
-        assert!(core::mem::size_of::<F>() <= TASK_BYTES && core::mem::align_of::<F>() <= 16, "the radio task does not fit its storage");
-        let storage = TASK.init(TaskStorage([MaybeUninit::uninit(); TASK_BYTES]));
+/// The radio's own task, and the network's. Two, because they are started at different moments:
+/// the radio comes up on its own, and a network exists only once a network has been joined.
+static RADIO_TASK: StaticCell<TaskStorage> = StaticCell::new();
+static NET_TASK: StaticCell<TaskStorage> = StaticCell::new();
+
+fn place_task<F: Future<Output = ()> + 'static>(cell: &'static StaticCell<TaskStorage>, f: F) -> Pin<&'static mut dyn Future<Output = ()>> {
+        assert!(core::mem::size_of::<F>() <= TASK_BYTES && core::mem::align_of::<F>() <= 16, "the task does not fit its storage");
+        let storage = cell.init(TaskStorage([MaybeUninit::uninit(); TASK_BYTES]));
         let p = storage.0.as_mut_ptr() as *mut F;
         // SAFETY: sized and aligned for F, written once, and never moved again -- the storage is
         // static and the only reference to it is the pinned one returned
@@ -459,7 +463,15 @@ static STATE: StaticCell<cyw43::State> = StaticCell::new();
 pub struct Radio {
         task: Pin<&'static mut dyn Future<Output = ()>>,
         control: cyw43::Control<'static>,
-        device: cyw43::NetDriver<'static>,
+        /// Taken when the network is built on it, because the stack owns it from then on.
+        device: Option<cyw43::NetDriver<'static>>,
+        net: Option<Net>,
+}
+
+/// The network running over the radio, once there is one.
+struct Net {
+        stack: embassy_net::Stack<'static>,
+        task: Pin<&'static mut dyn Future<Output = ()>>,
 }
 
 impl Radio {
@@ -478,7 +490,7 @@ impl Radio {
                 let (device, control, runner) = block_on(cyw43::new(state, PwrPin(pwr), spi, firmware));
                 //   the task never returns, and a future whose answer is "never" cannot be named
                 // for a static on this compiler -- so it is wrapped in one whose answer is nothing
-                let mut radio = Self { task: place_task(async move { runner.run().await }), control, device };
+                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None };
 
                 //   the regulatory blob is loaded by the control side TALKING TO the task side, so
                 // the two have to run together: this is the join the framework does by hand, and
@@ -532,20 +544,64 @@ impl Radio {
                 }
         }
 
-        /// One pass of the radio's own work: called from the runtime loop, like every other module.
+        /// One pass of the radio's own work, and the network's if there is one: called from the
+        /// runtime loop, like every other module.
         pub fn poll(&mut self) {
                 let waker = noop_waker();
                 let mut cx = Context::from_waker(&waker);
                 let _ = self.task.as_mut().poll(&mut cx);
+                if let Some(net) = self.net.as_mut() {
+                        let _ = net.task.as_mut().poll(&mut cx);
+                }
         }
 
         /// The radio's address, which is also the first proof that the image took: it is read out
         /// of the running radio rather than out of the image.
-        pub fn address(&self) -> [u8; 6] {
+        pub fn address(&mut self) -> [u8; 6] {
                 use embassy_net_driver::Driver as _;
-                match self.device.hardware_address() {
-                        embassy_net_driver::HardwareAddress::Ethernet(a) => a,
+                match self.device.as_mut().map(|d| d.hardware_address()) {
+                        Some(embassy_net_driver::HardwareAddress::Ethernet(a)) => a,
                         _ => [0; 6],
+                }
+        }
+
+        /// Ask the network this radio has joined for an address, and wait for one.
+        ///
+        /// A JOINED RADIO IS NOT YET A NETWORK. Joining is association: the two ends agree that
+        /// they may talk. Everything above that -- an address of one's own, somewhere to send
+        /// what is not local, a name to resolve by -- is handed out by the network afterwards and
+        /// has to be asked for. This does the asking and waits for the answer.
+        ///
+        /// The stack is built here rather than at start-up because it exists only once there is
+        /// something for it to run over, and it takes its memory when it does.
+        pub fn configure(&mut self) -> Result<embassy_net::StaticConfigV4, NetError> {
+                if self.net.is_none() {
+                        let device = self.device.take().ok_or(NetError::AlreadyBuilt)?;
+                        static RESOURCES: StaticCell<embassy_net::StackResources<SOCKETS>> = StaticCell::new();
+                        let resources = RESOURCES.init(embassy_net::StackResources::new());
+                        //   THE SEED IS WEAK, and deliberately so for now: it is what the
+                        // connection's opening numbers are derived from, and the chip's own
+                        // source of randomness is not wired up here yet. It costs nothing that
+                        // matters while the thing being carried is an image the hardware verifies
+                        // for itself -- but it is not what a transport carrying trust would use.
+                        let seed = crate::now_us().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                        let (stack, mut runner) = embassy_net::new(device, embassy_net::Config::dhcpv4(Default::default()), resources, seed);
+                        self.net = Some(Net { stack, task: place_task(&NET_TASK, async move { runner.run().await }) });
+                }
+
+                let deadline = crate::now_us() + CONFIGURE_TIMEOUT_US;
+                let waker = noop_waker();
+                let mut cx = Context::from_waker(&waker);
+                loop {
+                        let _ = self.task.as_mut().poll(&mut cx);
+                        let net = self.net.as_mut().expect("just built");
+                        let _ = net.task.as_mut().poll(&mut cx);
+                        if let Some(config) = net.stack.config_v4() {
+                                return Ok(config);
+                        }
+                        if crate::now_us() >= deadline {
+                                return Err(NetError::NoAddress);
+                        }
                 }
         }
 
@@ -575,6 +631,22 @@ impl Radio {
 /// this is long enough that a slow network is not cut off, and short enough that a network which
 /// is not there does not hold the application indefinitely.
 const JOIN_TIMEOUT_US: u64 = 20_000_000;
+
+/// How many connections the network may have open at once. One to fetch with, and room beside it
+/// for whatever the address negotiation and a name lookup want.
+const SOCKETS: usize = 4;
+/// How long the network is given to hand out an address before the attempt is abandoned.
+const CONFIGURE_TIMEOUT_US: u64 = 20_000_000;
+
+/// Why there is no network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetError {
+        /// No address was handed out in the time allowed. The radio is joined but the network
+        /// either did not answer or refused.
+        NoAddress,
+        /// The stack was already built on this radio.
+        AlreadyBuilt,
+}
 
 /// Why a network was not joined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
