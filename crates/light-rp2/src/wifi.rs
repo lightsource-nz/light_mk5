@@ -497,6 +497,26 @@ impl Radio {
                 F: FnOnce(&'a mut cyw43::Control<'static>) -> Fut,
                 Fut: Future + 'a,
         {
+                self.run_until_or(u64::MAX, f).expect("a wait with no deadline cannot expire")
+        }
+
+        /// The same, given up on after `timeout_us`.
+        ///
+        /// FOR WORK THAT WAITS ON THE AIR rather than on the part. Some of what the radio is
+        /// asked to do finishes only when a message arrives -- joining waits for the radio to
+        /// report the outcome -- and nothing in that contract promises one ever will. Waiting
+        /// for it without a deadline puts the whole application behind a network that may simply
+        /// not be there, which is not a failure anyone can diagnose from the outside.
+        ///
+        /// Giving up abandons the request rather than cancelling it: the radio is left as it was,
+        /// and the next thing asked of it works. `None` is "no answer in time", which is a
+        /// different thing from an answer of failure and is reported as such.
+        pub fn run_until_or<'a, F, Fut>(&'a mut self, timeout_us: u64, f: F) -> Option<Fut::Output>
+        where
+                F: FnOnce(&'a mut cyw43::Control<'static>) -> Fut,
+                Fut: Future + 'a,
+        {
+                let deadline = crate::now_us().saturating_add(timeout_us);
                 let task = &mut self.task;
                 let mut fut = core::pin::pin!(f(&mut self.control));
                 let waker = noop_waker();
@@ -504,7 +524,10 @@ impl Radio {
                 loop {
                         let _ = task.as_mut().poll(&mut cx);
                         if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
-                                return v;
+                                return Some(v);
+                        }
+                        if crate::now_us() >= deadline {
+                                return None;
                         }
                 }
         }
@@ -532,10 +555,36 @@ impl Radio {
         }
 
         /// Join a network, and say plainly whether it worked.
-        pub fn join(&mut self, ssid: &str, password: &str) -> Result<(), ()> {
-                let options = cyw43::JoinOptions::new(password.as_bytes());
-                self.run_until(|c| c.join(ssid, options)).map_err(|_| ())
+        ///
+        /// Blocking, and it can take seconds: the radio is scanning, associating and running a
+        /// key exchange, and there is nothing for the rest of the firmware to do in the meantime
+        /// that this would not have to be woken up for anyway.
+        pub fn join(&mut self, ssid: &str, password: &str) -> Result<(), JoinError> {
+                //   an empty passphrase is a network that asks for none, which is a different
+                // request rather than the same one with nothing in it
+                let options = if password.is_empty() { cyw43::JoinOptions::new_open() } else { cyw43::JoinOptions::new(password.as_bytes()) };
+                match self.run_until_or(JOIN_TIMEOUT_US, |c| c.join(ssid, options)) {
+                        Some(Ok(())) => Ok(()),
+                        Some(Err(_)) => Err(JoinError::Refused),
+                        None => Err(JoinError::NoAnswer),
+                }
         }
+}
+
+/// How long a join is given before it is abandoned. Associating and exchanging keys is seconds;
+/// this is long enough that a slow network is not cut off, and short enough that a network which
+/// is not there does not hold the application indefinitely.
+const JOIN_TIMEOUT_US: u64 = 20_000_000;
+
+/// Why a network was not joined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinError {
+        /// The radio reported failure: the wrong passphrase, usually.
+        Refused,
+        /// The radio reported nothing at all in the time allowed -- no such network within
+        /// range, most often. Worth telling apart from a refusal, because the thing to check
+        /// is different.
+        NoAnswer,
 }
 
 /// The reset line, as the radio stack wants to hold it.
