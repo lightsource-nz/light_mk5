@@ -16,7 +16,52 @@
 use crate::{info, log, warn};
 
 /// The words of a line after the command name, in order.
-pub type Words<'a> = core::str::SplitWhitespace<'a>;
+///
+/// Words are separated by spaces, EXCEPT that a run inside double quotes is one word however
+/// many spaces are in it. Without that, a command could not be given an argument that contains a
+/// space -- and plenty of real ones do: the name of a wireless network, a file with a space in
+/// it, a line of text to put on a display. Splitting on spaces alone makes those unreachable from
+/// the console, and does it by silently taking the first half.
+///
+/// There is no escape character, so a word cannot contain a double quote. That is a real limit
+/// and a deliberate one: the alternative needs somewhere to build the unescaped word, and every
+/// word here is a slice of the line as it arrived.
+///
+/// An unclosed quote takes the rest of the line. On a console that is friendlier than refusing
+/// the whole command over one missing character, and it is what the reader meant.
+pub struct Words<'a> {
+        rest: &'a str,
+}
+
+impl<'a> Words<'a> {
+        pub fn new(line: &'a str) -> Self {
+                Self { rest: line }
+        }
+}
+
+impl<'a> Iterator for Words<'a> {
+        type Item = &'a str;
+
+        fn next(&mut self) -> Option<&'a str> {
+                let s = self.rest.trim_start();
+                if s.is_empty() {
+                        self.rest = s;
+                        return None;
+                }
+                let (word, rest) = match s.strip_prefix('"') {
+                        Some(quoted) => match quoted.find('"') {
+                                Some(end) => (&quoted[..end], &quoted[end + 1..]),
+                                None => (quoted, ""),
+                        },
+                        None => match s.find(char::is_whitespace) {
+                                Some(end) => (&s[..end], &s[end..]),
+                                None => (s, ""),
+                        },
+                };
+                self.rest = rest;
+                Some(word)
+        }
+}
 
 /// One application command: `name` selects it, `parse` takes the words after the name.
 pub struct Command<E: 'static> {
@@ -65,7 +110,7 @@ impl<E> Cli<E> {
         /// Dispatch one line: echo it, try the built-ins, then the table. Every path answers
         /// on the console; the caller only ever publishes the event or shuts down.
         pub fn dispatch(&self, line: &str) -> Outcome<E> {
-                let mut words = line.split_whitespace();
+                let mut words = Words::new(line);
                 let Some(cmd) = words.next() else { return Outcome::Quiet };
                 info!("> {line}");
                 match cmd {
@@ -127,6 +172,51 @@ mod tests {
         enum Ev {
                 Toggle(u8),
                 Stats,
+        }
+
+        fn words(line: &str) -> heapless::Vec<&str, 8> {
+                Words::new(line).collect()
+        }
+
+        #[test]
+        fn plain_words_are_separated_by_any_run_of_spaces() {
+                assert_eq!(words("  join  one   two "), ["join", "one", "two"]);
+        }
+
+        #[test]
+        fn a_quoted_run_is_one_word_however_many_spaces_are_in_it() {
+                //   the case this exists for: an argument that genuinely contains a space, which
+                // splitting on spaces alone takes the first half of and says nothing
+                assert_eq!(words(r#"join "My Network" secret"#), ["join", "My Network", "secret"]);
+        }
+
+        #[test]
+        fn quotes_work_for_every_argument_not_only_the_first() {
+                assert_eq!(words(r#"join "My Network" "pass phrase""#), ["join", "My Network", "pass phrase"]);
+        }
+
+        #[test]
+        fn an_empty_quoted_run_is_an_empty_word_rather_than_no_word() {
+                //   which is how a network that asks for no passphrase is named explicitly
+                assert_eq!(words(r#"join name """#), ["join", "name", ""]);
+        }
+
+        #[test]
+        fn an_unclosed_quote_takes_the_rest_of_the_line() {
+                assert_eq!(words(r#"join "My Network"#), ["join", "My Network"]);
+        }
+
+        #[test]
+        fn a_quote_after_a_word_has_begun_is_part_of_that_word() {
+                //   only a leading quote opens a run, so this does not surprise anyone whose
+                // argument merely contains one
+                assert_eq!(words(r#"set a"b c"#), ["set", "a\"b", "c"]);
+        }
+
+        #[test]
+        fn a_line_of_nothing_has_no_words() {
+                assert_eq!(words("   ").len(), 0);
+                assert_eq!(words("").len(), 0);
         }
 
         static COMMANDS: &[Command<Ev>] = &[
