@@ -683,12 +683,19 @@ impl Radio {
                         return Err(FetchError::NoNetwork);
                 }
 
-                //   the connection's own memory, taken once: a fetch is not a thing this board
-                // does two of at a time, and the receive side is generous because it is what
-                // decides how much may be in flight at once
-                static RX: StaticCell<[u8; 4096]> = StaticCell::new();
+                //   The connection's own memory, taken once: a fetch is not a thing this board
+                // does two of at a time.
+                //
+                //   THE RECEIVE SIDE IS LARGE ON PURPOSE. It is what decides how much the other
+                // end may have in flight before it has to stop and wait, so it sets the ceiling
+                // on how fast this can go. It is also what has to hold the arriving image while
+                // this side is busy writing the last piece to storage -- seconds of a fetch are
+                // spent doing that, and nothing is being read from the network meanwhile. Four
+                // kilobytes was measured at 90 KiB/s of network time with the sender stalling;
+                // this is four times the room to stall into.
+                static RX: StaticCell<[u8; 16384]> = StaticCell::new();
                 static TX: StaticCell<[u8; 1024]> = StaticCell::new();
-                let rx = RX.init([0; 4096]);
+                let rx = RX.init([0; 16384]);
                 let tx = TX.init([0; 1024]);
                 let mut socket = embassy_net::tcp::TcpSocket::new(stack, rx, tx);
 
@@ -731,11 +738,6 @@ impl Radio {
                                 return Err(FetchError::Refused(status));
                         }
                         length = content_length(&buf[..body_at]).ok_or(FetchError::NoLength)?;
-                        //   said before a single byte of the body, so that whatever is receiving
-                        // it can make room of exactly the right size
-                        if !sink(Incoming::Length(length)) {
-                                return Err(FetchError::Rejected);
-                        }
 
                         //   WHERE THE TIME GOES, counted rather than reasoned about: what is
                         // spent handing the body on -- which on this board means writing it to
@@ -746,6 +748,17 @@ impl Radio {
                         let mut sunk_us = 0u64;
                         let mut reads = 0u32;
                         let mut taken = 0u32;
+
+                        //   INSIDE THE ACCOUNTING, because this is where the receiver makes room
+                        // and on a board that means erasing a megabyte of storage -- seconds of
+                        // it. Timed outside, as it was at first, that shows up nowhere and the
+                        // two columns quietly fail to add up to the time the whole thing took.
+                        let at = crate::now_us();
+                        let ok = sink(Incoming::Length(length));
+                        sunk_us += crate::now_us() - at;
+                        if !ok {
+                                return Err(FetchError::Rejected);
+                        }
 
                         let first = &buf[body_at..have];
                         if !first.is_empty() {
