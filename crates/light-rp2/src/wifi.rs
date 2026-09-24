@@ -664,6 +664,122 @@ impl Radio {
                 }
         }
 
+        /// Fetch something over the network, handing the body out as it arrives.
+        ///
+        ///   NOTHING IS KEPT. The body is passed to `take` in whatever pieces the network
+        /// delivers it in and is not held anywhere afterwards, because what is being fetched is a
+        /// firmware image and this part has no room to hold one. `take` answers false to stop.
+        ///
+        ///   THE LENGTH IS REQUIRED, not merely read. Without it there is no telling a truncated
+        /// image from a complete one, and an image is not a thing to guess about; a server that
+        /// does not say is refused rather than trusted.
+        ///
+        ///   No name is resolved: the address is given. Resolving one means another service to
+        /// depend on and another thing to go wrong at the moment of an update, and an address in
+        /// a command is a smaller promise than a name in a configuration.
+        pub fn fetch(&mut self, ip: [u8; 4], port: u16, path: &str, sink: &mut dyn FnMut(Incoming) -> bool) -> Result<u32, FetchError> {
+                let stack = self.net.as_ref().ok_or(FetchError::NoNetwork)?.stack;
+                if stack.config_v4().is_none() {
+                        return Err(FetchError::NoNetwork);
+                }
+
+                //   the connection's own memory, taken once: a fetch is not a thing this board
+                // does two of at a time, and the receive side is generous because it is what
+                // decides how much may be in flight at once
+                static RX: StaticCell<[u8; 4096]> = StaticCell::new();
+                static TX: StaticCell<[u8; 1024]> = StaticCell::new();
+                let rx = RX.init([0; 4096]);
+                let tx = TX.init([0; 1024]);
+                let mut socket = embassy_net::tcp::TcpSocket::new(stack, rx, tx);
+
+                let address = embassy_net::IpAddress::v4(ip[0], ip[1], ip[2], ip[3]);
+                let mut length = 0u32;
+                let work = async {
+                        socket.connect((address, port)).await.map_err(|_| FetchError::NoConnection)?;
+
+                        //   the connection is closed by the other end when the body is done,
+                        // which is what makes a body readable without trusting its length; the
+                        // length is still required, to know the body was all of it
+                        let mut request = [0u8; HEAD_MAX];
+                        let head = {
+                                use core::fmt::Write as _;
+                                let mut w = Line::new(&mut request);
+                                let _ = write!(w, "GET {path} HTTP/1.1\r\nHost: {}.{}.{}.{}\r\nConnection: close\r\n\r\n", ip[0], ip[1], ip[2], ip[3]);
+                                w.len
+                        };
+                        socket.write(&request[..head]).await.map_err(|_| FetchError::Broken)?;
+
+                        //   read until the head is complete, keeping whatever body came with it
+                        let mut buf = [0u8; HEAD_MAX];
+                        let mut have = 0usize;
+                        let body_at = loop {
+                                if have == buf.len() {
+                                        return Err(FetchError::NotAnAnswer);
+                                }
+                                let n = socket.read(&mut buf[have..]).await.map_err(|_| FetchError::Broken)?;
+                                if n == 0 {
+                                        return Err(FetchError::NotAnAnswer);
+                                }
+                                have += n;
+                                if let Some(at) = find(&buf[..have], b"\r\n\r\n") {
+                                        break at + 4;
+                                }
+                        };
+
+                        let status = status_of(&buf[..body_at]).ok_or(FetchError::NotAnAnswer)?;
+                        if status != 200 {
+                                return Err(FetchError::Refused(status));
+                        }
+                        length = content_length(&buf[..body_at]).ok_or(FetchError::NoLength)?;
+                        //   said before a single byte of the body, so that whatever is receiving
+                        // it can make room of exactly the right size
+                        if !sink(Incoming::Length(length)) {
+                                return Err(FetchError::Rejected);
+                        }
+
+                        //   whatever of the body arrived alongside the head
+                        let mut taken = 0u32;
+                        let first = &buf[body_at..have];
+                        if !first.is_empty() {
+                                if !sink(Incoming::Body(first)) {
+                                        return Err(FetchError::Rejected);
+                                }
+                                taken += first.len() as u32;
+                        }
+
+                        let mut chunk = [0u8; 1460];
+                        while taken < length {
+                                let n = socket.read(&mut chunk).await.map_err(|_| FetchError::Broken)?;
+                                if n == 0 {
+                                        return Err(FetchError::Short);
+                                }
+                                if !sink(Incoming::Body(&chunk[..n])) {
+                                        return Err(FetchError::Rejected);
+                                }
+                                taken += n as u32;
+                        }
+                        Ok(taken)
+                };
+
+                let mut work = core::pin::pin!(work);
+                let deadline = crate::now_us() + FETCH_TIMEOUT_US;
+                let waker = noop_waker();
+                let mut cx = Context::from_waker(&waker);
+                loop {
+                        let _ = self.task.as_mut().poll(&mut cx);
+                        if let Some(net) = self.net.as_mut() {
+                                let _ = net.task.as_mut().poll(&mut cx);
+                        }
+                        if let Poll::Ready(v) = work.as_mut().poll(&mut cx) {
+                                let _ = length;
+                                return v;
+                        }
+                        if crate::now_us() >= deadline {
+                                return Err(FetchError::TooSlow);
+                        }
+                }
+        }
+
         /// The radio's own pins -- the indicator on boards that put one there.
         pub fn set_gpio(&mut self, pin: u8, on: bool) {
                 self.run_until(|c| c.gpio_set(pin, on));
@@ -734,6 +850,100 @@ pub enum JoinError {
         /// is different.
         NoAnswer,
 }
+
+/// Somewhere to write a request into, so it can be built with the ordinary formatting machinery
+/// rather than by hand. Anything past the end is dropped; the caller sends `len`.
+struct Line<'a> {
+        buf: &'a mut [u8],
+        len: usize,
+}
+
+impl<'a> Line<'a> {
+        fn new(buf: &'a mut [u8]) -> Self {
+                Self { buf, len: 0 }
+        }
+}
+
+impl core::fmt::Write for Line<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let room = self.buf.len() - self.len;
+                let take = core::cmp::min(room, s.len());
+                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
+                self.len += take;
+                Ok(())
+        }
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// The number in `HTTP/1.1 200 OK`.
+fn status_of(head: &[u8]) -> Option<u16> {
+        let line = &head[..find(head, b"\r\n")?];
+        let mut parts = line.split(|b| *b == b' ');
+        let _version = parts.next()?;
+        let code = parts.next()?;
+        core::str::from_utf8(code).ok()?.parse().ok()
+}
+
+/// How long the body says it is. The name is matched without regard to case, because the
+/// standard allows any and servers use several.
+fn content_length(head: &[u8]) -> Option<u32> {
+        const NAME: &[u8] = b"content-length:";
+        let mut at = 0;
+        while at < head.len() {
+                let end = at + find(&head[at..], b"\r\n")?;
+                let line = &head[at..end];
+                if line.len() > NAME.len() && line[..NAME.len()].eq_ignore_ascii_case(NAME) {
+                        let value = core::str::from_utf8(&line[NAME.len()..]).ok()?;
+                        return value.trim().parse().ok();
+                }
+                at = end + 2;
+        }
+        None
+}
+
+/// What a fetch hands out, in the order it becomes known.
+pub enum Incoming<'a> {
+        /// How long the body is, told ONCE and before any of it. What is being fetched has to be
+        /// given its size before its first byte -- storage is erased to fit -- so this is not a
+        /// convenience, it is the reason the length is demanded of the server.
+        Length(u32),
+        /// A piece of the body, in the order it arrived. Not kept here afterwards.
+        Body(&'a [u8]),
+}
+
+/// Why a fetch did not produce an image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FetchError {
+        /// There is no network to fetch over -- nothing joined, or no address taken.
+        NoNetwork,
+        /// The other end refused the connection or never answered it.
+        NoConnection,
+        /// The connection broke part-way.
+        Broken,
+        /// The answer was not one this understands: not a reply at all, or a reply whose head
+        /// is longer than there is room to read it in.
+        NotAnAnswer,
+        /// The server answered, and its answer was a refusal. The code is carried so that a
+        /// missing file and a broken server are told apart.
+        Refused(u16),
+        /// The answer did not say how long it was. Without that there is no way to know a
+        /// truncated image from a complete one, and an image is not a thing to guess about.
+        NoLength,
+        /// The body stopped before the length promised.
+        Short,
+        /// Whatever was being written to could not take it.
+        Rejected,
+        /// It did not finish in the time allowed.
+        TooSlow,
+}
+
+/// How long a whole fetch is given, connection and all.
+const FETCH_TIMEOUT_US: u64 = 120_000_000;
+/// Room for the answer's head -- the status line and the headers before the body.
+const HEAD_MAX: usize = 1024;
 
 /// The reset line, as the radio stack wants to hold it.
 struct PwrPin(Output);
