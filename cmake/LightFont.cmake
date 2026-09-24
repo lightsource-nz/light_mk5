@@ -1,7 +1,7 @@
 #   light_add_font(<name>
 #           FONT <file> DISPLAY <name> WIDTH <px> HEIGHT <px> [DIMENSION <WxH mm>]
 #           POINT_SIZE <pt> PIXEL_SIZE <px>
-#           CRATE <rust crate> ENV <VAR>)
+#           [CRATE <rust crate> ENV <VAR>])
 #
 #   Renders FONT for the given display with the Rust crush and hands the resulting LGF blob to a
 # Rust crate as an environment variable, for `include_bytes!(env!("<VAR>"))`. This is the
@@ -14,17 +14,22 @@
 # the path through the environment Corrosion passes to cargo. A change to the font file or the
 # render parameters re-renders and, because the env var names a file cargo tracks through
 # include_bytes!, rebuilds the crate.
+#
+#   Without CRATE/ENV the font is rendered but not embedded, for light_add_asset_pack() to gather
+# into a pack the device reads from storage. A font is the largest asset a small device carries, so
+# it is usually the reason a product wants a pack at all.
+
+include(${CMAKE_CURRENT_LIST_DIR}/LightAssets.cmake)
+
 function(light_add_font NAME)
         set(one FONT DISPLAY WIDTH HEIGHT DIMENSION POINT_SIZE PIXEL_SIZE CRATE ENV)
         cmake_parse_arguments(F "" "${one}" "" ${ARGN})
-        foreach(req FONT DISPLAY WIDTH HEIGHT POINT_SIZE PIXEL_SIZE CRATE ENV)
+        foreach(req FONT DISPLAY WIDTH HEIGHT POINT_SIZE PIXEL_SIZE)
                 if(NOT DEFINED F_${req})
                         message(FATAL_ERROR "light_add_font(${NAME}) needs ${req}")
                 endif()
         endforeach()
-        if(NOT TARGET crush)
-                message(FATAL_ERROR "light_add_font(${NAME}) needs the crush target: import the crush crate with corrosion_set_hostbuild first")
-        endif()
+        light_asset_destination(light_add_font ${NAME} "${F_CRATE}" "${F_ENV}")
 
         get_filename_component(font_abs "${F_FONT}" ABSOLUTE)
         get_filename_component(font_name "${font_abs}" NAME)
@@ -59,10 +64,9 @@ render new ${NAME} ${F_POINT_SIZE} ${F_PIXEL_SIZE} --font ${font_name} --display
         )
         add_custom_target(${NAME} DEPENDS "${lgf}")
 
-        #   the crate gets the path in its environment and its cargo build waits for the render.
-        # cargo-prebuild_<crate> is the hook Corrosion provides for exactly this: work that must
-        # finish before cargo is invoked. (cargo-build_<crate> is only the phony wrapper; a
-        # dependency on it alone leaves the real cargo command free to run first)
-        corrosion_set_env_vars(${F_CRATE} "${F_ENV}=${lgf}")
-        add_dependencies(cargo-prebuild_${F_CRATE} ${NAME})
+        #   an embedded font's crate gets the path in its environment and its cargo build waits for
+        # the render. cargo-prebuild_<crate> is the hook Corrosion provides for exactly this: work
+        # that must finish before cargo is invoked. (cargo-build_<crate> is only the phony wrapper;
+        # a dependency on it alone leaves the real cargo command free to run first)
+        light_asset_declare(${NAME} "${lgf}" "${F_CRATE}" "${F_ENV}")
 endfunction()

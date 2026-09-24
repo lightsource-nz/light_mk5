@@ -21,6 +21,7 @@
 #include <hardware/structs/ioqspi.h>
 #include <hardware/structs/sio.h>
 #include <hardware/sync.h>
+#include <boot/picobin.h>
 #include <boot/picoboot_constants.h>
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
@@ -105,6 +106,46 @@ uint32_t light_shell_boot_info(uint32_t *out_diagnostic, uint32_t *out_params)
         (void) out_diagnostic;
         (void) out_params;
         return 0;
+#endif
+}
+
+//   WHERE THE ASSETS LIVE, for firmware that keeps them out of its own image. The flash map says
+// which region a product set aside for data, and only the boot ROM can be asked -- the map was
+// read at boot and is not in this image. Answers the region's byte offset from the start of
+// storage and its size, or false when this device has no such region: no map, or a map with
+// nothing in it that accepts data.
+//
+//   The region is found by what it ACCEPTS rather than by name or number, because that is what
+// decides where a download of assets lands. A map with two of them is a map that cannot say where
+// assets go, so the first is taken and the rest ignored.
+bool light_shell_data_region(uint32_t *out_offset, uint32_t *out_size)
+{
+#if PICO_RP2350
+        for (unsigned i = 0; i < PARTITION_TABLE_MAX_PARTITIONS; i++) {
+                uint32_t out[4];
+                int rc = rom_get_partition_table_info(out, count_of(out),
+                        PT_INFO_PARTITION_LOCATION_AND_FLAGS | PT_INFO_SINGLE_PARTITION | (i << 24));
+                //   the ROM stops answering once the number runs past the map, which is how the
+                // loop finds its end without asking how long the map is
+                if (rc != 3)
+                        break;
+                uint32_t location = out[1];
+                uint32_t flags = out[2];
+                if (!(flags & PICOBIN_PARTITION_FLAGS_ACCEPTS_DEFAULT_FAMILY_DATA_BITS))
+                        continue;
+                uint32_t first = (location & PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_BITS) >> PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_LSB;
+                uint32_t last = (location & PICOBIN_PARTITION_LOCATION_LAST_SECTOR_BITS) >> PICOBIN_PARTITION_LOCATION_LAST_SECTOR_LSB;
+                if (out_offset)
+                        *out_offset = first * 0x1000u;
+                if (out_size)
+                        *out_size = (last + 1 - first) * 0x1000u;
+                return true;
+        }
+        return false;
+#else
+        (void) out_offset;
+        (void) out_size;
+        return false;
 #endif
 }
 

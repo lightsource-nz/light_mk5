@@ -1,0 +1,16 @@
+[package]
+name = "light-assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the LAP asset pack: a no_std zero-copy reader over a directory of named blobs stored apart from the firmware, and a writer behind the `alloc` feature"
+
+[features]
+default = []
+#   the writer needs Vec; the firmware reader does not. crush turns this on
+alloc = []
+
+[dependencies]
+#   a pack is read out of memory the firmware image does not cover, so the firmware checks it
+# against a digest the image carries -- and a digest wants a hash the whole world agrees on
+sha2 = { version = "0.10", default-features = false }

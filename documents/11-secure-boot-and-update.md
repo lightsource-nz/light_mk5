@@ -47,9 +47,14 @@ between them.
   the development key, overridden for a release.
 - **The bootloader** is a firmware target of the framework's, built per chip family: it loads the
   map, picks the better of an A/B pair, and chains to it. An application names no part of it.
-- **Assets.** The blob helpers (`light_add_font`, `light_add_theme`, `light_add_ui`) emit into the
-  data partition rather than into the firmware image; the port resolves a partition to a
-  `&'static [u8]` at runtime, which is what the portable readers already take.
+- **Assets.** The blob helpers (`light_add_font`, `light_add_theme`, `light_add_ui`), called without
+  a crate to embed into, feed `light_add_asset_pack(<name> ENTRIES ... CRATE ... ENV ... FAMILY
+  data)`: one pack delivered to the data partition, and a digest the image is built with. The port
+  resolves that partition to a `&'static [u8]` at runtime, which is what the portable readers
+  already take. The pack is covered by the image's signature at one remove — an application refuses
+  a pack that does not hash to the digest it carries, so substituting assets means substituting a
+  digest inside a signed image. See [08-assets-and-tooling.md](08-assets-and-tooling.md) for the
+  format and the build calls.
 - **Update.** The port offers staging an image into the inactive slot, a reboot that asks the
   hardware to select it, and the **commit** an application calls once it is satisfied with itself.
   An application supplies the self-test that decides whether to commit.

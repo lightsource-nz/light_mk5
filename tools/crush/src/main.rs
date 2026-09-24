@@ -63,8 +63,36 @@ pub enum Command {
                 #[command(subcommand)]
                 cmd: UiCmd,
         },
+        /// Asset packs: gather compiled blobs into one LAP a device reads from storage
+        Pack {
+                #[command(subcommand)]
+                cmd: PackCmd,
+        },
         /// Run commands from a script, a single --command, or an interactive prompt
         Console(ConsoleArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PackCmd {
+        /// Gather named blobs into one pack, and write the digest that identifies it
+        Build {
+                /// Where the LAP pack goes
+                output: PathBuf,
+                /// An asset, as `<name>=<file>`. Repeat for each. Names are short ASCII
+                /// identifiers of at most sixteen characters -- `font`, `theme`, `ui` -- and are
+                /// what the firmware asks for
+                #[arg(long = "entry", value_name = "NAME=FILE", required = true)]
+                entry: Vec<String>,
+                /// Where the pack's SHA-256 goes, as the thirty-two raw bytes the firmware is
+                /// built with. Without it the digest is only reported
+                #[arg(long = "digest", value_name = "FILE")]
+                digest: Option<PathBuf>,
+        },
+        /// Report what a pack holds, without an image to check it against
+        Info {
+                /// The LAP pack
+                input: PathBuf,
+        },
 }
 
 #[derive(Subcommand, Debug)]
@@ -263,6 +291,10 @@ pub fn run_command(ctx: &mut Context, command: Command) -> CmdResult {
                 Command::Ui { cmd } => match cmd {
                         UiCmd::Compile { input, output, crates } => ui_compile(&input, &output, crates.as_deref()),
                 },
+                Command::Pack { cmd } => match cmd {
+                        PackCmd::Build { output, entry, digest } => pack_build(&output, &entry, digest.as_deref()),
+                        PackCmd::Info { input } => pack_info(&input),
+                },
                 Command::Console(_) => Err("console cannot be nested".into()),
         }
 }
@@ -277,4 +309,65 @@ fn ui_compile(input: &std::path::Path, output: &std::path::Path, crates: Option<
         std::fs::write(output, &blob).map_err(|e| format!("could not write '{}': {e}", output.display()))?;
         log::info(&format!("design '{}': {} pages, {} bytes -> {}", input.display(), design.pages.len(), blob.len(), output.display()));
         Ok(())
+}
+
+/// Gather the named blobs into a pack, and write out the digest that identifies it.
+///
+/// The digest goes to a file of its own because two artefacts have to agree on it: the pack, which
+/// carries it in its header, and the firmware image, which is built with it and checks the pack
+/// against it at startup. One build step produces both, so they cannot drift.
+fn pack_build(output: &std::path::Path, entries: &[String], digest: Option<&std::path::Path>) -> CmdResult {
+        let mut builder = light_assets::build::Builder::new();
+        for spec in entries {
+                let (name, file) = spec
+                        .split_once('=')
+                        .ok_or_else(|| format!("entry '{spec}' is not <name>=<file>"))?;
+                let bytes = std::fs::read(file).map_err(|e| format!("could not read '{file}': {e}"))?;
+                builder
+                        .add(name, &bytes)
+                        .map_err(|e| format!("entry '{name}' ({file}) cannot go in a pack: {e:?}"))?;
+                log::debug(&format!("pack entry '{name}': {} bytes from {file}", bytes.len()));
+        }
+        let blob = builder.build();
+        let pack = light_assets::Pack::open_unchecked(&blob).map_err(|e| format!("the pack just built does not read back: {e:?}"))?;
+
+        write_out(output, &blob)?;
+        if let Some(path) = digest {
+                write_out(path, pack.digest())?;
+        }
+        log::info(&format!(
+                "pack '{}': {} entries, {} bytes, sha256 {}",
+                output.display(),
+                pack.len(),
+                blob.len(),
+                hex(pack.digest())
+        ));
+        Ok(())
+}
+
+/// Report a pack's contents: what a person asks when a device says the pack is not the one.
+fn pack_info(input: &std::path::Path) -> CmdResult {
+        let blob = std::fs::read(input).map_err(|e| format!("could not read '{}': {e}", input.display()))?;
+        let pack = light_assets::Pack::open_unchecked(&blob).map_err(|e| format!("'{}' is not a readable pack: {e:?}", input.display()))?;
+        log::info(&format!("pack '{}': {} entries, {} bytes, sha256 {}", input.display(), pack.len(), pack.as_bytes().len(), hex(pack.digest())));
+        for i in 0..pack.len() {
+                let (name, bytes) = (pack.name(i).unwrap_or("?"), pack.blob(i).map_or(0, <[u8]>::len));
+                log::info(&format!("  {name}: {bytes} bytes"));
+        }
+        Ok(())
+}
+
+fn write_out(path: &std::path::Path, bytes: &[u8]) -> CmdResult {
+        if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("could not create '{}': {e}", dir.display()))?;
+        }
+        std::fs::write(path, bytes).map_err(|e| format!("could not write '{}': {e}", path.display()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write;
+        bytes.iter().fold(String::new(), |mut s, b| {
+                let _ = write!(s, "{b:02x}");
+                s
+        })
 }

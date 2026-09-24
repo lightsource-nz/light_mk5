@@ -11,6 +11,7 @@ members = [
         # framework crates
         "crates/light-core",
         "crates/light-font",
+        "crates/light-assets",
         "crates/light-draw",
         "crates/light-display",
         "crates/light-input",

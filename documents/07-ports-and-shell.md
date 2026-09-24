@@ -125,6 +125,14 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
     console);
   - `usb_host` (feature `usb-host`) — the USB-MIDI host role: the ecosystem's host stack over its
     controller driver for this chip, behind `light_midi::Host` (below).
+- `assets` — `region()`, the storage a product's assets were written to, as a `&'static [u8]` for
+  `light-assets` to read a pack out of. Two things portable code cannot do: ask the boot ROM where
+  the flash map set that region aside, and make it addressable. The chip reads storage through four
+  address-translation windows, and a bootloader handing over to an image narrows the first to the
+  slot that image came from and closes the rest — deliberately, so a running image cannot reach past
+  its own partition. So this opens one of the closed windows onto the region the map named, and
+  nothing else. It answers `NoRegion` where there is no map, which is a board flashed straight to
+  the start of storage.
 - `shell` — the Rust side of the C shell's ABI, shared by every RP2 board (see the shell below).
 - Its own `critical-section` implementation (target builds only).
 
@@ -385,6 +393,12 @@ The whole boundary is a handful of functions.
   runs the console from flash, and a cache miss while the chip-select floats fetches garbage — a
   literal-pool read handed the console loop a pointer made of a spin count, and it died silently.
   The read is bracketed by the SDK's multicore lockout, the mechanism its own flash writes use.
+
+- `light_shell_data_region(uint32_t *offset, uint32_t *size) -> bool` — where the flash map set a
+  region aside for data, for firmware that keeps its assets out of its own image. Only the boot ROM
+  can be asked: the map was read at boot and is not in this image. The region is found by what it
+  **accepts** rather than by name or number, because that is what decides where a download of assets
+  lands. False on a device with no map, or a map with nothing in it that accepts data.
 
 `ShellInfo` is the one thing the shell knows and Rust must not assume — the clock rates the SDK
 runtime configured (pico-sdk's defaults are 125 MHz sys on the RP2040, 150 MHz on the RP2350).

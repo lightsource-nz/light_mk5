@@ -202,7 +202,7 @@ differing sizes, and an OLED-panel board.
 | [05-storage.md](05-storage.md) | `light-sd` (the SPI block layer) and `light-fs` (FAT16/32 over `BlockDevice`). |
 | [06-power-and-time.md](06-power-and-time.md) | `light-power` (PD sink, operating points), `light-power-manager` (idle policy), `light-rtc`. |
 | [07-ports-and-shell.md](07-ports-and-shell.md) | The ports (`light-rp2`, `light-stm32h7`, `light-stm32f4`), the C shells, and the shell ABI. |
-| [08-assets-and-tooling.md](08-assets-and-tooling.md) | `crush`/`crush-core`, the LGF/LTH/LUI blob formats and their versioning, the design `extends` mechanism, `light-host-gui`, `light-ui-editor`. |
+| [08-assets-and-tooling.md](08-assets-and-tooling.md) | `crush`/`crush-core`, the LGF/LTH/LUI/LAP blob formats and their versioning, the design `extends` mechanism, embedding an asset or packing it into storage, `light-host-gui`, `light-ui-editor`. |
 | [09-application-model.md](09-application-model.md) | The application model: portable app crates, board-support crates, per-board instantiation crates, the design-as-data workflow, the worked examples. |
 | [10-build-and-release.md](10-build-and-release.md) | The build system: CMake + Corrosion, the presets, the `light-*.ps1` script layer, flashing, host tests, versioning and releases. |
 | [11-secure-boot-and-update.md](11-secure-boot-and-update.md) | Image authenticity and field update: what is signed, what the hardware verifies, the slot and probation model, rollback, the asset partition, and keys. |

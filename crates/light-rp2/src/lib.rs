@@ -39,6 +39,7 @@ pub use rp235x_pac as pac;
 mod critical;
 
 pub mod adc;
+pub mod assets;
 pub mod gpio;
 pub mod i2c;
 pub mod i2s;

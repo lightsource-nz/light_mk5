@@ -168,7 +168,8 @@ from an optional `--dimension` in millimetres, a pixel density — without it, 9
 warning notes that point sizes will not match the glass. A `render new` runs the rasteriser and
 writes the LGF (and, for C consumers, a matching `.c`/`.h` pair byte-for-byte in the old shape).
 
-Two commands sit directly on `crush-core` and take no context:
+Three commands sit directly on `crush-core` (or, for packs, on the format crate) and take no
+context:
 
 - `theme compile <in> <out> [--themes <dir>] [--default <name>]` resolves a theme's `extends` chain
   and writes the LTH blob. `--themes` is where an `extends: "name"` base is found; `--default` is
@@ -176,10 +177,54 @@ Two commands sit directly on `crush-core` and take no context:
 - `ui compile <in> <out> [--crates <dir>]` resolves a design's `extends` chain and writes the LUI
   blob. `--crates` is where an `extends: "<crate>"` parent's `design.json` is found; a design
   extending by path, or not at all, needs none.
+- `pack build <out> --entry <name>=<file> ... [--digest <file>]` gathers already-compiled blobs
+  into one LAP pack, and writes the digest that identifies it where the firmware build can pick it
+  up. Packing is assembly, not compilation: the blobs arrive finished, and the format belongs to
+  the crate that reads it on the device. `pack info <in>` reports what a pack holds, which is what
+  a person asks when a device says the pack is not the one.
+
+## Where the blobs live: embedded, or in a pack
+
+Embedding a blob with `include_bytes!` is one of two destinations, not the only one. The same
+compiled blob can instead be gathered into an **asset pack** written to a region of storage the
+firmware image does not cover, and read from there at startup.
+
+Which of the two a product uses is the product's choice, made where the asset is declared:
+`light_add_font`, `light_add_theme` and `light_add_ui` take `CRATE`/`ENV` to embed, and without
+them compile the blob and stop — recording where it landed for `light_add_asset_pack`
+(`LightAssets.cmake`) to collect:
+
+    light_add_font(app_font FONT ... DISPLAY ... POINT_SIZE 12 PIXEL_SIZE 16)
+    light_add_theme(app_theme MONO THEME .../theme.json)
+    light_add_ui(app_ui UI .../design.json)
+    light_add_asset_pack(app_assets
+            ENTRIES font=app_font theme=app_theme ui=app_ui
+            CRATE light_app_demo ENV LIGHT_ASSETS_SHA256
+            FAMILY data)
+
+**Why a product would.** Assets are the part of a product most likely to change and least likely to
+need the scrutiny firmware gets. Kept apart they can be replaced without rebuilding, re-signing and
+re-shipping the application; they stop crowding the slot the application must fit in; and on a
+device holding two application slots they are not stored twice.
+
+**The digest is the joint.** crush writes the pack and, beside it, the SHA-256 that identifies it.
+The application is built with that digest — which is what `ENV` names, the crate reading the file
+with `include_bytes!` — and checks the pack against it at startup, so a pack is covered by the
+image's own signature at one remove and substituting assets means substituting a digest inside a
+signed image. **There is deliberately no fallback:** an application whose pack is missing, stale,
+half-written or edited reports it and stops, because a copy of the assets kept in the image as a
+safety net would undo the reason for taking them out of it, and an interface with no font is not an
+interface.
+
+**Reaching the region** is the port's business, not the toolkit's: it is where a region set aside
+for data is, and whether it is addressable at all, that differ per chip. See
+[07-ports-and-shell.md](07-ports-and-shell.md) for the seam and
+[11-secure-boot-and-update.md](11-secure-boot-and-update.md) for the flash map that names the
+region and the delivery that writes it.
 
 ## The blob formats and their versioning
 
-The three formats share one convention: a four-byte **magic** that is the frozen format-family tag,
+The formats share one convention: a four-byte **magic** that is the frozen format-family tag,
 followed immediately by a **u8 schema version**. A format revision bumps the version byte, *not* the
 magic — the LUI magic is `LUI3` yet its current schema version is 3. Each format is owned jointly by
 its `crush`-side writer and its firmware-side reader, which must agree; the readers are strict about
@@ -227,6 +272,29 @@ the same pattern as LGF. The nav byte encodes none/back/goto; the descent byte e
 page enters from (top/bottom/left/right) or 0 for the toolkit default; the layout (stack/row/linear/
 grid) and scroll codes match light-ui's own modules, and `cols` is a grid's column count (0 for any
 other layout). Frame nesting is one level deep by construction, enforced at compile.
+
+### LAP — asset packs
+
+`light-assets` owns the LAP format: a `no_std` zero-copy reader (`Pack`, a `Copy` view that borrows
+the region) and an `alloc`-gated `build::Builder`, which crush's `pack build` drives. Magic `LAP1`,
+version 1. A 48-byte header carries the entry count, the pack's total length and a 32-byte
+**SHA-256**; then a directory of 24-byte entries (a 16-byte NUL-padded ASCII name, a u32 offset from
+the pack start, a u32 length), then the blobs, each starting on a four-byte boundary.
+
+The digest covers bytes 0..16 followed by bytes 48..total_len — two ranges rather than one because
+it cannot cover the bytes it is written into, and the first range is what brings the count and the
+length under it. `open` takes the digest the image carries and rejects a pack that does not hash to
+it; `open_unchecked` checks structure alone, for a tool with no image to compare against. Entries
+ascend by name, so a pack built from the same inputs is byte-for-byte the same pack and a duplicate
+name cannot hide behind an earlier one; the reader validates that ordering, and that every entry's
+extent lies inside the pack and clear of the directory, once at open, so a later lookup is
+arithmetic on values already known to be in range.
+
+A region read this way was verified by nothing on the way in, so the reader distinguishes the cases
+a person acts on differently: blank storage (`BadMagic`), a pack of a schema this build does not
+read, a structurally broken one, and one that is intact but is not this firmware's
+(`DigestMismatch`). A pack may sit anywhere in a region larger than itself — the header's length is
+what bounds it, not the region's.
 
 ## light-host-gui: rendering a UI on the desktop
 

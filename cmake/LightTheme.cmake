@@ -1,4 +1,7 @@
-#   light_add_theme(<name> [THEME <file.json>] [MONO] CRATE <rust crate> ENV <VAR>)
+#   light_add_theme(<name> [THEME <file.json>] [MONO] [CRATE <rust crate> ENV <VAR>])
+#
+#   Without CRATE/ENV the blob is compiled but not embedded, for light_add_asset_pack() to gather
+# into a pack the device reads from storage.
 #
 #   Compiles a JSON look-and-feel with crush into an LTH blob and hands its path to a Rust
 # crate as an environment variable, for `include_bytes!(env!("<VAR>"))` -- the same
@@ -18,6 +21,8 @@
 # consumer. (The dependency list is globbed at configure time: a brand-new base file wants
 # one reconfigure before edits to it retrigger builds.)
 
+include(${CMAKE_CURRENT_LIST_DIR}/LightAssets.cmake)
+
 #   captured at include time, when CMAKE_CURRENT_LIST_DIR is this file's directory
 set(LIGHT_THEMES_DIR "${CMAKE_CURRENT_LIST_DIR}/../themes" CACHE INTERNAL "framework theme directory")
 
@@ -25,14 +30,7 @@ function(light_add_theme NAME)
         set(opts MONO)
         set(one THEME CRATE ENV)
         cmake_parse_arguments(T "${opts}" "${one}" "" ${ARGN})
-        foreach(req CRATE ENV)
-                if(NOT DEFINED T_${req})
-                        message(FATAL_ERROR "light_add_theme(${NAME}) needs ${req}")
-                endif()
-        endforeach()
-        if(NOT TARGET crush)
-                message(FATAL_ERROR "light_add_theme(${NAME}) needs the crush target: import the crush crate with corrosion_set_hostbuild first")
-        endif()
+        light_asset_destination(light_add_theme ${NAME} "${T_CRATE}" "${T_ENV}")
 
         if(T_MONO)
                 set(default_theme mono)
@@ -53,6 +51,5 @@ function(light_add_theme NAME)
                 VERBATIM
         )
         add_custom_target(${NAME} DEPENDS "${lth}")
-        corrosion_set_env_vars(${T_CRATE} "${T_ENV}=${lth}")
-        add_dependencies(cargo-prebuild_${T_CRATE} ${NAME})
+        light_asset_declare(${NAME} "${lth}" "${T_CRATE}" "${T_ENV}")
 endfunction()
