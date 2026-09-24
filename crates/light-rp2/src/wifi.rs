@@ -546,12 +546,29 @@ impl Radio {
 
         /// One pass of the radio's own work, and the network's if there is one: called from the
         /// runtime loop, like every other module.
+        ///
+        /// THE TWO ARE INTERLEAVED, SEVERAL TIMES OVER, once there is a network. The buffers
+        /// between the radio and the stack are few, and the radio's side of them empties the part
+        /// completely each time it runs -- so a burst that arrives while this loop was busy
+        /// elsewhere exhausts them before the stack has been given a chance to hand any back, and
+        /// the rest of the burst is dropped. Alternating the two lets a buffer be filled,
+        /// emptied and filled again inside a single pass, which is what makes the arrangement
+        /// keep up with a network rather than with this loop's slowest module.
+        ///
+        /// Dropping is not a fault -- most of what a shared network delivers unasked is of no
+        /// interest here, and anything that matters is sent again -- but a transfer that loses
+        /// packets spends its time recovering from them, and a firmware image is a megabyte.
         pub fn poll(&mut self) {
                 let waker = noop_waker();
                 let mut cx = Context::from_waker(&waker);
-                let _ = self.task.as_mut().poll(&mut cx);
-                if let Some(net) = self.net.as_mut() {
-                        let _ = net.task.as_mut().poll(&mut cx);
+                //   nothing to alternate with until there is a network, and each round costs a
+                // question put to the radio over its bus
+                let rounds = if self.net.is_some() { NET_ROUNDS } else { 1 };
+                for _ in 0..rounds {
+                        let _ = self.task.as_mut().poll(&mut cx);
+                        if let Some(net) = self.net.as_mut() {
+                                let _ = net.task.as_mut().poll(&mut cx);
+                        }
                 }
         }
 
@@ -631,6 +648,12 @@ impl Radio {
 /// this is long enough that a slow network is not cut off, and short enough that a network which
 /// is not there does not hold the application indefinitely.
 const JOIN_TIMEOUT_US: u64 = 20_000_000;
+
+/// How many times the radio and the network are alternated in one pass of the runtime loop. The
+/// buffers between them number four, so this is enough to fill and empty them all without the
+/// loop's other modules getting a look in, and few enough that an idle network costs a handful of
+/// microseconds a pass.
+const NET_ROUNDS: usize = 4;
 
 /// How many connections the network may have open at once. One to fetch with, and room beside it
 /// for whatever the address negotiation and a name lookup want.
