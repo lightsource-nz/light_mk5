@@ -1,0 +1,195 @@
+# Reusable: build one firmware configuration of a light project and keep the images.
+#
+# The companion to project-test.yml; see that file for why the sibling layout is the whole trick
+# and why CI drives the project's own scripts rather than cmake.
+#
+# ONE PRESET PER CALL, deliberately. Each preset owns its own tree, but a job that built several
+# would serialise them for no reason: a matrix in the caller gives each its own runner, which is
+# both simpler and faster. Several TARGETS of one preset do share a call -- they share its tree,
+# and the second configure is free (the Pico 2 trees build their app and their bootloader).
+#
+# THE FRAMEWORK CALLS THIS TOO. light_mk5's own CI uses it with project: light_mk5, and then the
+# framework is already checked out -- it IS the project. A second checkout to the same path would
+# silently replace the commit under test with framework_ref, so that checkout is skipped when the
+# caller is the framework. (mk3 duplicated these steps in its ci.yml to dodge the collision; one
+# copy that knows about it is the smaller thing to keep right.)
+#
+# USAGE (from a project's own workflow):
+#
+#     jobs:
+#       firmware:
+#         strategy:
+#           fail-fast: false
+#           matrix:
+#             include:
+#               - name: rp2350 (Pico 2)
+#                 preset: conf-crossfire-pico2-debug
+#                 targets: crossfire_pico2 crossfire_bootloader
+#                 tree: build-crossfire-pico2
+#         name: ${{ matrix.name }}
+#         uses: lightsource-nz/light_mk5/.github/workflows/project-build.yml@main
+#         with:
+#           project: crossfire_mk5
+#           preset: ${{ matrix.preset }}
+#           targets: ${{ matrix.targets }}
+#           tree: ${{ matrix.tree }}
+name: light project firmware build
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: 'directory to check this repository out into; also the working directory'
+        type: string
+        required: true
+      preset:
+        description: 'CMake configure preset to build'
+        type: string
+        required: true
+      targets:
+        description: 'space-separated target names to build with scripts/build.ps1'
+        type: string
+        required: true
+      tree:
+        description: 'build directory the preset owns, relative to the project (for artifacts)'
+        type: string
+        required: true
+      pico_sdk:
+        description: 'check out the pico-sdk fork; not needed by the bare-CMSIS STM32 boards'
+        type: boolean
+        default: true
+      rust_targets:
+        description: 'space-separated rustup targets to install. All three ARM ABIs the framework
+          builds for by default, so a caller never has to restate its presets'' Rust_CARGO_TARGET'
+        type: string
+        default: thumbv8m.main-none-eabi thumbv6m-none-eabi thumbv7em-none-eabihf
+      arm_toolchain_version:
+        description: 'pinned deliberately -- an embedded build is not toolchain-agnostic; this
+          should match the version developers use (light-env.ps1 names it), since the toolchain
+          decides code size'
+        type: string
+        default: 14.2.rel1
+      framework_ref:
+        description: 'ref of light_mk5 to build against; ignored when the caller IS light_mk5'
+        type: string
+        default: main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    #   a wedged step should fail in minutes, not eat the 6-hour default. The longest legitimate
+    # run is a cold toolchain cache plus a from-scratch Rust build of a touch board
+    timeout-minutes: 30
+    steps:
+      #   no `repository:`, so this checks out the CALLING repository -- inside a reusable
+      # workflow, github.repository is still the caller's
+      - uses: actions/checkout@v5
+        with:
+          path: ${{ inputs.project }}
+          submodules: recursive
+
+      #   skipped for the framework's own CI -- see the header
+      - uses: actions/checkout@v5
+        if: inputs.project != 'light_mk5'
+        with:
+          repository: lightsource-nz/light_mk5
+          ref: ${{ inputs.framework_ref }}
+          path: light_mk5
+          submodules: recursive
+
+      #   the vendored fork, not raspberrypi/pico-sdk: it carries the board headers for the
+      # Waveshare boards and local patches these projects depend on. Non-recursive -- that
+      # fetches tinyusb and mbedtls, which the USB stacks and the signing need, without their
+      # own trees, which nothing here uses
+      - uses: actions/checkout@v5
+        if: inputs.pico_sdk
+        with:
+          repository: lightsource-nz/pico-sdk
+          ref: master
+          path: pico-sdk
+          submodules: true
+
+      - name: install build tools
+        run: |
+          sudo apt-get update
+          # libusb + pkg-config are for picotool, which the SDK builds from source to seal, sign
+          # and package the images; without them its configure fails in a way that names only
+          # picotool
+          sudo apt-get install -y ninja-build libusb-1.0-0-dev pkg-config
+
+      #   the runner's stable toolchain is the host one; the firmware targets are not on it.
+      # Corrosion reports a missing target as a cargo failure deep inside the build, so they are
+      # added up front where a failure says what it is
+      - name: install rust targets
+        env:
+          RUST_TARGETS: ${{ inputs.rust_targets }}
+        run: rustup target add $RUST_TARGETS
+
+      - name: cache arm toolchain
+        id: arm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/tools/arm-gnu-toolchain
+          key: arm-gnu-toolchain-${{ inputs.arm_toolchain_version }}-x86_64
+
+      #   unpacked to ~/tools/arm-gnu-toolchain because that is already one of the directories
+      # light-env.ps1 searches. Putting it on PATH here instead would work too, and would be a
+      # second place that has to agree with the scripts
+      - name: install arm toolchain
+        if: steps.arm-cache.outputs.cache-hit != 'true'
+        env:
+          ARM_VERSION: ${{ inputs.arm_toolchain_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/tools
+          base="arm-gnu-toolchain-${ARM_VERSION}-x86_64-arm-none-eabi"
+          curl -fsSL --retry 3 \
+            "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_VERSION}/binrel/${base}.tar.xz" \
+            -o /tmp/arm.tar.xz
+          tar -xf /tmp/arm.tar.xz -C ~/tools
+          mv ~/tools/"$base" ~/tools/arm-gnu-toolchain
+
+      #   one invocation per target: the first configures the tree, the rest reuse it.
+      # build.ps1 throws on a non-zero cmake exit, and refuses a tree belonging to another preset
+      # rather than building it and reporting success for this one
+      - name: build
+        working-directory: ${{ inputs.project }}
+        shell: pwsh
+        env:
+          TARGETS: ${{ inputs.targets }}
+          PRESET: ${{ inputs.preset }}
+        run: |
+          foreach ($t in $env:TARGETS.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) {
+                  ./scripts/build.ps1 -Target $t -Preset $env:PRESET
+          }
+
+      #   by TARGET NAME rather than by glob, because the platforms disagree about what they
+      # produce: the RP2 boards get .uf2/.elf/.bin/.hex from pico_add_extra_outputs(), sealed and
+      # signed, while a bare-CMSIS STM32 board is a plain executable -- no extension at all on
+      # Linux -- with .bin/.hex objcopy'd beside it. Every executable lives in module/<dir>/ and is
+      # named for its target, which holds on both.
+      #   a target that produced no image fails here, by name, rather than as an upload that
+      # quietly kept less than was built
+      - name: collect images
+        working-directory: ${{ inputs.project }}/${{ inputs.tree }}
+        shell: pwsh
+        env:
+          TARGETS: ${{ inputs.targets }}
+          IMAGES: ${{ runner.temp }}/images
+        run: |
+          New-Item -ItemType Directory -Force $env:IMAGES | Out-Null
+          foreach ($t in $env:TARGETS.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) {
+                  $found = Get-ChildItem -Path module -Directory | ForEach-Object {
+                          Get-ChildItem -Path $_.FullName -File |
+                                  Where-Object { $_.Name -in @($t, "$t.elf", "$t.uf2", "$t.bin", "$t.hex") }
+                  }
+                  if (-not $found) { throw "no image for '$t' under $(Get-Location)/module" }
+                  $found | ForEach-Object { Write-Host "  $($_.FullName)"; Copy-Item $_.FullName $env:IMAGES }
+          }
+
+      - name: upload images
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.preset }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/images
