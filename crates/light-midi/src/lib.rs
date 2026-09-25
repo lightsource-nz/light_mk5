@@ -57,6 +57,19 @@ pub trait Transport {
         /// Called once per service for every slot written to. A transport whose writes are
         /// already complete bursts (the SPI link) ignores it.
         fn flush(&mut self, idx: u8);
+
+        /// Packets the transport itself lost because a queue between it and this engine was
+        /// full, since boot: arriving ones it had nowhere to put, and departing ones it could
+        /// not accept.
+        ///
+        ///   THIS IS THE ONE LOSS THE ENGINE CANNOT SEE. Everything the forwarder drops it
+        /// drops deliberately and counts. What happens underneath -- a packet arriving while
+        /// the application is busy elsewhere and finding its queue full -- is invisible from
+        /// here, and a MIDI note that never arrives is exactly the failure nobody can debug
+        /// from the outside. A transport that cannot lose packets answers zero.
+        fn dropped_packets(&self) -> (u32, u32) {
+                (0, 0)
+        }
 }
 
 /// A mount or unmount a host stack reported, waiting for the application's poll.
@@ -136,6 +149,11 @@ pub struct Forwarder<const N: usize> {
         tx_shown: bool,
         /// MIDI packets received across all sources (padding code indexes excluded), for diagnostics.
         pub received: u32,
+        /// Packets written to a destination. NOT the same number as `received`, and not a
+        /// smaller one either: a source routed to three destinations forwards three packets
+        /// for the one it received, and a source routed nowhere forwards none. What the pair
+        /// says together is how much work the routing table is making of the traffic.
+        pub forwarded: u32,
         /// Packets dropped for a cable number past `MAX_CABLES`, for diagnostics.
         pub dropped: u32,
 }
@@ -148,7 +166,7 @@ impl<const N: usize> Default for Forwarder<N> {
 
 impl<const N: usize> Forwarder<N> {
         pub const fn new() -> Self {
-                Self { devices: [NO_DEVICE; N], table: [const { [const { Vec::new() }; MAX_CABLES] }; N], hub_addr: 0, last_rx_ms: 0, last_tx_ms: 0, rx_shown: false, tx_shown: false, received: 0, dropped: 0 }
+                Self { devices: [NO_DEVICE; N], table: [const { [const { Vec::new() }; MAX_CABLES] }; N], hub_addr: 0, last_rx_ms: 0, last_tx_ms: 0, rx_shown: false, tx_shown: false, received: 0, forwarded: 0, dropped: 0 }
         }
 
         pub fn device(&self, idx: u8) -> Option<&Device> {
@@ -279,6 +297,7 @@ impl<const N: usize> Forwarder<N> {
                                         // 0; the CIN and the MIDI bytes pass through unchanged
                                         let out = [(t.cable << 4) | cin, packet[1], packet[2], packet[3]];
                                         transport.write(t.idx, &out);
+                                        self.forwarded = self.forwarded.wrapping_add(1);
                                         wrote[usize::from(t.idx)] = true;
                                 }
                         }

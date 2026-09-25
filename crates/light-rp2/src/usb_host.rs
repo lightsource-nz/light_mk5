@@ -393,4 +393,9 @@ impl Transport for UsbMidiHost {
                 }
         }
         fn flush(&mut self, _idx: u8) {}
+
+        fn dropped_packets(&self) -> (u32, u32) {
+                let sum = |m: &[Mailbox<Packet, 64>; SLOTS]| m.iter().map(|q| q.dropped()).sum();
+                (sum(&RX), sum(&TX))
+        }
 }
