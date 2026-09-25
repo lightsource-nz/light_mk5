@@ -129,6 +129,20 @@ in only that firmware's one port) — the shape Corrosion uses.
   `cargo -p` build targets with no tests, and their windowing dependencies are dead weight headless.
 - The host suite is also run in CI through the framework's shared GitHub workflow.
 
+## CI
+
+- `.github/workflows/project-test.yml` and `project-build.yml` are **reusable workflows**: a project
+  calls them with its name and, for a firmware leg, one preset and the targets it builds. They
+  check the project out beside `light_mk5` and `pico-sdk`, the same sibling layout a developer has,
+  and run the project's own `scripts/test.ps1` / `scripts/build.ps1` — CI has no build recipe of
+  its own to drift from the scripts.
+- The framework's own `ci.yml` runs the host tests and builds the ARM firmware presets through
+  `project-build.yml`, one leg per preset, keeping each target's images as artifacts. Not built
+  there: the RISC-V presets, and touch349/touch4 until their board headers are on the pico-sdk
+  fork's `master`.
+- A green firmware leg means the tree configures, compiles, links, seals and signs. It does not
+  mean the board runs: that is still verified on the bench.
+
 ## Toolchain
 
 - `rustup` with the `thumbv8m.main-none-eabi` target — the **soft-float** ABI, to match pico-sdk's

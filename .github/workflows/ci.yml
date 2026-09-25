@@ -1,15 +1,20 @@
-# Builds and runs the host test suite on every push and pull request.
+# Builds and tests light_mk5 itself on every push and pull request.
 #
-# The framework IS this repository, so there is no separate framework to check out: the job
-# checks out light_mk5, installs ninja, and runs scripts/test.ps1 -- which configures the host
-# tree and runs its one ctest, `cargo test` over the portable crates. ubuntu-latest carries a
-# stable rustup toolchain and the host build needs no cross target; crush's bundled FreeType
-# builds with the runner's C compiler and cmake. Submodules are left unfetched: the CMSIS and
-# sanitizers submodules are for firmware and bare-metal builds, which the host tests never touch.
+# HOST TESTS: the framework IS this repository, so there is no separate framework to check out:
+# the job checks out light_mk5, installs ninja, and runs scripts/test.ps1 -- which configures the
+# host tree and runs its one ctest, `cargo test` over the portable crates. ubuntu-latest carries
+# a stable rustup toolchain and the host build needs no cross target; crush's bundled FreeType
+# builds with the runner's C compiler and cmake.
 #
-# Firmware trees are not built here: they need the arm and riscv cross toolchains, pico-sdk and
-# the CMSIS device checkouts, and a green host run is what CI is for -- the firmware is verified
-# on the bench, per board, before anything is called done.
+# FIRMWARE: the ARM configurations the framework carries, one leg per preset, through the same
+# reusable workflow every project here calls (project-build.yml, which knows not to check the
+# framework out a second time over the commit under test). A leg proves its tree configures,
+# compiles, links, seals and signs; it does not prove the board runs -- that is still verified on
+# the bench, per board, before anything is called done.
+#   touch349 and touch4 are left out until their board headers reach the pico-sdk fork (see the
+# matrix). The RISC-V presets are not built here: they need the Hazard3 toolchain, which
+# light-env.ps1 keeps off PATH and hands to the preset through PICO_TOOLCHAIN_PATH -- a second
+# toolchain install for two configurations whose C and Rust are the ARM ones recompiled.
 name: CI
 
 on:
@@ -45,3 +50,79 @@ jobs:
       - name: test
         shell: pwsh
         run: ./scripts/test.ps1
+
+  firmware:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          #   the Pico 2 tree builds the bootloader beside its app, so both are one leg
+          - name: pico2 (RP2350, Pico-OLED-1.3)
+            preset: conf-light_mk5-pico2-debug
+            targets: light_pico2 light_bootloader
+            tree: build-pico2
+            pico_sdk: true
+          #   the same app on the RP2040: thumbv6m, portable-atomic, and no sealing or
+          # bootloader -- the leg that keeps the framework honest about the older chip
+          - name: pico (RP2040)
+            preset: conf-light_mk5-pico-debug
+            targets: light_pico2
+            tree: build-pico
+            pico_sdk: true
+          #   release: cargo's release profile (opt-level s, fat LTO) is a different compile, and
+          # the one that ships
+          - name: pico2 (RP2350, release)
+            preset: conf-light_mk5-pico2-release
+            targets: light_pico2 light_bootloader
+            tree: build-pico2-release
+            pico_sdk: true
+          - name: usb_host_probe (RP2350)
+            preset: conf-light_mk5-usb-host-probe-debug
+            targets: usb_host_probe
+            tree: build-usb-host-probe
+            pico_sdk: true
+          - name: touch169 (RP2350)
+            preset: conf-light_mk5-touch169-debug
+            targets: ui_demo_touch169
+            tree: build-touch169
+            pico_sdk: true
+          - name: touch28 (RP2350)
+            preset: conf-light_mk5-touch28-debug
+            targets: ui_demo_touch28
+            tree: build-touch28
+            pico_sdk: true
+          #   NOT BUILT: touch349 and touch4. Their PICO_BOARD headers
+          # (waveshare_rp2350_touch_lcd_3.49.h, waveshare_rp2350_touch_lcd_4.h) are not on the
+          # pico-sdk fork's master, so neither tree can configure from a fresh checkout. Push the
+          # headers to the fork and these two legs go back in:
+          #   - name: touch349 (RP2350B)
+          #     preset: conf-light_mk5-touch349-debug
+          #     targets: ui_demo_touch349 dictaphone_touch349 dictaphone_wide_touch349 light_lui_touch349
+          #     tree: build-touch349
+          #     pico_sdk: true
+          #   - name: touch4 (RP2350)
+          #     preset: conf-light_mk5-touch4-debug
+          #     targets: ui_demo_touch4
+          #     tree: build-touch4
+          #     pico_sdk: true
+          #   bare CMSIS: no Pico SDK involved at all, and the checkout is left out to prove it
+          - name: mini_stm32h7 (STM32H743, bare CMSIS)
+            preset: conf-light_mk5-mini-stm32h7-debug
+            targets: light_h7
+            tree: build-mini-stm32h7
+            pico_sdk: false
+          - name: blackpill (STM32F411, bare CMSIS)
+            preset: conf-light_mk5-blackpill-debug
+            targets: light_f411
+            tree: build-blackpill
+            pico_sdk: false
+    #   the local copy, so a change to the reusable workflow is exercised by the pull request that
+    # makes it rather than after it merges
+    uses: ./.github/workflows/project-build.yml
+    with:
+      project: light_mk5
+      preset: ${{ matrix.preset }}
+      targets: ${{ matrix.targets }}
+      tree: ${{ matrix.tree }}
+      pico_sdk: ${{ matrix.pico_sdk }}
