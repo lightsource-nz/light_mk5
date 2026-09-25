@@ -569,6 +569,8 @@ pub struct Radio {
         /// Whether a network was actually joined, which decides whether there is one to let go
         /// of before joining another.
         joined: bool,
+        /// When the idle upkeep in [`Radio::poll`] last actually looked at the radio.
+        polled_us: u64,
         /// The fetch buffers, held here so they are taken once and reused -- see [`Fetch`].
         buffers: &'static mut Fetch,
 }
@@ -602,7 +604,7 @@ impl Radio {
                 let (device, control, runner) = block_on(cyw43::new(state, PwrPin(pwr), spi, firmware));
                 //   the task never returns, and a future whose answer is "never" cannot be named
                 // for a static on this compiler -- so it is wrapped in one whose answer is nothing
-                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None, joined: false, buffers: FETCH.take() };
+                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None, joined: false, polled_us: 0, buffers: FETCH.take() };
 
                 //   the regulatory blob is loaded by the control side TALKING TO the task side, so
                 // the two have to run together: this is the join the framework does by hand, and
@@ -672,7 +674,27 @@ impl Radio {
         ///   What would actually help is more buffers, and they belong to the driver. Until a
         /// transfer exists whose throughput can be measured, there is nothing to weigh that
         /// against, so the simple thing stays.
+        /// Keep the radio and its network ticking over between the things asked of it. Call every
+        /// pass; what it actually does is paced.
+        ///
+        ///   LOOKING AT THE RADIO COSTS A BUS TRANSACTION, and asking an idle one whether anything
+        /// has happened is most of what this used to do. Measured on a board that is also
+        /// forwarding instrument traffic: bringing the radio up -- not joining a network, merely
+        /// powering it -- HALVED the application's loop rate, from sixteen thousand passes a
+        /// second to eight, with the radio's poll taking a third of every pass. That is a standing
+        /// tax on everything else the board does, paid for a part that is usually idle.
+        ///
+        ///   Nothing needs it that often. Everything that waits on the radio -- joining,
+        /// configuring, fetching -- drives its own loop and polls as fast as it can for as long as
+        /// it takes. What is left for here is upkeep: lease renewals, address resolution, the
+        /// transport's timers. Those are millisecond work, so this looks once a millisecond and
+        /// costs a twentieth of what it did.
         pub fn poll(&mut self) {
+                let now = crate::now_us();
+                if now.wrapping_sub(self.polled_us) < IDLE_POLL_US {
+                        return;
+                }
+                self.polled_us = now;
                 let waker = noop_waker();
                 let mut cx = Context::from_waker(&waker);
                 let _ = self.task.as_mut().poll(&mut cx);
@@ -930,6 +952,11 @@ const STATUS_NO_NETWORKS: u32 = 3;
 /// for whatever the address negotiation and a name lookup want.
 const SOCKETS: usize = 4;
 /// How long the network is given to hand out an address before the attempt is abandoned.
+/// How often [`Radio::poll`] looks at an otherwise idle radio -- see there for why it is paced at
+/// all. A millisecond is far below anything the upkeep it drives cares about, and far above the
+/// application's loop period, which is what makes it cheap.
+const IDLE_POLL_US: u64 = 1_000;
+
 const CONFIGURE_TIMEOUT_US: u64 = 20_000_000;
 
 /// Why there is no network.
