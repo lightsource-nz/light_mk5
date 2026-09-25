@@ -26,6 +26,84 @@ pub enum Poll {
         Error,
 }
 
+/// How fast the loop is going round, and where its time goes.
+///
+/// THE LOOP PERIOD IS THE LATENCY. A cooperative runtime answers nothing until the pass that
+/// answers it comes round, so however quick a module's own work is, what a person or a wire
+/// waits for is one turn of the loop -- and what they wait for at worst is the longest turn,
+/// not the average one. A module that spends half a millisecond somewhere is not slow by
+/// itself and does not look slow in isolation; it is half a millisecond added to everything
+/// else's response. That is the number this exists to expose.
+///
+/// The pass count is always kept, because it costs one increment. Per-module attribution is
+/// not: it reads the clock once per module per pass, which is small but not free, so it is
+/// turned on for as long as someone is looking and left off otherwise. WHILE IT IS ON THE
+/// LOOP IS GENUINELY SLOWER -- the rate reported under `detail` is of a loop carrying the
+/// measurement, so compare shares between modules, and take the rate itself from a plain
+/// report.
+pub mod timing {
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        static DETAIL: AtomicBool = AtomicBool::new(false);
+        static WANTED: AtomicBool = AtomicBool::new(false);
+
+        /// Time each module separately from the next pass on.
+        pub fn set_detail(on: bool) {
+                DETAIL.store(on, Ordering::Relaxed);
+        }
+
+        pub fn detail() -> bool {
+                DETAIL.load(Ordering::Relaxed)
+        }
+
+        /// Ask the runtime to say what it has at the end of the next pass, and start a fresh
+        /// window. Deferred rather than done here because the figures belong to the runtime,
+        /// and whoever asks -- a console command, a key, a timer -- is inside a module and so
+        /// inside the very pass being measured.
+        pub fn request() {
+                WANTED.store(true, Ordering::Relaxed);
+        }
+
+        pub(crate) fn wanted() -> bool {
+                WANTED.swap(false, Ordering::Relaxed)
+        }
+}
+
+/// The running tally behind [`timing`]. Microseconds throughout; a window long enough to
+/// overflow a `u32` of them is over an hour, and reporting resets it.
+struct Timing<const N: usize> {
+        /// When the current window began, by the log's clock.
+        since_us: u64,
+        passes: u32,
+        /// Passes in which at least one module reported [`Poll::Busy`].
+        busy: u32,
+        /// The longest single pass, and the module that took most of it.
+        worst_us: u32,
+        worst_module: usize,
+        /// Per module, in load order: time inside its `poll`. Only filled under `detail`.
+        module_us: [u32; N],
+        /// Whether any pass in this window was timed. Asked rather than asking `detail`,
+        /// because the pass that turns detail on is not in the window it ends -- reporting a
+        /// table of zeros there would read as "no module uses any time".
+        detailed: bool,
+}
+
+impl<const N: usize> Timing<N> {
+        const fn new() -> Self {
+                Self { since_us: 0, passes: 0, busy: 0, worst_us: 0, worst_module: 0, module_us: [0; N], detailed: false }
+        }
+
+        fn restart(&mut self, now_us: u64) {
+                self.since_us = now_us;
+                self.passes = 0;
+                self.busy = 0;
+                self.worst_us = 0;
+                self.worst_module = 0;
+                self.module_us = [0; N];
+                self.detailed = false;
+        }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
         /// The runtime's fixed capacity is full. Raise `N`, or register fewer modules.
@@ -76,6 +154,7 @@ pub struct Runtime<'a, const N: usize = { crate::DEFAULT_MODULES }> {
         order: Vec<usize, N>,
         /// How many of `order` have been loaded (so a failed start unloads only those).
         loaded: usize,
+        timing: Timing<N>,
 }
 
 impl<'a, const N: usize> Default for Runtime<'a, N> {
@@ -86,7 +165,7 @@ impl<'a, const N: usize> Default for Runtime<'a, N> {
 
 impl<'a, const N: usize> Runtime<'a, N> {
         pub const fn new() -> Self {
-                Self { modules: Vec::new(), order: Vec::new(), loaded: 0 }
+                Self { modules: Vec::new(), order: Vec::new(), loaded: 0, timing: Timing::new() }
         }
 
         /// Register a module. Order of registration only matters as a tie-break among modules
@@ -111,26 +190,112 @@ impl<'a, const N: usize> Runtime<'a, N> {
                         }
                         self.loaded += 1;
                 }
+                //   the first window starts here rather than at zero, so a report taken early
+                // is not diluted by however long the board spent coming up
+                self.timing.restart(crate::log::now_us());
                 Ok(())
         }
 
         /// Poll every module once, in load order. `Shutdown` and `Error` from any module end
         /// the pass; the rest are summarised as `Busy` if anyone was.
+        ///
+        /// Counting the pass is unconditional and costs an add. Timing each module is not --
+        /// see [`timing`] for why, and for what the figures mean.
         pub fn poll_once(&mut self) -> Result<Poll, Error> {
                 if self.order.is_empty() {
                         return Err(Error::NotStarted);
                 }
+                let detail = timing::detail();
+                let began = if detail { crate::log::now_us() } else { 0 };
+                let mut mark = began;
+                let (mut worst_module, mut worst_module_us) = (0usize, 0u32);
                 let mut result = Poll::Idle;
                 for i in 0..self.order.len() {
                         let m = &mut self.modules[self.order[i]];
-                        match m.poll() {
+                        let polled = m.poll();
+                        if detail {
+                                let now = crate::log::now_us();
+                                let took = (now - mark) as u32;
+                                mark = now;
+                                self.timing.module_us[i] += took;
+                                if took > worst_module_us {
+                                        (worst_module, worst_module_us) = (i, took);
+                                }
+                        }
+                        match polled {
                                 Poll::Idle => {}
                                 Poll::Busy => result = Poll::Busy,
                                 Poll::Shutdown => return Ok(Poll::Shutdown),
                                 Poll::Error => return Err(Error::Module(m.name())),
                         }
                 }
+                self.timing.passes += 1;
+                if result == Poll::Busy {
+                        self.timing.busy += 1;
+                }
+                if detail {
+                        self.timing.detailed = true;
+                        let pass = (mark - began) as u32;
+                        if pass > self.timing.worst_us {
+                                self.timing.worst_us = pass;
+                                self.timing.worst_module = worst_module;
+                        }
+                }
+                if timing::wanted() {
+                        self.report_timing();
+                }
                 Ok(result)
+        }
+
+        /// Say where the loop's time went over the window just finished, and begin another.
+        ///
+        /// Written from the runtime because only the runtime holds both halves: the figures
+        /// and the names they belong to. A module asking for this ([`timing::request`]) gets
+        /// its answer on the console like any other.
+        fn report_timing(&mut self) {
+                let now = crate::log::now_us();
+                let span = now.saturating_sub(self.timing.since_us);
+                let passes = self.timing.passes;
+                //   a window with no clock behind it (the log's clock is installed by the port,
+                // and a host test has none) would divide by zero rather than say anything
+                if span == 0 || passes == 0 {
+                        self.timing.restart(now);
+                        return;
+                }
+                crate::info!(
+                        "loop: {} passes in {} ms -- {} a second, {} us each; {}% of them had work",
+                        passes,
+                        span / 1000,
+                        passes as u64 * 1_000_000 / span,
+                        span / passes as u64,
+                        self.timing.busy as u64 * 100 / passes as u64,
+                );
+                if self.timing.detailed {
+                        let worst = self.modules[self.order[self.timing.worst_module]].name();
+                        crate::info!("loop: the longest pass was {} us, most of it in {}", self.timing.worst_us, worst);
+                        //   what the measuring costs, measured the same way: each line below is
+                        // one clock read's worth high, because a module's figure runs from the
+                        // reading that ended the module before it to the reading that ends it.
+                        // Said rather than silently subtracted -- a profiler that quietly
+                        // adjusts its own numbers cannot be checked
+                        const SAMPLES: u32 = 64;
+                        let t0 = crate::log::now_us();
+                        for _ in 0..SAMPLES {
+                                core::hint::black_box(crate::log::now_us());
+                        }
+                        let each = (crate::log::now_us() - t0) * 1000 / SAMPLES as u64;
+                        crate::info!("loop: reading the clock costs {} ns, which is in every figure below once", each);
+                        for i in 0..self.order.len() {
+                                let took = self.timing.module_us[i] as u64;
+                                crate::info!(
+                                        "loop:   {} -- {}% of the loop, {} ns a pass",
+                                        self.modules[self.order[i]].name(),
+                                        took * 100 / span,
+                                        took * 1000 / passes as u64,
+                                );
+                        }
+                }
+                self.timing.restart(now);
         }
 
         /// Poll until a module asks for shutdown or fails, then unload everything in reverse

@@ -91,21 +91,52 @@ impl fmt::Display for Record {
         }
 }
 
+impl Level {
+        const fn as_u8(self) -> u8 {
+                self as u8
+        }
+
+        fn from_u8(v: u8) -> Self {
+                match v {
+                        0 => Level::Error,
+                        1 => Level::Warn,
+                        2 => Level::Info,
+                        3 => Level::Debug,
+                        _ => Level::Trace,
+                }
+        }
+}
+
 struct State {
         queue: Deque<Record, DEPTH>,
         /// Records dropped since the last drain reported them.
         dropped: u32,
-        clock: Option<fn() -> u64>,
-        /// Records above this level are discarded at the producer, before formatting.
-        max_level: Level,
 }
 
-static STATE: Mutex<RefCell<State>> = Mutex::new(RefCell::new(State {
-        queue: Deque::new(),
-        dropped: 0,
-        clock: None,
-        max_level: Level::Info,
-}));
+static STATE: Mutex<RefCell<State>> = Mutex::new(RefCell::new(State { queue: Deque::new(), dropped: 0 }));
+
+//   THE CLOCK AND THE LEVEL ARE NOT BEHIND THE LOCK, and the difference is not small. Both are
+// read constantly -- the level on every log call before anything is formatted, the clock on
+// every record and by any code that wants the time -- while both are written approximately
+// never. Under a lock, each of those reads costs a critical section, and on a chip with more
+// than one core that is a hardware spinlock taken across cores with interrupts off: a module
+// merely asking what time it is contends with the other core's console. Neither needs mutual
+// exclusion to be correct. A word-sized load is already atomic; the only thing the lock was
+// providing was the RefCell around them.
+//
+//   The queue does still need it: pushing a record is a multi-step change to a structure two
+// cores share, which is the case the lock is for.
+static MAX_LEVEL: crate::atomic::AtomicU8 = crate::atomic::AtomicU8::new(Level::Info.as_u8());
+/// The installed clock as a function pointer, or null before [`set_clock`].
+static CLOCK: crate::atomic::AtomicUsize = crate::atomic::AtomicUsize::new(0);
+
+fn clock() -> Option<fn() -> u64> {
+        match CLOCK.load(crate::atomic::Ordering::Relaxed) {
+                0 => None,
+                // SAFETY: only ever stored by `set_clock`, from a `fn() -> u64`
+                p => Some(unsafe { core::mem::transmute::<usize, fn() -> u64>(p) }),
+        }
+}
 
 /// A `fmt::Write` that truncates instead of failing, so an over-long message loses its tail
 /// rather than the whole record.
@@ -130,27 +161,36 @@ impl<const N: usize> Write for Truncating<'_, N> {
 
 /// Install the clock records are stamped with. Before this, timestamps are zero.
 pub fn set_clock(clock: fn() -> u64) {
-        critical_section::with(|cs| STATE.borrow_ref_mut(cs).clock = Some(clock));
+        CLOCK.store(clock as usize, crate::atomic::Ordering::Relaxed);
 }
 
 /// The installed clock's reading, in microseconds; zero before [`set_clock`]. Here so
 /// PORTABLE code -- an app crate with no port dependency -- can timestamp its own logic
 /// (activity timeouts, uptime) with the same clock its log lines carry.
 pub fn now_us() -> u64 {
-        critical_section::with(|cs| STATE.borrow_ref(cs).clock.map_or(0, |c| c()))
+        clock().map_or(0, |c| c())
 }
 
 pub fn set_max_level(level: Level) {
-        critical_section::with(|cs| STATE.borrow_ref_mut(cs).max_level = level);
+        MAX_LEVEL.store(level.as_u8(), crate::atomic::Ordering::Relaxed);
+}
+
+pub fn max_level() -> Level {
+        Level::from_u8(MAX_LEVEL.load(crate::atomic::Ordering::Relaxed))
 }
 
 /// Whether a record at this level would be kept. Lets the macros skip formatting entirely.
 pub fn enabled(level: Level) -> bool {
-        critical_section::with(|cs| level <= STATE.borrow_ref(cs).max_level)
+        level.as_u8() <= MAX_LEVEL.load(crate::atomic::Ordering::Relaxed)
 }
 
 /// Queue a record. Never blocks; on a full queue the record is dropped and counted.
 pub fn push(level: Level, target: &'static str, args: fmt::Arguments<'_>) {
+        //   the level first, and outside the lock: a record nobody will keep should cost a
+        // load and a compare, not a formatted string and a critical section to throw away
+        if !enabled(level) {
+                return;
+        }
         //   format OUTSIDE the critical section: formatting is the slow part, and holding the
         // lock through it would make every other producer -- including the other core -- wait
         // on this one's printf. A message with no arguments never touches fmt at all
@@ -162,12 +202,9 @@ pub fn push(level: Level, target: &'static str, args: fmt::Arguments<'_>) {
                         Text::Owned(text)
                 }
         };
+        let ts_us = now_us();
         critical_section::with(|cs| {
                 let mut st = STATE.borrow_ref_mut(cs);
-                if level > st.max_level {
-                        return;
-                }
-                let ts_us = st.clock.map_or(0, |c| c());
                 let record = Record { level, ts_us, target, text };
                 if st.queue.push_back(record).is_err() {
                         st.dropped = st.dropped.saturating_add(1);
@@ -187,7 +224,7 @@ pub fn drain(max: usize, mut sink: impl FnMut(&Record)) -> usize {
                         if st.dropped > 0 {
                                 let n = st.dropped;
                                 st.dropped = 0;
-                                let ts_us = st.clock.map_or(0, |c| c());
+                                let ts_us = now_us();
                                 let mut text = String::new();
                                 let _ = write!(Truncating(&mut text), "dropped {n} log records");
                                 return Some(Record { level: Level::Warn, ts_us, target: "light_core::log", text: Text::Owned(text) });
@@ -246,9 +283,9 @@ mod tests {
                         let mut st = STATE.borrow_ref_mut(cs);
                         st.queue.clear();
                         st.dropped = 0;
-                        st.clock = None;
-                        st.max_level = Level::Info;
                 });
+                CLOCK.store(0, crate::atomic::Ordering::Relaxed);
+                set_max_level(Level::Info);
         }
 
         fn drain_all() -> Vec<Record> {

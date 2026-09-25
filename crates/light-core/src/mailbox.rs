@@ -13,29 +13,61 @@ use heapless::Deque;
 pub struct Mailbox<E: Copy, const N: usize> {
         queue: Mutex<RefCell<Deque<E, N>>>,
         dropped: AtomicU32,
+        /// The queue's length again, outside the lock. Maintained under it, so it is exact
+        /// for whoever holds it and can only be stale by one operation for whoever does not.
+        /// See [`Mailbox::pop`].
+        waiting: AtomicU32,
 }
 
 impl<E: Copy, const N: usize> Mailbox<E, N> {
         pub const fn new() -> Self {
-                Self { queue: Mutex::new(RefCell::new(Deque::new())), dropped: AtomicU32::new(0) }
+                Self { queue: Mutex::new(RefCell::new(Deque::new())), dropped: AtomicU32::new(0), waiting: AtomicU32::new(0) }
         }
 
         /// Queue an event. On a full mailbox the event comes back in the `Err`, and the drop is
         /// counted -- the producer decides whether that matters; the mailbox never blocks.
         pub fn push(&self, event: E) -> Result<(), E> {
-                let r = critical_section::with(|cs| self.queue.borrow_ref_mut(cs).push_back(event));
+                let r = critical_section::with(|cs| {
+                        let mut q = self.queue.borrow_ref_mut(cs);
+                        let r = q.push_back(event);
+                        if r.is_ok() {
+                                // after the event is in, so a reader that sees the count finds it
+                                self.waiting.store(q.len() as u32, Ordering::Release);
+                        }
+                        r
+                });
                 if r.is_err() {
                         self.dropped.fetch_add(1, Ordering::Relaxed);
                 }
                 r
         }
 
+        /// Take the oldest event, if there is one.
+        ///
+        ///   AN EMPTY MAILBOX IS ANSWERED WITHOUT THE LOCK, for the same reason the event bus
+        /// does it: this is called in the runtime's inner loop -- once per device slot per pass
+        /// by a forwarder, once a pass by a console reader -- and nearly every call finds
+        /// nothing. A critical section to learn that costs more than the rest of the call, and
+        /// on a chip with more than one core it is a spinlock held across cores.
+        ///
+        ///   A push landing between the load and the return is not seen until the next call.
+        /// Where the producer is the same core there is no such window at all, and where it is
+        /// the other core the event waits one pass, which is what it would have done had it
+        /// arrived a moment later.
         pub fn pop(&self) -> Option<E> {
-                critical_section::with(|cs| self.queue.borrow_ref_mut(cs).pop_front())
+                if self.waiting.load(Ordering::Acquire) == 0 {
+                        return None;
+                }
+                critical_section::with(|cs| {
+                        let mut q = self.queue.borrow_ref_mut(cs);
+                        let e = q.pop_front();
+                        self.waiting.store(q.len() as u32, Ordering::Release);
+                        e
+                })
         }
 
         pub fn len(&self) -> usize {
-                critical_section::with(|cs| self.queue.borrow_ref(cs).len())
+                self.waiting.load(Ordering::Acquire) as usize
         }
 
         pub fn is_empty(&self) -> bool {

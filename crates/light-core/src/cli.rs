@@ -13,7 +13,7 @@
 //! `stats` is deliberately NOT a built-in: every application's stats line is its own, so it
 //! is just another table entry. What the built-ins cover is exactly what was copied verbatim.
 
-use crate::{info, log, warn};
+use crate::{info, log, module, warn};
 
 /// The words of a line after the command name, in order.
 ///
@@ -115,7 +115,7 @@ impl<E> Cli<E> {
                 info!("> {line}");
                 match cmd {
                         "help" => {
-                                info!("commands: help | loglevel error|warn|info|debug|trace | quit");
+                                info!("commands: help | loglevel error|warn|info|debug|trace | loop [detail|off] | quit");
                                 for c in self.commands {
                                         info!("  {}", c.usage);
                                 }
@@ -137,6 +137,24 @@ impl<E> Cli<E> {
                                         }
                                         None => warn!("usage: loglevel error|warn|info|debug|trace"),
                                 }
+                                Outcome::Handled
+                        }
+                        //   a built-in for the same reason `loglevel` is one: the loop belongs to
+                        // the runtime, not to any application, so every application would
+                        // otherwise write the same command to reach it
+                        "loop" => {
+                                match words.next() {
+                                        Some("detail") => module::timing::set_detail(true),
+                                        Some("off") => module::timing::set_detail(false),
+                                        Some(_) => {
+                                                warn!("usage: loop [detail|off]");
+                                                return Outcome::Handled;
+                                        }
+                                        None => {}
+                                }
+                                //   the runtime answers at the end of this pass: the figures are
+                                // its, and this is running inside the pass being measured
+                                module::timing::request();
                                 Outcome::Handled
                         }
                         "quit" => {

@@ -22,6 +22,10 @@ use heapless::Deque;
 /// A subscriber's handle. Not `Copy`: one handle, one cursor.
 pub struct Subscription {
         slot: usize,
+        /// This slot's cursor again, where [`EventBus::poll`] can read it without the lock.
+        /// The copy inside the bus is the authority; this one only ever trails it, which is
+        /// all the fast path needs.
+        cursor: AtomicU32,
 }
 
 struct Inner<E: Copy, const N: usize, const S: usize> {
@@ -47,6 +51,9 @@ impl<E: Copy, const N: usize, const S: usize> Inner<E, N, S> {
 pub struct EventBus<E: Copy, const N: usize = { crate::DEFAULT_EVENT_DEPTH }, const S: usize = { crate::DEFAULT_MODULES }> {
         inner: Mutex<RefCell<Inner<E, N, S>>>,
         refused: AtomicU32,
+        /// `next_seq` again, outside the lock, so a subscriber can tell that there is nothing
+        /// for it without taking one. See [`EventBus::poll`].
+        published: AtomicU32,
 }
 
 impl<E: Copy, const N: usize, const S: usize> Default for EventBus<E, N, S> {
@@ -60,6 +67,7 @@ impl<E: Copy, const N: usize, const S: usize> EventBus<E, N, S> {
                 Self {
                         inner: Mutex::new(RefCell::new(Inner { ring: Deque::new(), next_seq: 0, cursors: [None; S] })),
                         refused: AtomicU32::new(0),
+                        published: AtomicU32::new(0),
                 }
         }
 
@@ -70,7 +78,7 @@ impl<E: Copy, const N: usize, const S: usize> EventBus<E, N, S> {
                         let mut inner = self.inner.borrow_ref_mut(cs);
                         let slot = inner.cursors.iter().position(|c| c.is_none())?;
                         inner.cursors[slot] = Some(inner.next_seq);
-                        Some(Subscription { slot })
+                        Some(Subscription { slot, cursor: AtomicU32::new(inner.next_seq) })
                 })
         }
 
@@ -94,6 +102,9 @@ impl<E: Copy, const N: usize, const S: usize> EventBus<E, N, S> {
                         let seq = inner.next_seq;
                         inner.ring.push_back((seq, event)).map_err(|(_, e)| e)?;
                         inner.next_seq = inner.next_seq.wrapping_add(1);
+                        // after the event is in the ring, so a subscriber that sees the new
+                        // count finds something behind it
+                        self.published.store(inner.next_seq, Ordering::Release);
                         Ok(())
                 });
                 if r.is_err() {
@@ -103,7 +114,24 @@ impl<E: Copy, const N: usize, const S: usize> EventBus<E, N, S> {
         }
 
         /// The subscriber's next unseen event, if any.
+        ///
+        ///   NOTHING TO REPORT IS THE COMMON CASE BY FAR, and it is answered without the lock.
+        /// Every subscribing module calls this every pass of the runtime -- tens of thousands
+        /// of times a second each -- and all but a handful of those calls find an empty ring.
+        /// Taking a critical section to discover that is the expensive part: on a chip with
+        /// more than one core it is a hardware spinlock with interrupts off, and several
+        /// modules were each paying it in a loop that has real work waiting.
+        ///
+        ///   The test is a comparison of two counters: how many events have been published,
+        /// and how many this subscriber has taken. Equal means nothing is waiting. The bus's
+        /// copy of the cursor stays the authority -- this one is written only here, after a
+        /// successful take, so it can trail but never run ahead. A publish from another core
+        /// landing between the two loads is simply not seen until the next call, which is a
+        /// pass away and no different from its landing an instruction later.
         pub fn poll(&self, sub: &Subscription) -> Option<E> {
+                if sub.cursor.load(Ordering::Relaxed) == self.published.load(Ordering::Acquire) {
+                        return None;
+                }
                 critical_section::with(|cs| {
                         let mut inner = self.inner.borrow_ref_mut(cs);
                         let cursor = inner.cursors[sub.slot]?;
@@ -114,6 +142,7 @@ impl<E: Copy, const N: usize, const S: usize> EventBus<E, N, S> {
                         let index = cursor.wrapping_sub(front_seq) as usize;
                         let (_, event) = *inner.ring.iter().nth(index)?;
                         inner.cursors[sub.slot] = Some(cursor.wrapping_add(1));
+                        sub.cursor.store(cursor.wrapping_add(1), Ordering::Relaxed);
                         Some(event)
                 })
         }
@@ -207,6 +236,26 @@ mod tests {
                 assert_eq!(drain(&bus, &s2), [Ev::A(1), Ev::B]);
                 assert_eq!(bus.backlog(), 0);
                 assert_eq!(bus.poll(&s1), None);
+        }
+
+        #[test]
+        fn a_subscriber_that_has_caught_up_still_sees_what_comes_next() {
+                //   the case the lock-free "nothing for me" test could get wrong: having once
+                // answered empty, a poll must not go on answering empty. Every module in a
+                // running application is in this state almost all the time
+                let bus: EventBus<Ev, 4, 2> = EventBus::new();
+                let sub = bus.subscribe().unwrap();
+                assert_eq!(bus.poll(&sub), None, "nothing published yet");
+                bus.publish(Ev::A(1)).unwrap();
+                assert_eq!(bus.poll(&sub), Some(Ev::A(1)));
+                assert_eq!(bus.poll(&sub), None);
+                //   and again, a few rounds, because the test compares two counters and a
+                // one-off agreement proves less than a repeated one
+                for i in 2..10 {
+                        assert_eq!(bus.poll(&sub), None);
+                        bus.publish(Ev::A(i)).unwrap();
+                        assert_eq!(bus.poll(&sub), Some(Ev::A(i)));
+                }
         }
 
         #[test]

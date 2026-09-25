@@ -69,6 +69,25 @@ async runtime.
 An application's `light_app_main` builds its modules, adds them to a `Runtime`, and calls `run`,
 which never returns (see [09-application-model.md](09-application-model.md)).
 
+**The runtime measures its own loop** (mk5 decision). Because the model is cooperative, the loop
+period *is* the latency floor: nothing is answered until the pass that answers it comes round, and
+the worst case is the longest pass, not the average one. A module that spends half a millisecond
+somewhere is not slow by itself and does not look slow in isolation — it is half a millisecond added
+to everything else's response — so the runtime counts its passes unconditionally (an increment) and
+can additionally time each module separately. The `loop [detail|off]` console built-in turns the
+per-module timing on and reports pass rate, the longest pass and the module that dominated it, and
+each module's share; the report is written by the runtime, since only the runtime holds both the
+figures and the names they belong to. It also states the cost of one clock read, because a module's
+figure necessarily carries one — a profiler that quietly adjusts its own numbers cannot be checked.
+
+> **Compare figures within one build, not across builds.** Firmware that executes from external
+> flash through a cache is sensitive to where its code lands. Measured on a USB-MIDI forwarder at
+> the everyday optimisation level, an edit to an unrelated source file moved the busiest module's
+> cost from 22.9 to 39.6 µs a pass — a fifth of the whole loop — purely by shifting what shared
+> cache lines, and the change that appeared to cause it had made its own hot path two and a half
+> times faster. A per-module figure that worsens after a change somewhere else is not evidence
+> against that change; confirm it by reverting the change alone and measuring again.
+
 ```mermaid
 flowchart TD
     M([light_app_main]) --> S["Runtime.start:<br/>load each module once"]
@@ -137,6 +156,18 @@ graph TB
 own modules (audio, battery, RTC) to an app without the app naming them — they ride the same bus
 through the `Ext(X)` variant.*
 
+**Finding nothing must be cheap** (mk5 decision). Every subscribing module polls the bus every pass,
+so the overwhelming majority of calls find an empty ring — tens of thousands of times a second per
+module. `poll` therefore answers that case by comparing two counters (events published, events this
+subscriber has taken) without entering the critical section; only a call that will actually deliver
+something takes the lock. The bus's own cursor stays the authority and the subscriber's copy is
+written only after a successful take, so it can trail but never lead. A publish that lands between
+the two loads is seen on the next call — a pass later, which is indistinguishable from its having
+been published a moment after. The same rule applies to `Mailbox::pop`. Measured on a
+four-instrument USB-MIDI forwarder, giving the bus and the mailbox this fast path took the
+application loop from 21,300 to 25,500 passes a second; the modules whose whole `poll` is a queue
+check became three to four times cheaper.
+
 ## Mailbox and log queue
 
 - **`Mailbox<T, N>`** — a bounded single-producer/single-consumer queue, the lock-free hand-off used
@@ -148,6 +179,15 @@ through the `Ext(X)` variant.*
   formatting and output never stall the render loop), or the application core inline on a single-core target. Either
   way the enqueue side is cheap and the drain is off the hot path of a module's `poll`. `log::set_clock`
   gives records timestamps; `log::drain(n, sink)` empties up to `n` records to a sink.
+
+  **The clock and the level are not behind the queue's lock** (mk5 decision). Both are read
+  constantly — the level on every log call before anything is formatted, the clock on every record
+  and by any module that wants the time — and both are written approximately never. Neither needs
+  mutual exclusion to be correct, and on a chip with more than one core a lock means a hardware
+  spinlock taken across cores with interrupts off: a module merely asking what time it is would
+  contend with the other core's console drain. They are plain atomics, and only the record queue
+  keeps the lock. `log::now_us` is the framework's one time source for portable code, so its cost is
+  a framework-wide cost: it fell by a factor of two and a half when it stopped taking a lock.
 
 ## Console and CLI — `console`, `cli`
 
