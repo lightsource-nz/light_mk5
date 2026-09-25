@@ -1,0 +1,33 @@
+/*  CORE 0'S STACK OVER BOTH SCRATCH BANKS, replacing the platform's own definition of these two
+ *  regions.
+ *
+ *    The chip has two four-kilobyte scratch banks at consecutive addresses. By default core 0's
+ *  stack is the second and core 1's reserved stack is the first, which caps core 0 at four
+ *  kilobytes -- and rather less than that in practice, since the shell has already spent some of
+ *  it by the time an application's main is reached. That was not enough: constructing a radio, or
+ *  fetching over one, needs more in a single frame than the whole bank holds, and this chip's
+ *  stack has no guard on it (see the shell's PICO_USE_STACK_GUARDS note), so running out is
+ *  SILENT. It ran past the end into the bank below and survived only because nothing was using
+ *  that bank -- until a build inlined two such frames into one and it ran past that too, into
+ *  nothing at all, and locked the core up.
+ *
+ *    Nothing IS using the bank below: the shell launches core 1 on an array of its own in ordinary
+ *  RAM, so the reservation the platform makes here is four kilobytes set aside for no one. The two
+ *  banks are adjacent, so handing both to core 0 is a doubling that costs nothing and takes no
+ *  memory from anything else. PICO_CORE1_STACK_SIZE must be zero for it -- the platform documents
+ *  that as "the user provides their own stack", which the shell does.
+ *
+ *    THE FIRST REGION IS LEFT AT ZERO LENGTH RATHER THAN DELETED, so that anything asking to be
+ *  placed in it fails the link with a message about not fitting, instead of being quietly put
+ *  somewhere that is now a stack. A collision here would be memory corruption at run time; an
+ *  overlapping region declaration would not be diagnosed at all.
+ *
+ *    Written in terms of the platform's own symbols, never addresses, so it holds for every chip
+ *  the shell builds for -- the two parts in this family put their scratch banks in different
+ *  places and this file does not need to know where.
+ */
+MEMORY
+{
+    SCRATCH_X(rwx) : ORIGIN = SCRATCH_X_ORIGIN, LENGTH = 0
+    SCRATCH_Y(rwx) : ORIGIN = SCRATCH_X_ORIGIN, LENGTH = SCRATCH_X_LENGTH + SCRATCH_Y_LENGTH
+}

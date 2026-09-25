@@ -479,6 +479,35 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
   crate (`usb-console`), on for every device-role board and off for the host role, which then carries
   no device stack at all.
 
+#### The two stacks, and why core 0 gets both scratch banks
+
+These chips have two small scratch memory banks at consecutive addresses, and the platform's default
+arrangement spends one on each core's stack. The shell does not use its half: core 1 runs on an
+array of the shell's own in ordinary RAM, painted before launch so its headroom can be reported on
+the console after boot. That left a bank reserved for nobody while the other was **four kilobytes
+for everything core 0 does** — and rather less in practice, since the shell has spent some of it
+before an application's `main` is reached.
+
+Four kilobytes was not enough, and the way that showed up is the point. **A stack overflow here is
+silent**: the platform's guard is off (it faulted core 1 at boot when it was tried, and it guards the
+linker's stack symbols rather than the shell's array anyway). A single frame in the wireless part's
+path needed more than the whole bank, so that path ran off the end of the stack every time it was
+used and appeared to work — because what lay below was the idle bank. It only became a fault when a
+build inlined two such frames into one and it ran past that bank too, into nothing at all, and the
+core locked up with no console to say so.
+
+So the shell tells the platform it provides core 1's stack (which it does), and replaces one linker
+fragment — the mechanism the platform offers for exactly this — to hand both banks to core 0:
+**eight kilobytes, at no cost to anything else**. The fragment is written in terms of the platform's
+region symbols and never an address, so it holds for both chips in the family, which put their
+scratch banks in different places. The freed region is declared with zero length rather than deleted,
+so anything that asks to be placed in it fails the link loudly instead of being put somewhere that is
+now a stack.
+
+  This is headroom, not a licence: large objects still belong in `.bss` behind a `StaticCell`, and a
+frame measured in kilobytes is still a defect. What the extra bank buys is that finding one is a
+diagnosable fault rather than a silent corruption that happens to land somewhere harmless.
+
 ### Behaviour and invariants
 
 - **Logging never blocks the loop.** A console write the CDC class has no room for — the host not
