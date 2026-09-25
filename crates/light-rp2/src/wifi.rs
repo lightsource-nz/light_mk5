@@ -515,6 +515,12 @@ fn block_on<F: Future>(fut: F) -> F::Output {
         }
 }
 
+//   This holds the driver's packet pool -- eight buffers of a network frame each -- so it is far
+// larger than the application core's whole stack. See where it is taken for why that matters.
+//
+//   A const-initialised cell would be the tidiest home for it, but this type is not `Send`: it
+// keeps a raw pointer to the buffer an ioctl is using, which is sound here (one radio, one core)
+// and not something to assert on the type's behalf from outside the driver.
 static STATE: StaticCell<cyw43::State> = StaticCell::new();
 
 /// The radio, once it has firmware in it.
@@ -584,7 +590,14 @@ impl Radio {
                 relay_log();
                 let pwr = Output::new(pins.pwr, false);
                 let spi = PioSpi::new(pins, sys_hz, dma);
-                let state = STATE.init(cyw43::State::new());
+                //   BUILT WHERE IT LIVES, not built here and copied there. Handing a cell a value
+                // means constructing that value where the caller stands: twelve and a half
+                // kilobytes of packet pool on a stack of eight, memcpy'd into the static that was
+                // always its home. Given the constructor instead, the cell has somewhere to put
+                // the result before it exists, and nothing is ever on the stack.
+                //   The give-away for this in a disassembly is a frame far larger than a
+                // function's own locals with a memcpy of nearly the same size beside it.
+                let state = STATE.init_with(cyw43::State::new);
 
                 let (device, control, runner) = block_on(cyw43::new(state, PwrPin(pwr), spi, firmware));
                 //   the task never returns, and a future whose answer is "never" cannot be named
