@@ -20,6 +20,21 @@ const TX_RING: usize = 1024;
 
 static TX: ConstStaticCell<[u8; TX_RING]> = ConstStaticCell::new([0; TX_RING]);
 
+/// The DMA channel the console's transmitter owns, on every board and on both chips.
+///
+///   FIXED RATHER THAN PASSED IN, which is the opposite of how every other channel here is
+/// chosen. A display's or an audio path's channel is a board's business because the board decides
+/// whether it has one at all; the console is on every board there is, so binding it once is the
+/// arrangement that cannot be got wrong. Nothing has to choose it, nothing has to thread it
+/// through a constructor, and a board author reads one constant to know what is spoken for.
+///
+///   TEN, because it has to exist on both parts and the smaller one has twelve channels, and
+/// because it was the highest that no board had already taken -- the alternative was renumbering
+/// three of them, including an audio capture path proven on hardware, for nothing but tidier
+/// ordering. Boards take theirs from the top downward, away from the platform allocator that
+/// counts up from zero; this sits just under them.
+pub const CONSOLE_DMA_CH: usize = 10;
+
 /// UART0, 8N1, FIFOs on.
 pub struct Uart {
         /// The bytes waiting to go out, oldest at `tail`. In `.bss`: a kilobyte is more than this
@@ -27,6 +42,10 @@ pub struct Uart {
         ring: &'static mut [u8; TX_RING],
         tail: usize,
         len: usize,
+        /// Bytes of `len` the transmitter is currently carrying, counted from `tail`; zero when
+        /// the channel is idle. They stay counted in `len` so a write can never be handed space
+        /// that is being read out from under it.
+        inflight: usize,
         /// Bytes a full ring had to refuse, since boot. The console's policy is that a line which
         /// does not fit is dropped and counted, never waited for.
         dropped: u32,
@@ -62,10 +81,17 @@ impl Uart {
                 // what latches the divisor
                 uart.uartlcr_h().write(|w| unsafe { w.wlen().bits(3).fen().set_bit() });
                 uart.uartcr().write(|w| w.uarten().set_bit().txe().set_bit().rxe().set_bit());
+                //   AND THE TRANSMITTER MUST BE TOLD TO ASK. A channel paced by a peripheral's
+                // request line moves nothing until that peripheral is enabled to raise it: without
+                // this the first transfer is armed, never advances, and every later call finds the
+                // channel still busy -- so the ring fills and the console goes silent with no
+                // clue as to why, which is the worst way for the one thing that reports faults to
+                // fail. Receive is left alone; input is read straight from the FIFO.
+                uart.uartdmacr().write(|w| w.txdmae().set_bit());
 
                 gpio::set_function(tx, gpio::FUNC_UART);
                 gpio::set_function(rx, gpio::FUNC_UART);
-                Self { ring: TX.take(), tail: 0, len: 0, dropped: 0 }
+                Self { ring: TX.take(), tail: 0, len: 0, inflight: 0, dropped: 0 }
         }
 
         /// Queue `bytes` and return how many were taken. Never waits.
@@ -97,15 +123,55 @@ impl Uart {
                 take
         }
 
-        /// Move what the transmit FIFO will take. Called by every pass of the console loop, and by
-        /// `write` so a line starts on its way without waiting for one.
+        /// Retire a finished transfer and start the next. Called by every pass of the console
+        /// loop, and by `write` so a line starts on its way without waiting for one.
+        ///
+        ///   THE TRANSFER IS HANDED OVER, NOT FED. The channel is paced by the transmitter's own
+        /// request line, so it delivers a whole run at the wire's rate with nothing watching it:
+        /// this core is free between the call that starts one and the call that finds it done, and
+        /// output keeps flowing even across a pass that goes long somewhere else -- a device-role
+        /// board's console shares this loop with a USB stack poll.
+        ///
+        ///   One run at a time, and never past the end of the ring: what wraps is simply the next
+        /// run. Byte-wide writes into a peripheral register are the thing to be careful of on this
+        /// bus -- a narrow write is replicated across the word, which has silently ruined a stream
+        /// into a register whose upper bits meant something -- but the transmitter's data register
+        /// is data in its low byte and reserved above, so there is nothing there to ruin.
         pub fn service(&mut self) {
-                let uart = unsafe { &*pac::UART0::ptr() };
-                while self.len != 0 && uart.uartfr().read().txff().bit_is_clear() {
-                        uart.uartdr().write(|w| unsafe { w.data().bits(self.ring[self.tail]) });
-                        self.tail = (self.tail + 1) % TX_RING;
-                        self.len -= 1;
+                let dma = unsafe { &*pac::DMA::ptr() };
+                let ch = dma.ch(CONSOLE_DMA_CH);
+                if self.inflight != 0 {
+                        if ch.ch_ctrl_trig().read().busy().bit_is_set() {
+                                return;
+                        }
+                        self.tail = (self.tail + self.inflight) % TX_RING;
+                        self.len -= self.inflight;
+                        self.inflight = 0;
                 }
+                if self.len == 0 {
+                        return;
+                }
+                let run = self.len.min(TX_RING - self.tail);
+                let uart = unsafe { &*pac::UART0::ptr() };
+                ch.ch_read_addr().write(|w| unsafe { w.bits(self.ring[self.tail..].as_ptr() as u32) });
+                ch.ch_write_addr().write(|w| unsafe { w.bits(uart.uartdr().as_ptr() as u32) });
+                ch.ch_trans_count().write(|w| unsafe { w.bits(run as u32) });
+                // chained to itself, which means no chaining; writing this register is the start
+                ch.ch_ctrl_trig().write(|w| unsafe {
+                        w.data_size()
+                                .size_byte()
+                                .incr_read()
+                                .set_bit()
+                                .incr_write()
+                                .clear_bit()
+                                .treq_sel()
+                                .uart0_tx()
+                                .chain_to()
+                                .bits(CONSOLE_DMA_CH as u8)
+                                .en()
+                                .set_bit()
+                });
+                self.inflight = run;
         }
 
         /// Bytes refused because the ring was full, since boot.
