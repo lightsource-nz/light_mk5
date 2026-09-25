@@ -29,7 +29,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use light_core::atomic::{AtomicU32, Ordering};
-use light_core::StaticCell;
+use light_core::{ConstStaticCell, StaticCell};
 
 use crate::gpio::{self, Output};
 use crate::pac;
@@ -518,6 +518,42 @@ fn block_on<F: Future>(fut: F) -> F::Output {
 static STATE: StaticCell<cyw43::State> = StaticCell::new();
 
 /// The radio, once it has firmware in it.
+/// Everything a fetch reads and writes into.
+///
+///   NOT ON THE STACK, AND NOT OPTIONALLY SO. Together these are over nineteen kilobytes, and
+/// the application core's stack is a few -- so a frame carrying them does not overrun it by a
+/// margin, it overruns it several times over. A stack that has run past its end then takes a
+/// fault it cannot stack an exception frame for, which is a locked-up core: no console, no
+/// panic message, nothing but a part-drawn display. Whether that happens at all comes down to
+/// what memory lies below the stack and whether anything else is using it, which is luck, and
+/// it changes with the optimisation level -- the same code was survivable in one build and
+/// fatal in the next, because the compiler had inlined two of these frames into one.
+///
+///   Taken once rather than per fetch, because a cell that hands out its contents twice panics,
+/// and a second fetch in one session is an ordinary thing to want.
+///
+///   THE RECEIVE SIDE IS LARGE ON PURPOSE. It is what decides how much the other end may have
+/// in flight before it has to stop and wait, so it sets the ceiling on how fast this can go. It
+/// is also what has to hold the arriving image while this side is busy writing the last piece
+/// to storage -- seconds of a fetch are spent doing that, and nothing is being read from the
+/// network meanwhile. Four kilobytes was measured at 90 KiB/s of network time with the sender
+/// stalling; this is four times the room to stall into.
+struct Fetch {
+        rx: [u8; 16384],
+        tx: [u8; 1024],
+        /// The request line, built in place.
+        request: [u8; HEAD_MAX],
+        /// The response head, and whatever body arrived with it.
+        response: [u8; HEAD_MAX],
+        /// One read's worth of body, on its way to the sink.
+        chunk: [u8; 1460],
+}
+
+/// Const-initialised, so it is a region of `.bss` that `take` hands a reference to -- never a
+/// value built somewhere else and moved in, which for twenty kilobytes would be the very stack
+/// copy this exists to avoid.
+static FETCH: ConstStaticCell<Fetch> = ConstStaticCell::new(Fetch { rx: [0; 16384], tx: [0; 1024], request: [0; HEAD_MAX], response: [0; HEAD_MAX], chunk: [0; 1460] });
+
 pub struct Radio {
         task: Pin<&'static mut dyn Future<Output = ()>>,
         control: cyw43::Control<'static>,
@@ -527,6 +563,8 @@ pub struct Radio {
         /// Whether a network was actually joined, which decides whether there is one to let go
         /// of before joining another.
         joined: bool,
+        /// The fetch buffers, held here so they are taken once and reused -- see [`Fetch`].
+        buffers: &'static mut Fetch,
 }
 
 /// The network running over the radio, once there is one.
@@ -551,7 +589,7 @@ impl Radio {
                 let (device, control, runner) = block_on(cyw43::new(state, PwrPin(pwr), spi, firmware));
                 //   the task never returns, and a future whose answer is "never" cannot be named
                 // for a static on this compiler -- so it is wrapped in one whose answer is nothing
-                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None, joined: false };
+                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None, joined: false, buffers: FETCH.take() };
 
                 //   the regulatory blob is loaded by the control side TALKING TO the task side, so
                 // the two have to run together: this is the join the framework does by hand, and
@@ -694,26 +732,14 @@ impl Radio {
         /// depend on and another thing to go wrong at the moment of an update, and an address in
         /// a command is a smaller promise than a name in a configuration.
         pub fn fetch(&mut self, ip: [u8; 4], port: u16, path: &str, sink: &mut dyn FnMut(Incoming) -> bool) -> Result<u32, FetchError> {
-                let stack = self.net.as_ref().ok_or(FetchError::NoNetwork)?.stack;
+                let Radio { net, buffers, .. } = self;
+                let stack = net.as_ref().ok_or(FetchError::NoNetwork)?.stack;
                 if stack.config_v4().is_none() {
                         return Err(FetchError::NoNetwork);
                 }
 
-                //   The connection's own memory, taken once: a fetch is not a thing this board
-                // does two of at a time.
-                //
-                //   THE RECEIVE SIDE IS LARGE ON PURPOSE. It is what decides how much the other
-                // end may have in flight before it has to stop and wait, so it sets the ceiling
-                // on how fast this can go. It is also what has to hold the arriving image while
-                // this side is busy writing the last piece to storage -- seconds of a fetch are
-                // spent doing that, and nothing is being read from the network meanwhile. Four
-                // kilobytes was measured at 90 KiB/s of network time with the sender stalling;
-                // this is four times the room to stall into.
-                static RX: StaticCell<[u8; 16384]> = StaticCell::new();
-                static TX: StaticCell<[u8; 1024]> = StaticCell::new();
-                let rx = RX.init([0; 16384]);
-                let tx = TX.init([0; 1024]);
-                let mut socket = embassy_net::tcp::TcpSocket::new(stack, rx, tx);
+                let Fetch { rx, tx, request, response: buf, chunk } = &mut **buffers;
+                let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx[..], &mut tx[..]);
 
                 //   counted for this fetch alone, so the number reported is this transfer's
                 DROPPED.store(0, Ordering::Relaxed);
@@ -725,17 +751,15 @@ impl Radio {
                         //   the connection is closed by the other end when the body is done,
                         // which is what makes a body readable without trusting its length; the
                         // length is still required, to know the body was all of it
-                        let mut request = [0u8; HEAD_MAX];
                         let head = {
                                 use core::fmt::Write as _;
-                                let mut w = Line::new(&mut request);
+                                let mut w = Line::new(&mut request[..]);
                                 let _ = write!(w, "GET {path} HTTP/1.1\r\nHost: {}.{}.{}.{}\r\nConnection: close\r\n\r\n", ip[0], ip[1], ip[2], ip[3]);
                                 w.len
                         };
                         socket.write(&request[..head]).await.map_err(|_| FetchError::Broken)?;
 
                         //   read until the head is complete, keeping whatever body came with it
-                        let mut buf = [0u8; HEAD_MAX];
                         let mut have = 0usize;
                         let body_at = loop {
                                 if have == buf.len() {
@@ -789,9 +813,8 @@ impl Radio {
                                 taken += first.len() as u32;
                         }
 
-                        let mut chunk = [0u8; 1460];
                         while taken < length {
-                                let n = socket.read(&mut chunk).await.map_err(|_| FetchError::Broken)?;
+                                let n = socket.read(&mut chunk[..]).await.map_err(|_| FetchError::Broken)?;
                                 if n == 0 {
                                         return Err(FetchError::Short);
                                 }
