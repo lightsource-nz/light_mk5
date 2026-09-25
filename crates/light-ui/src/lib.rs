@@ -55,6 +55,7 @@ mod layout;
 mod scrolling;
 mod nav;
 mod render;
+pub use render::FrameCost;
 
 
 
@@ -178,6 +179,8 @@ pub struct Ui<A: 'static, const N: usize> {
         /// Set by any invalidation, cleared once a repaint has been pushed: "is there anything to
         /// draw", which decides whether to open a frame at all.
         dirty: bool,
+        /// Where a frame's time goes -- see [`render::FrameCost`].
+        frame_cost: crate::render::FrameCost,
         /// Regions to hand the frame layer at the next repaint, collapsing to the whole canvas
         /// past the list's capacity -- it can only push more than needed, never less.
         pending: Vec<Rect, MAX_REGIONS>,
@@ -320,6 +323,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         default_descent: None,
                         default_descent_explicit: false,
                         layout_axis: Axis::Vertical,
+                        frame_cost: crate::render::FrameCost::new(),
                         rotating: false,
                         rotate_started: false,
                         rotate_target: Rotation::R0,

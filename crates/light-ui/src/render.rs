@@ -5,7 +5,44 @@ use light_font::Font;
 use crate::{Ui, WidgetId, Kind, IndicatorShape, Shade, Style, FontRole, Rect, TEXT_MAX, isqrt, rect_intersect, corner_indent};
 use crate::anim::Step;
 
+/// The longest each phase of a frame has taken, in microseconds.
+///
+///   A REPAINT IS THE LONGEST THING A COOPERATIVE APPLICATION DOES IN ONE PASS, and on a board
+/// whose other work is time-critical that is felt somewhere else entirely -- a display is rarely
+/// the only thing a core is doing. Knowing a repaint took milliseconds is not enough to act on;
+/// what is needed is which of the three phases they were in, because the answers are different
+/// work. These are worst-case rather than last-case: a jitter figure is about the bad frame, not
+/// the typical one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameCost {
+        /// Drawing the widget tree into the buffer.
+        pub paint_us: u32,
+        /// Handing the invalidated regions to the layer and starting the push.
+        pub flush_us: u32,
+        /// One step of a page transition or a rotation, which draws by its own path.
+        pub step_us: u32,
+}
+
+impl FrameCost {
+        pub const fn new() -> Self {
+                Self { paint_us: 0, flush_us: 0, step_us: 0 }
+        }
+}
+
 impl<A: Copy, const N: usize> Ui<A, N> {
+        /// The worst each phase of a frame has cost since [`reset_frame_cost`](Self::reset_frame_cost).
+        pub fn frame_cost(&self) -> FrameCost {
+                self.frame_cost
+        }
+
+        pub fn reset_frame_cost(&mut self) {
+                self.frame_cost = FrameCost::default();
+        }
+
+        fn since(from: u64) -> u32 {
+                (light_core::log::now_us() - from) as u32
+        }
+
         /// The union of everything invalidated since the last repaint, in LOGICAL
         /// coordinates -- what the next `render` will paint, known BEFORE it paints. `None`
         /// when the tree is clean or the WHOLE canvas is pending (`is_dirty` distinguishes
@@ -606,14 +643,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // hands a rotation on when it finishes; a step that finishes falls through to
                 // draw the settled tree below rather than waiting a pass
                 if self.page_moving {
-                        match self.page_step(layer, display, style, now_us) {
+                        let began = light_core::log::now_us();
+                        let step = self.page_step(layer, display, style, now_us);
+                        self.frame_cost.step_us = self.frame_cost.step_us.max(Self::since(began));
+                        match step {
                                 Step::Drew => return true,
                                 Step::Waiting => return false,
                                 Step::Finished => {}
                         }
                 }
                 if self.rotating {
-                        match self.rotation_step(layer, display, now_us) {
+                        let began = light_core::log::now_us();
+                        let step = self.rotation_step(layer, display, now_us);
+                        self.frame_cost.step_us = self.frame_cost.step_us.max(Self::since(began));
+                        match step {
                                 Step::Drew => return true,
                                 Step::Waiting => return false,
                                 Step::Finished => {}
@@ -626,13 +669,17 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // bounds, the rest being right already (and the whole canvas when everything is)
                 let within = if layer.draw_over { self.dirty_bounds() } else { None };
                 let Some(mut c) = layer.frame_begin(display, now_us) else { return false };
+                let began = light_core::log::now_us();
                 match within {
                         Some(r) => self.paint_within(&mut c, style, r),
                         None => self.paint(&mut c, style),
                 }
                 drop(c);
+                let painted = light_core::log::now_us();
+                self.frame_cost.paint_us = self.frame_cost.paint_us.max((painted - began) as u32);
                 self.commit(layer);
                 layer.frame_end(display);
+                self.frame_cost.flush_us = self.frame_cost.flush_us.max(Self::since(painted));
                 true
         }
         /// Hand the regions invalidated since the last repaint to the layer and mark the tree
