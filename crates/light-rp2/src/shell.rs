@@ -81,31 +81,39 @@ impl<const N: usize> Write for StackString<N> {
 
 // --- core 0 stack watermark ----------------------------------------------------------------
 
-//   Core 0's stack fills SCRATCH_Y; the shell gives core 1 a stack in ordinary RAM (a deep core-0
-// call chain once landed on core 1's frames in SCRATCH_X and killed the console silently), so
-// SCRATCH_X is vacant runway. Paint it plus the bottom of core 0's own bank, and `stack_free`
-// reports how deep the deepest call chain reached, for a firmware's `stats`. The base is the
-// chip's SCRATCH_X address.
+//   Core 0's stack spans BOTH scratch banks -- the shell hands it the one the platform would
+// reserve for core 1, which runs on an array in ordinary RAM instead (a deep core-0 call chain
+// once landed on core 1's frames there and killed the console silently). Painting the bottom of
+// that stack and reading back what is still painted says how close the deepest call chain came to
+// the floor, for a firmware's `stats`. The base is the lower bank's address, which is the floor.
+//
+//   IT USED TO MEAN SOMETHING WEAKER. When core 0's stack was the upper bank alone, this region
+// was the vacant bank beneath it, and reaching into it meant a call chain had already run off the
+// end and was living on borrowed ground. Now it is the stack, so a small number here is ordinary
+// depth rather than an overrun -- and ZERO is the thing to fear, because there is nothing under
+// this address at all.
 #[cfg(feature = "rp2350")]
 const PAINT_BASE: u32 = 0x2008_0000;
 #[cfg(feature = "rp2040")]
 const PAINT_BASE: u32 = 0x2004_0000;
-/// All of SCRATCH_X plus the bottom kilobyte of SCRATCH_Y: 5 KB.
+/// The bottom 5 KB of core 0's 8 KB stack: the part worth watching. A chain that never reaches
+/// here is nowhere near the floor, and one that does has its depth reported.
 const PAINT_WORDS: usize = 1280;
 const PAINT: u32 = 0xC0DE_55AA;
 
-/// Paint the stack runway. Call FIRST in `light_app_main`, whose own frame sits at the top of core
-/// 0's bank, far above the painted region; core 1's stack is elsewhere entirely.
+/// Paint the bottom of core 0's stack. Call FIRST in `light_app_main`, whose own frame sits near
+/// the top of the stack, thousands of bytes above the painted region; core 1's stack is elsewhere
+/// entirely. Called later, from anywhere deeper, it would paint over live frames.
 pub fn stack_paint() {
         let p = PAINT_BASE as *mut u32;
         for i in 0..PAINT_WORDS {
-                // SAFETY: vacant SCRATCH_X and the unlived bottom of core 0's own bank
+                // SAFETY: the unlived bottom of core 0's stack, far below this frame
                 unsafe { core::ptr::write_volatile(p.add(i), PAINT) };
         }
 }
 
-/// Untouched painted bytes above the runway base. The nominal stack floor sits at 4096; below that
-/// core 0 is living on the runway.
+/// Untouched painted bytes above the stack's floor: how much room the deepest call chain left.
+/// Zero means the paint is gone as far up as it was laid, and nothing lies below this address.
 pub fn stack_free() -> u32 {
         let p = PAINT_BASE as *const u32;
         for i in 0..PAINT_WORDS {
@@ -234,6 +242,11 @@ struct Transports<'a> {
 impl Transports<'_> {
         /// Advance the USB device stack (a no-op without one).
         fn poll(&mut self) {
+                //   FIRST, and unconditionally: this is what moves the wire along, and the panic
+                // relay's last act is a loop of nothing but this
+                if let Some(u) = self.uart.as_mut() {
+                        u.service();
+                }
                 #[cfg(feature = "usb-console")]
                 {
                         self.dev.poll(&mut [&mut self.serial]);

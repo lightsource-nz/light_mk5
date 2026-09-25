@@ -8,10 +8,28 @@
 
 use crate::gpio;
 use crate::pac;
+use light_core::ConstStaticCell;
+
+/// What a write goes into and the transmitter comes out of.
+///
+///   A KILOBYTE, because the point of it is to absorb a burst. The log queue holds a few dozen
+/// records and a record is a line; at the console's rate a line is milliseconds of wire time, so
+/// without somewhere to put them the queue is the only elastic there is and a burst of them is
+/// lost at the producer. With this, a burst is lost only if it outruns the wire by a kilobyte.
+const TX_RING: usize = 1024;
+
+static TX: ConstStaticCell<[u8; TX_RING]> = ConstStaticCell::new([0; TX_RING]);
 
 /// UART0, 8N1, FIFOs on.
 pub struct Uart {
-        _private: (),
+        /// The bytes waiting to go out, oldest at `tail`. In `.bss`: a kilobyte is more than this
+        /// core's whole stack can spare, and the value would be copied on every move besides.
+        ring: &'static mut [u8; TX_RING],
+        tail: usize,
+        len: usize,
+        /// Bytes a full ring had to refuse, since boot. The console's policy is that a line which
+        /// does not fit is dropped and counted, never waited for.
+        dropped: u32,
 }
 
 impl Uart {
@@ -47,30 +65,52 @@ impl Uart {
 
                 gpio::set_function(tx, gpio::FUNC_UART);
                 gpio::set_function(rx, gpio::FUNC_UART);
-                Self { _private: () }
+                Self { ring: TX.take(), tail: 0, len: 0, dropped: 0 }
         }
 
-        /// Send `bytes`, waiting a bounded time for room in the transmit FIFO byte by byte, and
-        /// return how many went. The FIFO is 32 deep and a log line is longer, so a write that
-        /// only took what fitted truncated every line; the wait is a few byte-times, so a line
-        /// costs the console core its wire time (14 ms at 115200) and no more -- that core has
-        /// nothing more urgent -- while a wedged transmitter costs a bounded spin, never a hang.
+        /// Queue `bytes` and return how many were taken. Never waits.
+        ///
+        ///   THE CONSOLE CORE HAS SOMETHING MORE URGENT THAN THE WIRE, which is what this used to
+        /// get wrong. It waited for room in the transmit FIFO byte by byte, so a line cost that
+        /// core its whole wire time -- about fourteen milliseconds at the console's rate, since
+        /// the FIFO is thirty-two bytes and a line is longer. That looked free, because that core
+        /// exists to run the console. It was not: the same loop is what takes INPUT, and the
+        /// receive FIFO is also thirty-two bytes, which at the same rate is under three
+        /// milliseconds of typing. Anything arriving while a line went out was lost past that --
+        /// so a command pasted into a board that was busy logging came out with holes in it, and
+        /// the heartbeat that says the core is alive stopped for the duration too.
+        ///
+        ///   So the wire is fed from a ring instead, a few bytes per pass of a loop that now never
+        /// stops. Throughput is unchanged -- it was always the wire -- but nothing is blocked
+        /// behind it. What does not fit is dropped and counted, which is the same policy the rest
+        /// of the console already has for a transport that cannot keep up.
         pub fn write(&mut self, bytes: &[u8]) -> usize {
+                let take = (TX_RING - self.len).min(bytes.len());
+                let head = (self.tail + self.len) % TX_RING;
+                // at most two runs: up to the end of the ring, then from its start
+                let first = take.min(TX_RING - head);
+                self.ring[head..head + first].copy_from_slice(&bytes[..first]);
+                self.ring[..take - first].copy_from_slice(&bytes[first..take]);
+                self.len += take;
+                self.dropped = self.dropped.saturating_add((bytes.len() - take) as u32);
+                self.service();
+                take
+        }
+
+        /// Move what the transmit FIFO will take. Called by every pass of the console loop, and by
+        /// `write` so a line starts on its way without waiting for one.
+        pub fn service(&mut self) {
                 let uart = unsafe { &*pac::UART0::ptr() };
-                let mut n = 0;
-                for &b in bytes {
-                        // a byte time at the console rate is ~87 us; this is a generous multiple
-                        let mut spins = 20_000u32;
-                        while uart.uartfr().read().txff().bit_is_set() {
-                                spins -= 1;
-                                if spins == 0 {
-                                        return n;
-                                }
-                        }
-                        uart.uartdr().write(|w| unsafe { w.data().bits(b) });
-                        n += 1;
+                while self.len != 0 && uart.uartfr().read().txff().bit_is_clear() {
+                        uart.uartdr().write(|w| unsafe { w.data().bits(self.ring[self.tail]) });
+                        self.tail = (self.tail + 1) % TX_RING;
+                        self.len -= 1;
                 }
-                n
+        }
+
+        /// Bytes refused because the ring was full, since boot.
+        pub fn dropped(&self) -> u32 {
+                self.dropped
         }
 
         /// One received byte, or `None` when the receive FIFO is empty.
