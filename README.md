@@ -49,7 +49,8 @@ the ones above it in this list and never on a port:
     module/light_<board>      the board's executable (module/<target>/ is where
                                   light-flash.ps1 looks for <target>.uf2)
     scripts/                the usual thin wrappers over $LIGHT_PATH/scripts
-    .github/workflows       the host test suite through the framework's shared workflow
+    .github/workflows       CI: the host tests and the ARM firmware trees, and the reusable
+                                  project-test/project-build workflows projects call
 
 The port crates are target-only and are excluded from the host `cargo test` along with the
 app crates: light-rp2 needs a chip chosen, and a workspace-wide invocation unifies features,
