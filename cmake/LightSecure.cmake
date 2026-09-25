@@ -57,6 +57,15 @@ function(light_seal_image TARGET)
         if(NOT TARGET ${TARGET})
                 message(FATAL_ERROR "light_seal_image(${TARGET}): no such target")
         endif()
+        #   the RP2040's boot ROM verifies nothing and reads no image metadata, so there is nothing
+        # to seal FOR -- and the SDK's sealing refuses an RP2040 image outright ("No metadata block
+        # found"). A module shared between an RP2350 board and an RP2040 one (light_pico2 is both)
+        # calls this unconditionally and is sealed only where the hardware will check it; the
+        # RP2040 trees get no bootloader for the same reason (CMakeLists.txt)
+        if(PICO_PLATFORM MATCHES "^rp2040")
+                message(STATUS "light_seal_image(${TARGET}): not sealed -- the RP2040 boot ROM does not verify images")
+                return()
+        endif()
         if(NOT DEFINED S_SIGN)
                 set(S_SIGN "${LIGHT_SIGNING_KEY}")
         endif()
