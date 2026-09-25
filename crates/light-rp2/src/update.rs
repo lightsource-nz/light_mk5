@@ -130,11 +130,31 @@ impl UpdateTarget for FlashSlot {
                 // it runs anything, but it asks after a reboot, from a device that can no longer
                 // say what it found. Asking here costs one read and answers while this firmware is
                 // still the one running
+                //   READ IN PIECES. The window is four kilobytes and the application core's whole
+                // stack is eight, so taking it in one buffer would put half the stack into a
+                // function that only wants to look at the bytes once -- and this runs underneath
+                // a fetch, which has frames of its own below it.
+                //   The join between two reads is the whole difficulty: a magic lying across it
+                // is in neither piece. So the last few bytes of each piece are carried to the
+                // front of the next, which is exactly the overlap a four-byte pattern needs.
+                const CHUNK: usize = 256;
+                const OVERLAP: usize = BLOCK_MAGIC.len() - 1;
                 let window = core::cmp::min(len as usize, BLOCK_WINDOW);
-                let mut head = [0u8; BLOCK_WINDOW];
-                self.read(0, &mut head[..window])?;
-                let found = head[..window].windows(4).any(|w| w == BLOCK_MAGIC);
-                if found { Ok(()) } else { Err(UpdateError::NotAnImage) }
+                let mut buf = [0u8; CHUNK + OVERLAP];
+                let mut carried = 0usize;
+                let mut at = 0usize;
+                while at < window {
+                        let take = core::cmp::min(CHUNK, window - at);
+                        self.read(at as u32, &mut buf[carried..carried + take])?;
+                        at += take;
+                        let have = carried + take;
+                        if buf[..have].windows(BLOCK_MAGIC.len()).any(|w| w == BLOCK_MAGIC) {
+                                return Ok(());
+                        }
+                        carried = core::cmp::min(have, OVERLAP);
+                        buf.copy_within(have - carried..have, 0);
+                }
+                Err(UpdateError::NotAnImage)
         }
 
         fn boot(&mut self) -> UpdateError {
