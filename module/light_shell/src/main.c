@@ -65,7 +65,16 @@ void __attribute__((noreturn)) light_shell_reset_to_bootsel(void)
 // (found on a board polling this at 20 Hz: the death landed on whichever log line first missed
 // the cache). So the read is bracketed by the SDK's multicore lockout, the same mechanism its own
 // flash writes use: core 1 is asked over the FIFO to park in RAM, and released after.
-static bool __not_in_flash_func(bootsel_sample)(void)
+//   NOT INLINE, AND THE "NOT" IS LOAD-BEARING. Placing a function in RAM says where its symbol
+// goes; it says nothing about copies the compiler makes of its body. Inlined into a caller that
+// lives in flash -- which its caller below does -- the whole careful dance above ends up being
+// FETCHED FROM THE FLASH IT HAS JUST DISCONNECTED, and the core takes an instruction fetch from
+// a chip that is not answering: an undefined instruction and a bus error, escalated to a fault
+// it cannot stack a frame for, which is a locked-up core with no console and nothing on the
+// display. It survives a light optimisation level only because the compiler happens not to
+// inline it there; turn optimisation up, or turn on link-time optimisation, and it stops being
+// a matter of happening to.
+static bool __no_inline_not_in_flash_func(bootsel_sample)(void)
 {
         const uint cs_index = 1; // QSPI_SS is the second QSPI IO
         uint32_t flags = save_and_disable_interrupts();
