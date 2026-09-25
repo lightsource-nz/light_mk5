@@ -144,6 +144,29 @@ transform and a clip rectangle, in the panel's pixel format.
 - Two pixel formats plus the byte-order variant cover the two panel classes: push panels (SPI/QSPI)
   whose buffer is the wire transfer, and scanout panels whose buffer a DMA engine reads as `u16`.
 - `Mono1` packs the leftmost pixel in bit 0 — the order the SH1107 driver unpacks.
+- **A fill scans along whichever logical axis the rotation has put on a physical row** (mk5
+  decision). Pixels are adjacent in one buffer direction only, so a run along that direction can be
+  written as whole bytes (`Mono1`) or a memset (`Rgb565`), while a run across it steps the buffer
+  and costs a pixel at a time. Which logical axis that is depends on the rotation, and under a
+  quarter turn the two swap over — so `fill_region` and a filled `rect` choose the direction rather
+  than always scanning rows. The picture is identical either way, which is what a test asserts: the
+  same rectangle drawn under all four rotations on a square canvas must cover the same pixels.
+- **Text is walked in rows whatever the rotation, and that is a measurement, not an oversight.**
+  Applying the argument above to the glyph cell — walking it in columns so each run of like pixels
+  lies along a physical row — was tried on a rotated one-bit panel and made a repaint half as slow
+  again (3294 → 4953 µs on an identical frame). A fill is one long run per row, so what a run costs
+  per *pixel* decides it; a glyph is a dozen short ones, so what a run costs per *call* decides it,
+  and the transposed walk pays more per call (the glyph read down a bit column rather than along a
+  pre-sliced row, and a run set up for every stroke). An argument that holds for one primitive does
+  not automatically reach another with a different shape. A rotation-equivalence test for text
+  remains, drawing asymmetric glyphs under all four rotations, since it is worth pinning regardless.
+- **`Mono1` writes runs a byte at a time** (mk5 decision). A run along a physical row is a mask on
+  the first byte, a `fill` through the middle and a mask on the last, rather than eight
+  read-modify-writes per byte; any other direction lands on a different byte each pixel and is still
+  taken one at a time. Both halves matter together: measured on a one-bit panel mounted under a
+  quarter turn, a repaint was several milliseconds, which on a board that is also forwarding
+  time-critical traffic is long enough to be felt elsewhere. A rasteriser's inner loop is not a
+  private concern of the display when the application core is shared.
 
 ---
 

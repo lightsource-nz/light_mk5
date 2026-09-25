@@ -493,21 +493,7 @@ impl<'a> Canvas<'a> {
                                 }
                         }
                         PixelFormat::Mono1 => {
-                                // packed 8 to a byte along physical x; a stride other than ±1
-                                // walks rows, so the general path stays per pixel
-                                let stride = self.format.stride(self.phys_w);
-                                let (mut x, mut yy) = (px as isize, py as isize);
-                                let (dx, dy) = (self.transform.a as isize, self.transform.c as isize);
-                                for _ in 0..len {
-                                        let byte = &mut self.buf[yy as usize * stride + x as usize / 8];
-                                        if color != 0 {
-                                                *byte |= 1 << (x % 8);
-                                        } else {
-                                                *byte &= !(1 << (x % 8));
-                                        }
-                                        x += dx;
-                                        yy += dy;
-                                }
+                                self.mono_run(px as isize, py as isize, self.transform.a as isize, self.transform.c as isize, len, color);
                         }
                 }
         }
@@ -562,10 +548,90 @@ impl<'a> Canvas<'a> {
                                 }
                         }
                         PixelFormat::Mono1 => {
-                                for y in y0..=y1 {
-                                        self.set(x, y, color);
-                                }
+                                self.mono_run(px as isize, py as isize, self.transform.b as isize, self.transform.d as isize, (y1 - y0 + 1) as usize, color);
                         }
+                }
+        }
+
+        /// A run of `len` one-bit pixels from physical `(px, py)`, stepping `(dx, dy)` physical
+        /// pixels each time.
+        ///
+        ///   EIGHT PIXELS TO A BYTE ALONG PHYSICAL X, so a run that walks a physical row is
+        /// whole bytes with a partial one at each end -- one write per eight pixels rather than
+        /// eight read-modify-writes, and the interior is a `fill`. A run in any other direction
+        /// lands on a different byte every pixel and has to be taken one at a time.
+        ///
+        ///   Which of those a fill gets is decided by the rotation, not by the caller, and it is
+        /// worth a great deal: a full repaint of a small one-bit panel took several milliseconds
+        /// per-pixel, which on a board doing something time-critical beside the display is long
+        /// enough to matter. See `fill_region` for the other half -- choosing the axis so that
+        /// this path is the one taken.
+        fn mono_run(&mut self, px: isize, py: isize, dx: isize, dy: isize, len: usize, color: u16) {
+                if len == 0 {
+                        return;
+                }
+                let stride = self.format.stride(self.phys_w);
+                let on = color != 0;
+                if dy == 0 && dx.unsigned_abs() == 1 {
+                        //   the run as an inclusive range of bit positions in one row, whichever
+                        // way it was walked
+                        let first = if dx == 1 { px } else { px - (len as isize - 1) };
+                        let (a, b) = (first as usize, first as usize + len - 1);
+                        let row = py as usize * stride;
+                        // bits at or after `a`; bits at or before `b`
+                        let head = 0xFFu8 << (a % 8);
+                        let tail = 0xFFu8 >> (7 - b % 8);
+                        let (first_byte, last_byte) = (row + a / 8, row + b / 8);
+                        let set = |buf: &mut [u8], at: usize, mask: u8| {
+                                if on {
+                                        buf[at] |= mask;
+                                } else {
+                                        buf[at] &= !mask;
+                                }
+                        };
+                        if first_byte == last_byte {
+                                set(self.buf, first_byte, head & tail);
+                                return;
+                        }
+                        set(self.buf, first_byte, head);
+                        if last_byte > first_byte + 1 {
+                                self.buf[first_byte + 1..last_byte].fill(if on { 0xFF } else { 0x00 });
+                        }
+                        set(self.buf, last_byte, tail);
+                        return;
+                }
+                //   STRAIGHT DOWN A PHYSICAL COLUMN, which is what a horizontal logical run
+                // becomes under a quarter turn -- so on a panel mounted sideways this is the
+                // path nearly every run of a glyph takes. The pixel stays in the same bit of
+                // the same column of bytes the whole way down: the mask and the byte offset
+                // within the row are computed once, and the index simply steps a row at a time.
+                // Written as the general loop below it, each pixel re-derived a shift, a
+                // division, a multiply and an add that could not change.
+                if dx == 0 {
+                        let mask = 1u8 << (px % 8);
+                        let mut at = py as isize * stride as isize + px / 8;
+                        let step = dy * stride as isize;
+                        for _ in 0..len {
+                                if on {
+                                        self.buf[at as usize] |= mask;
+                                } else {
+                                        self.buf[at as usize] &= !mask;
+                                }
+                                at += step;
+                        }
+                        return;
+                }
+                let (mut x, mut y) = (px, py);
+                for _ in 0..len {
+                        let mask = 1u8 << (x % 8);
+                        let byte = &mut self.buf[y as usize * stride + x as usize / 8];
+                        if on {
+                                *byte |= mask;
+                        } else {
+                                *byte &= !mask;
+                        }
+                        x += dx;
+                        y += dy;
                 }
         }
 
@@ -613,6 +679,13 @@ impl<'a> Canvas<'a> {
                 let (y0, y1) = (p0.y.min(p1.y), p0.y.max(p1.y));
                 let color = self.fg;
                 if fill {
+                        // along whichever axis the rotation has made contiguous -- see fill_region
+                        if !self.x_along_row() && self.y_along_row() {
+                                for x in x0..=x1 {
+                                        self.column(x, y0, y1, color);
+                                }
+                                return;
+                        }
                         for y in y0..=y1 {
                                 self.span(x0, x1, y, color);
                         }
@@ -624,8 +697,33 @@ impl<'a> Canvas<'a> {
                 self.line(Point::new(x1, y0), Point::new(x1, y1));
         }
 
+        /// Whether a logical run along +x, or along +y, lies along a physical row -- the
+        /// direction in which the buffer's pixels are adjacent, and so the direction a fill
+        /// wants its inner loop to go. Which one it is depends on the rotation: under a quarter
+        /// turn the two swap over.
+        fn x_along_row(&self) -> bool {
+                self.transform.c == 0
+        }
+
+        fn y_along_row(&self) -> bool {
+                self.transform.d == 0
+        }
+
         /// Fill a region with `color`, clipped. A convenience over `rect` for erasing.
+        ///
+        ///   THE SCAN DIRECTION IS CHOSEN, NOT ASSUMED. Filling row by logical row is right
+        /// only while logical +x lies along a physical row; under a quarter turn it is logical
+        /// +y that does, and scanning the other way makes every run a stride through the buffer
+        /// -- one pixel at a time, with none of the whole-byte or memset paths available. The
+        /// picture is identical either way, so the loop simply goes whichever way the rotation
+        /// has made contiguous.
         pub fn fill_region(&mut self, r: &Region, color: u16) {
+                if !self.x_along_row() && self.y_along_row() {
+                        for x in i32::from(r.x0)..=i32::from(r.x1) {
+                                self.column(x, i32::from(r.y0), i32::from(r.y1), color);
+                        }
+                        return;
+                }
                 for y in i32::from(r.y0)..=i32::from(r.y1) {
                         self.span(i32::from(r.x0), i32::from(r.x1), y, color);
                 }
@@ -1095,6 +1193,15 @@ impl<'a> Canvas<'a> {
                         let x_hi = (pen + cw - 1).min(i32::from(clip.x1));
                         let y_lo = origin.y.max(i32::from(clip.y0));
                         let y_hi = (origin.y + ch - 1).min(i32::from(clip.y1));
+                        //   THE CELL IS WALKED IN ROWS WHATEVER THE ROTATION, which is not what
+                        // `fill_region`'s reasoning would suggest. Walking it in columns so that
+                        // each run of like pixels lies along a physical row was tried and
+                        // measured, and it was half as fast again -- so the run lengths inside a
+                        // glyph are short enough that what a run costs per call decides this,
+                        // not what it costs per pixel, and the transposed walk pays more per call
+                        // (a glyph read down a bit column, a run set up for every stroke). A fill
+                        // is one long run a row; a glyph is a dozen short ones. The same argument
+                        // does not reach both.
                         if x_lo <= x_hi && y_lo <= y_hi {
                                 for y in y_lo..=y_hi {
                                         let row = glyph.map(|g| &g[(y - origin.y) as usize * pitch..]);
@@ -1240,6 +1347,53 @@ mod tests {
         }
 
         #[test]
+        fn a_mono_fill_covers_the_same_pixels_whichever_way_the_panel_is_turned() {
+                //   a fill now scans along whichever axis the rotation has made contiguous, and
+                // writes whole bytes where it can. The picture must not depend on either choice,
+                // so the same logical rectangle is drawn under all four rotations on a square
+                // canvas -- where the logical size is the same every time -- and compared
+                let mut expect: Option<Vec<(i32, i32)>> = None;
+                for r in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
+                        let mut buf = mono(24, 24);
+                        let mut c = Canvas::new(&mut buf, PixelFormat::Mono1, 24, 24);
+                        c.set_rotation(r);
+                        c.fg = 1;
+                        // off a byte boundary at both ends, and wider than one byte
+                        c.rect(Point::new(3, 2), Point::new(20, 17), true);
+                        let got = ink(&c);
+                        match &expect {
+                                None => expect = Some(got),
+                                Some(e) => assert_eq!(&got, e, "rotation {r:?} drew something different"),
+                        }
+                }
+        }
+
+        #[test]
+        fn a_mono_run_writes_only_its_own_bits() {
+                //   the whole-byte path masks the two ragged ends and fills between them; what
+                // it must never do is touch a neighbouring pixel that shares a byte
+                let mut buf = mono(24, 3);
+                let mut c = Canvas::new(&mut buf, PixelFormat::Mono1, 24, 3);
+                c.fg = 1;
+                c.rect(Point::new(0, 0), Point::new(23, 2), true);
+                c.fg = 0;
+                // one pixel, mid-byte: its neighbours in the same byte survive
+                c.rect(Point::new(5, 1), Point::new(5, 1), true);
+                assert_eq!((c.get(4, 1), c.get(5, 1), c.get(6, 1)), (1, 0, 1));
+                // a run that is exactly one whole byte: the bytes either side survive
+                c.rect(Point::new(8, 0), Point::new(15, 0), true);
+                for x in 0..8 {
+                        assert_eq!(c.get(x, 0), 1, "pixel {x} before the run");
+                }
+                for x in 8..16 {
+                        assert_eq!(c.get(x, 0), 0, "pixel {x} in the run");
+                }
+                for x in 16..24 {
+                        assert_eq!(c.get(x, 0), 1, "pixel {x} after the run");
+                }
+        }
+
+        #[test]
         fn mono_packs_leftmost_pixel_in_bit_zero() {
                 let mut buf = mono(16, 2);
                 let mut c = Canvas::new(&mut buf, PixelFormat::Mono1, 16, 2);
@@ -1362,6 +1516,34 @@ mod tests {
                 // and it physically landed rotated: logical (5,1) -> physical (6,5)
                 assert_eq!(c.transform().apply(5, 1), (6, 5));
                 assert_eq!(c.get_phys(6, 5), 1);
+        }
+
+        #[test]
+        fn text_draws_the_same_glyphs_whichever_way_the_cell_is_walked() {
+                //   under a quarter turn the cell is walked in columns rather than rows, so that
+                // a run of like pixels lies along a physical row. The two walks read the glyph
+                // differently -- one bit column against one bit row -- and must agree exactly
+                let mut e = light_font::Encoder::new(8, 6, 5, 6);
+                // an asymmetric shape: a mirrored or transposed glyph would pass a symmetric one
+                e.add(b'F', &[0xF8, 0x80, 0xF0, 0x80, 0x80, 0x80]).unwrap();
+                e.add(b'J', &[0x38, 0x10, 0x10, 0x90, 0x90, 0x60]).unwrap();
+                let blob = e.encode();
+                let font = Font::parse(&blob).unwrap();
+                let mut expect: Option<Vec<(i32, i32)>> = None;
+                for r in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
+                        let mut buf = mono(24, 24);
+                        let mut c = Canvas::new(&mut buf, PixelFormat::Mono1, 24, 24);
+                        c.set_rotation(r);
+                        c.fg = 1;
+                        c.bg = 0;
+                        // off a byte boundary, so the ragged ends of the run masks are exercised
+                        c.text(&font, Point::new(3, 5), "FJF").unwrap();
+                        let got = ink(&c);
+                        match &expect {
+                                None => expect = Some(got),
+                                Some(x) => assert_eq!(&got, x, "rotation {r:?} drew different text"),
+                        }
+                }
         }
 
         #[test]
