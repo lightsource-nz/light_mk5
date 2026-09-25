@@ -42,7 +42,10 @@ pub enum Poll {
 /// measurement, so compare shares between modules, and take the rate itself from a plain
 /// report.
 pub mod timing {
-        use core::sync::atomic::{AtomicBool, Ordering};
+        //   the crate's own atomics, not core's: `swap` below does not exist on the smallest
+        // core this framework builds for, and reaching for core's here compiles everywhere
+        // except there -- see the re-export in lib.rs
+        use crate::atomic::{AtomicBool, Ordering};
 
         static DETAIL: AtomicBool = AtomicBool::new(false);
         static WANTED: AtomicBool = AtomicBool::new(false);
