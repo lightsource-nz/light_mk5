@@ -75,8 +75,24 @@ impl Sha256Hw {
 
         /// Bytes in, whole words out: the block has no notion of a partial word, so one is held
         /// here until the fourth byte of it arrives.
+        ///
+        ///   THE MIDDLE IS TAKEN FOUR BYTES AT A TIME, and the ragged ends one at a time, because
+        /// what is handed to this is almost always a large run and the block wants words. Done
+        /// byte by byte throughout -- which is what this was -- the gathering costs more than
+        /// everything else here put together: the silicon compresses a sixty-four byte block in
+        /// under sixty cycles, and assembling those sixty-four bytes was taking several times
+        /// that. Measured over half a megabyte, the loop in front of the block was most of the
+        /// time the hash took.
         fn feed(&mut self, bytes: &[u8]) {
-                for &b in bytes {
+                self.total += bytes.len() as u64;
+                let mut rest = bytes;
+
+                //   whatever was held from last time, brought up to a whole word
+                while self.partial_len != 0 {
+                        let Some((&b, tail)) = rest.split_first() else {
+                                return;
+                        };
+                        rest = tail;
                         self.partial[self.partial_len] = b;
                         self.partial_len += 1;
                         if self.partial_len == 4 {
@@ -84,7 +100,17 @@ impl Sha256Hw {
                                 self.partial_len = 0;
                         }
                 }
-                self.total += bytes.len() as u64;
+
+                let mut whole = rest.chunks_exact(4);
+                for w in &mut whole {
+                        Self::put_word(u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+                }
+
+                //   fewer than four bytes: held for whatever comes next, or for the padding
+                for &b in whole.remainder() {
+                        self.partial[self.partial_len] = b;
+                        self.partial_len += 1;
+                }
         }
 }
 
@@ -101,9 +127,10 @@ impl Sha256 for Sha256Hw {
                 let padded = (message as usize + PADDING_MIN).next_multiple_of(BLOCK);
                 let zeros = padded - message as usize - PADDING_MIN;
                 self.feed(&[0x80]);
-                for _ in 0..zeros {
-                        self.feed(&[0]);
-                }
+                //   in one go rather than a byte at a time: there are fewer than sixty-four of
+                // them, so they fit a block's worth of nothing
+                const NOTHING: [u8; BLOCK] = [0; BLOCK];
+                self.feed(&NOTHING[..zeros]);
                 self.feed(&(message * 8).to_be_bytes());
                 debug_assert_eq!(self.partial_len, 0, "padding ends on a word boundary");
 
