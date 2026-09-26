@@ -854,31 +854,42 @@ impl Radio {
         pub fn join(&mut self, credentials: &Credentials) -> Result<(), JoinError> {
                 let ssid = credentials.ssid();
                 let password = credentials.passphrase();
-                //   ONCE ONLY, AND THIS IS NOT FUSSINESS. Joining assumes the part is idle: it
-                // issues commands that the part accepts only while its interface is DOWN, and
-                // answers with a refusal when it is already up and associated. The driver treats
-                // any refusal as fatal, so a second attempt does not fail -- it stops the board.
-                //
-                //   Letting go of the network first is not enough, which is what makes this worth
-                // saying. Disassociating leaves the interface up, so the commands are refused
-                // just the same; taking it properly down and up again is not something the driver
-                // offers from here. So the honest answer is to say no and explain, rather than to
-                // try something that reads as tidy and takes the device out.
-                //
-                //   AND IT IS THE ATTEMPT THAT COUNTS, NOT THE SUCCESS. This guard used to be set
-                // only where a join returned Ok, which left the far more likely case open: a join
-                // that FAILS has already brought the interface up, so the retry a person naturally
-                // makes -- after a typo in the passphrase, or a network that refused once -- was
-                // the thing that stopped the board. Marked before the attempt, so a refusal is a
-                // refusal whichever way the first one went.
                 //   NOTHING IS VALIDATED HERE, AND THAT IS NOT AN OMISSION. A name or passphrase of
                 // a length the protocol forbids is refused by the part outright, and this driver
                 // treats a refused command as fatal -- so the check is a safety property rather
                 // than a courtesy, and it is held by [`Credentials`] being impossible to build
                 // wrong. A driver that takes one cannot be handed a bad one, which is why the check
                 // that used to stand here is gone rather than moved: there is nothing left to check.
+
+                //   A SECOND ATTEMPT RE-ARMS THE PART RATHER THAN BEING REFUSED, and what that is
+                // worth is the most ordinary thing anyone does at this prompt: mistype a passphrase
+                // and try again. This used to answer "reset the board", because the commands a join
+                // issues to set up security are accepted only while the interface is DOWN -- once it
+                // is up and configured the part refuses them, and a refusal is fatal to the driver.
+                //
+                //   Letting go of the network is not enough on its own: disassociating leaves the
+                // interface up, so the commands are refused just the same. It has to go down and
+                // come back, which the driver would not do from outside until the framework's copy
+                // of it offered the pair (see lib/cyw43). So the sequence is leave, then relink --
+                // leave first, because taking the interface out from under a live association is a
+                // larger thing to ask of the part than ending it politely.
+                //
+                //   IT IS THE ATTEMPT THAT COUNTS, NOT THE SUCCESS, which is why this reads the same
+                // flag whichever way the last one went: a join that FAILED has already brought the
+                // interface up and configured it, so it needs re-arming exactly as a successful one
+                // does. Getting that backwards is what made the retry after a failure the thing that
+                // stopped the board.
                 if self.joined {
-                        return Err(JoinError::AlreadyAttempted);
+                        light_core::debug!("radio: re-arming the part for another join");
+                        self.run_until(|c| c.leave());
+                        self.run_until(|c| c.relink());
+                        //   THE STACK IS LEFT STANDING, deliberately. It is built on the driver's
+                        // packet interface rather than on the association, and that interface
+                        // survives this; the address it holds is the stack's to renegotiate when the
+                        // link comes back up. Discarding it here would be worse than leaving it: the
+                        // packet interface is taken from the driver exactly once, so a stack thrown
+                        // away cannot be rebuilt, and asking for an address after a second join
+                        // would answer "already built" for the rest of the power-up.
                 }
                 self.joined = true;
 
@@ -968,7 +979,15 @@ const IDLE_POLL_US: u64 = 1_000;
 #[cfg(feature = "bluetooth")]
 const BLUETOOTH_TIMEOUT_US: u64 = 5_000_000;
 
-const CONFIGURE_TIMEOUT_US: u64 = 20_000_000;
+/// How long the network is given to hand out an address.
+///
+///   SIZED FOR THE SLOW CASE, WHICH IS A SECOND JOIN. A first address on a freshly joined network
+/// was measured at about ten seconds; one taken after a re-join is slower, because the interface went
+/// down and came back and the lease has to be got again from nothing -- measured between twenty and
+/// forty seconds on a link at the weak end of usable. At twenty this reported no address and then
+/// handed one over instantly when asked a second time, which is a poor thing to ask of an operator:
+/// the work had succeeded and only the waiting had not.
+const CONFIGURE_TIMEOUT_US: u64 = 45_000_000;
 
 //   WHY A JoinError IS NOT DECLARED HERE. It is the same set of answers whatever the part, so it is
 // part of the contract rather than of this driver -- see `light_wireless::JoinError`, re-exported

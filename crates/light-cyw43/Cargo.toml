@@ -32,7 +32,10 @@ light-net = { path = "../light-net" }
 # the failure that matters is one command out of a conversation of hundreds answering with a status,
 # and without the driver's own account of it there is nothing to go on. This crate forwards it into
 # the framework's log, so it arrives on the same console as everything else
-cyw43 = { version = "0.7", default-features = false, features = ["log"] }
+#   VENDORED under lib/, with the framework's one change: a way to take the interface down and back
+# up, so a join can be attempted more than once. See its LIGHT_PATCHES.md for why that could not be
+# done from outside the crate
+cyw43 = { path = "../../lib/cyw43", default-features = false, features = ["log"] }
 log = { version = "0.4", default-features = false }
 #   the host-controller protocol's own types, so a command is named rather than assembled out of
 # opcodes. The same version the driver above speaks, and only pulled in with `bluetooth`

@@ -91,10 +91,23 @@ In `light-wireless`:
   the radio refuses as fatal, and a value outside the protocol's limits is refused outright — so a
   mistyped passphrase, the most ordinary mistake there is, must not reach the part. Checking early
   also means the attempt below is unspent, so a correction can simply be retyped.
-- **A radio is joined once per power-up.** Joining issues commands the part accepts only while its
-  interface is down, and letting go of a network does not bring it down. A second attempt is refused
-  with an error that says so, rather than attempted and fatal. It is the *attempt* that counts, not
-  the outcome: a join that fails has brought the interface up just the same.
+- **A join may be attempted as often as anyone likes, because the driver re-arms the part between
+  attempts** (mk5 decision). Joining issues commands a part accepts only while its interface is
+  **down**; once it is up and configured those same commands are refused, and a refusal is the kind
+  of answer a driver may treat as fatal. So a second attempt takes the interface down and back up
+  first — letting go of the network is *not* enough on its own, because disassociating leaves the
+  interface up.
+  It is the **attempt** that counts and not the outcome: a join that failed has configured the
+  interface just the same and needs re-arming exactly as a successful one does. Getting that
+  backwards makes the retry after a failure — the most ordinary thing anyone does at that prompt,
+  having mistyped a passphrase — the thing that stops the board.
+  Where a part cannot be re-armed, the driver says so as an outcome rather than attempting it, and
+  the report tells the operator that only a power cycle will help.
+- **The stack built over a radio outlives a re-join.** It is built on the driver's packet interface
+  rather than on any association, and that interface is taken from the driver exactly once — so a
+  stack discarded because the radio left a network could never be rebuilt, and everything above it
+  would answer "already built" for the rest of the power-up. Its address is the stack's to
+  renegotiate when the link returns.
 - **A scan reports one entry per radio, not one per beacon.** A sweep revisits each channel, so a
   radio answers several times with a different signal each time. Entries are kept apart by the
   address that sent the beacon rather than by the name, because several radios serving one name is

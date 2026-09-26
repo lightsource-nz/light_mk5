@@ -246,14 +246,19 @@ pub enum JoinError {
         Refused,
         /// The radio reported a refusal this contract has no name for. The code is the driver's own.
         Other(u32),
-        /// A join has already been attempted since the radio was powered.
+        /// The radio cannot attempt another join until it is powered again.
         ///
-        ///   REFUSING IS THE POINT, because the alternative is not a failed join but a stopped
-        /// board: joining issues commands the part accepts only while its interface is down, letting
-        /// go of a network does not bring it down, and a driver treats the resulting refusal as
-        /// fatal. It is the ATTEMPT that counts and not the outcome -- a join that failed has
-        /// brought the interface up just the same.
-        AlreadyAttempted,
+        ///   FOR A PART THAT CANNOT RE-ARM ITSELF, and refusing is then the point: the alternative
+        /// is not a failed join but a stopped board, because joining issues commands such a part
+        /// accepts only while its interface is down, and letting go of a network does not bring it
+        /// down. It is the ATTEMPT that counts and not the outcome -- a join that failed has
+        /// configured the interface just the same.
+        ///
+        ///   THE REFERENCE DRIVER NO LONGER RETURNS THIS, because it takes the interface down and
+        /// back up instead and simply tries again -- which is what anyone who mistypes a passphrase
+        /// expects. The variant stays because the limitation belongs to the part rather than to the
+        /// contract, and a driver that cannot re-arm needs a way to say so that is not a panic.
+        CannotRetry,
 }
 
 /// Why a radio could not be brought up.
