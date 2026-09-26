@@ -18,6 +18,10 @@ light-core = { path = "../light-core" }
 #   the portable contract this crate implements: credentials that cannot be built wrong, what a
 # scan heard, why a join failed. The rules live there and are host-tested there
 light-wireless = { path = "../light-wireless" }
+#   and the portable part of networking: what a network gave, what a transfer can do instead of
+# succeeding, and the wire formats. The stack and the sockets stay here because a stack is built on
+# this driver's packet interface; what goes over them is not this driver's business
+light-net = { path = "../light-net" }
 #   the part's driver.
 #   0.7 AND NOT 0.5, and the reason is not this crate's: a host stack for the short-range radio and
 # this driver must agree on the crate that defines the protocol between them, and they agree only

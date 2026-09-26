@@ -23,6 +23,7 @@ members = [
         "crates/light-power",
         "crates/light-power-manager",
         "crates/light-wireless",
+        "crates/light-net",
         "crates/light-rtc",
         "crates/light-sd",
         "crates/light-fs",

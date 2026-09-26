@@ -1,0 +1,10 @@
+[package]
+name = "light-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the portable part of networking: what a network gave, what a transfer can do instead of succeeding, and the wire formats -- building a request and reading a response head that arrived in pieces. No sockets, no asynchrony, no hardware, so all of it is exercised on the host"
+
+#   NOTHING. The protocol stack is a dependency of whoever owns a packet interface, and the sockets
+# are theirs too; what is here is bytes in and answers out.
+[dependencies]

@@ -28,6 +28,7 @@ use light_core::{ConstStaticCell, StaticCell};
 // consumer of this driver and a consumer of any other name the same types. Taking them from here
 // saves an application naming two crates to do one thing.
 pub use light_wireless::{CredentialError, Credentials, HciError, HciTransport, JoinError, ScanEntry, Security, Sightings, WirelessError};
+pub use light_net::{Config, FetchError, Incoming, NetError};
 
 /// Microseconds since boot, from the framework's own clock.
 ///
@@ -564,7 +565,7 @@ impl Radio {
         ///
         /// The stack is built here rather than at start-up because it exists only once there is
         /// something for it to run over, and it takes its memory when it does.
-        pub fn configure(&mut self) -> Result<embassy_net::StaticConfigV4, NetError> {
+        pub fn configure(&mut self) -> Result<Config, NetError> {
                 if self.net.is_none() {
                         let device = self.device.take().ok_or(NetError::AlreadyBuilt)?;
                         static RESOURCES: StaticCell<embassy_net::StackResources<SOCKETS>> = StaticCell::new();
@@ -587,7 +588,15 @@ impl Radio {
                         let net = self.net.as_mut().expect("just built");
                         let _ = net.task.as_mut().poll(&mut cx);
                         if let Some(config) = net.stack.config_v4() {
-                                return Ok(config);
+                                //   HANDED BACK IN THE FRAMEWORK'S OWN SHAPE, not the stack's. What
+                                // a network gave is the same four numbers whatever carried them, so
+                                // a caller should not have to name the stack's types -- nor change
+                                // when the stack does
+                                return Ok(Config {
+                                        address: config.address.address().octets(),
+                                        prefix: config.address.prefix_len(),
+                                        gateway: config.gateway.map(|g| g.octets()),
+                                });
                         }
                         if crate::now_us() >= deadline {
                                 return Err(NetError::NoAddress);
@@ -637,15 +646,14 @@ impl Radio {
                         //   the connection is closed by the other end when the body is done,
                         // which is what makes a body readable without trusting its length; the
                         // length is still required, to know the body was all of it
-                        let head = {
-                                use core::fmt::Write as _;
-                                let mut w = Line::new(&mut request[..]);
-                                let _ = write!(w, "GET {path} HTTP/1.1\r\nHost: {}.{}.{}.{}\r\nConnection: close\r\n\r\n", ip[0], ip[1], ip[2], ip[3]);
-                                w.len
-                        };
+                        let head = light_net::get_request(&mut request[..], path, ip).ok_or(FetchError::RequestTooLong)?;
                         socket.write(&request[..head]).await.map_err(|_| FetchError::Broken)?;
 
-                        //   read until the head is complete, keeping whatever body came with it
+                        //   READ UNTIL THE HEAD IS COMPLETE, and hand the whole of what has arrived
+                        // over each time rather than only the newest piece: the boundary that ends a
+                        // head can fall between two reads. What comes back says where the body
+                        // begins, which is how the body bytes that arrived WITH the head are kept --
+                        // on a fast link that is almost every transfer, not an edge case.
                         let mut have = 0usize;
                         let body_at = loop {
                                 if have == buf.len() {
@@ -656,16 +664,18 @@ impl Radio {
                                         return Err(FetchError::NotAnAnswer);
                                 }
                                 have += n;
-                                if let Some(at) = find(&buf[..have], b"\r\n\r\n") {
-                                        break at + 4;
+                                match light_net::read_head(&buf[..have], have == buf.len()) {
+                                        light_net::Head::NeedMore => {}
+                                        light_net::Head::Malformed => return Err(FetchError::NotAnAnswer),
+                                        light_net::Head::Complete { status, length: declared, body_at } => {
+                                                if status != 200 {
+                                                        return Err(FetchError::Refused(status));
+                                                }
+                                                length = declared.ok_or(FetchError::NoLength)?;
+                                                break body_at;
+                                        }
                                 }
                         };
-
-                        let status = status_of(&buf[..body_at]).ok_or(FetchError::NotAnAnswer)?;
-                        if status != 200 {
-                                return Err(FetchError::Refused(status));
-                        }
-                        length = content_length(&buf[..body_at]).ok_or(FetchError::NoLength)?;
 
                         //   WHERE THE TIME GOES, counted rather than reasoned about: what is
                         // spent handing the body on -- which on this board means writing it to
@@ -960,110 +970,11 @@ const BLUETOOTH_TIMEOUT_US: u64 = 5_000_000;
 
 const CONFIGURE_TIMEOUT_US: u64 = 20_000_000;
 
-/// Why there is no network.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NetError {
-        /// No address was handed out in the time allowed. The radio is joined but the network
-        /// either did not answer or refused.
-        NoAddress,
-        /// The stack was already built on this radio.
-        AlreadyBuilt,
-}
-
 //   WHY A JoinError IS NOT DECLARED HERE. It is the same set of answers whatever the part, so it is
 // part of the contract rather than of this driver -- see `light_wireless::JoinError`, re-exported
 // at the top of this crate. What was declared here also carried two variants for credentials of the
 // wrong length, and those are gone rather than moved: they cannot arise now that a set of
 // credentials cannot be built wrong.
-
-/// Somewhere to write a request into, so it can be built with the ordinary formatting machinery
-/// rather than by hand. Anything past the end is dropped; the caller sends `len`.
-struct Line<'a> {
-        buf: &'a mut [u8],
-        len: usize,
-}
-
-impl<'a> Line<'a> {
-        fn new(buf: &'a mut [u8]) -> Self {
-                Self { buf, len: 0 }
-        }
-}
-
-impl core::fmt::Write for Line<'_> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let room = self.buf.len() - self.len;
-                let take = core::cmp::min(room, s.len());
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
-        }
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-/// The number in `HTTP/1.1 200 OK`.
-fn status_of(head: &[u8]) -> Option<u16> {
-        let line = &head[..find(head, b"\r\n")?];
-        let mut parts = line.split(|b| *b == b' ');
-        let _version = parts.next()?;
-        let code = parts.next()?;
-        core::str::from_utf8(code).ok()?.parse().ok()
-}
-
-/// How long the body says it is. The name is matched without regard to case, because the
-/// standard allows any and servers use several.
-fn content_length(head: &[u8]) -> Option<u32> {
-        const NAME: &[u8] = b"content-length:";
-        let mut at = 0;
-        while at < head.len() {
-                let end = at + find(&head[at..], b"\r\n")?;
-                let line = &head[at..end];
-                if line.len() > NAME.len() && line[..NAME.len()].eq_ignore_ascii_case(NAME) {
-                        let value = core::str::from_utf8(&line[NAME.len()..]).ok()?;
-                        return value.trim().parse().ok();
-                }
-                at = end + 2;
-        }
-        None
-}
-
-/// What a fetch hands out, in the order it becomes known.
-pub enum Incoming<'a> {
-        /// How long the body is, told ONCE and before any of it. What is being fetched has to be
-        /// given its size before its first byte -- storage is erased to fit -- so this is not a
-        /// convenience, it is the reason the length is demanded of the server.
-        Length(u32),
-        /// A piece of the body, in the order it arrived. Not kept here afterwards.
-        Body(&'a [u8]),
-}
-
-/// Why a fetch did not produce an image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FetchError {
-        /// There is no network to fetch over -- nothing joined, or no address taken.
-        NoNetwork,
-        /// The other end refused the connection or never answered it.
-        NoConnection,
-        /// The connection broke part-way.
-        Broken,
-        /// The answer was not one this understands: not a reply at all, or a reply whose head
-        /// is longer than there is room to read it in.
-        NotAnAnswer,
-        /// The server answered, and its answer was a refusal. The code is carried so that a
-        /// missing file and a broken server are told apart.
-        Refused(u16),
-        /// The answer did not say how long it was. Without that there is no way to know a
-        /// truncated image from a complete one, and an image is not a thing to guess about.
-        NoLength,
-        /// The body stopped before the length promised.
-        Short,
-        /// Whatever was being written to could not take it.
-        Rejected,
-        /// It did not finish in the time allowed.
-        TooSlow,
-}
 
 /// How long a whole fetch is given, connection and all.
 const FETCH_TIMEOUT_US: u64 = 120_000_000;

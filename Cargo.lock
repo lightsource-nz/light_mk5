@@ -1963,6 +1963,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-net"
+version = "0.1.0"
+
+[[package]]
 name = "light-power"
 version = "0.1.0"
 dependencies = [
