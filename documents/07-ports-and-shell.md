@@ -290,6 +290,52 @@ framework does not have.
 - **On a board where the radio is fitted, the pin that carries the indicator on the plain variant
   is the radio's chip select.** The indicator such a board has hangs off the radio's own pins, so
   it belongs to the radio's module and not to the board's wiring.
+- **The reference part joins networks protected the older way, and does not join a network offering
+  both the old and the new protection** (mk5, measured). Offered the choice, the driver asks for the
+  newer exchange; the access point refuses the authentication outright, and the radio never reaches
+  the key exchange. Asking for the older exchange instead gets further -- it authenticates and
+  associates -- and then the part's own supplicant fails the key exchange and the access point
+  disconnects it, because the driver announces protected management frames on that path and offers
+  no way to withdraw the claim. So both routes fail on such a network, for different reasons and at
+  different stages. Two consequences worth carrying: a radio that must reach a network of this kind
+  needs the driver changed, not the application; and the report for a refused join names this as a
+  cause beside the passphrase, because from above the two are identical and the passphrase is the
+  one everybody checks first.
+- **Anything the radio would answer by refusing a command is checked before the command is sent,
+  because the driver treats a refusal as fatal** (mk5 decision). The driver panics on any non-zero
+  ioctl status rather than returning it, so a value the part simply will not accept does not come
+  back as an error — it stops the board. The credentials a join is given are the case that matters
+  in practice: a passphrase outside the protocol's 8-to-63 characters is refused outright, and a
+  mistyped passphrase is the most ordinary mistake there is at that prompt. Two consequences follow
+  from where the check sits. It belongs in the port, beside the call it protects, rather than only
+  in whichever application collects the credentials — the panic is the port's to prevent, and an
+  application that bounds its own buffers can still miss a *minimum*. And because nothing has been
+  said to the radio yet, a refusal costs nothing: it does not spend the one join attempt the part
+  allows per power-up, so the correction can simply be typed again.
+
+### The same part's short-range radio — `bluetooth` (feature `bluetooth`)
+
+**Additive to `wifi`, never an alternative to it** (mk5 decision). The two radios are not two
+devices: they share the silicon, the bus above, and one power-up. So asking for this takes the
+vendor drop whose image carries both, adds the separate patch the short-range side wants on top, and
+hands back a second driver handle beside the first — a transport carrying the standard
+host-controller protocol and nothing above it. What speaks profiles sits on top and is not a port's
+business.
+
+- **The port stops at the transport.** A stack belongs above: it is chip-independent, so putting it
+  here would tie something portable to one part.
+- **The proof of bring-up is an address read out of the running controller**, exactly as it is for
+  the wireless side. It arrives byte-reversed against the wireless address because the protocol
+  reports it little-endian and one part's two radios share an address block — which is itself a
+  second confirmation the value came off the controller rather than out of the image.
+- **The image is an asset like the other two**, protected by the same pack digest.
+
+> **Its host stack pins the driver's version, and the pin is the awkward part.** A host stack and
+> this driver must agree on the crate that defines the host-controller protocol between them, and
+> they agree at exactly one pairing — which is a *later* driver than the one the wireless path was
+> built and proven on. So adding a stack is not additive: it is a breaking upgrade of the driver
+> that carries firmware updates over the air. The upgrade is therefore its own step, proven by the
+> wireless path still working, before any stack is put on top of it.
 
 ### Its `critical-section` implementation
 

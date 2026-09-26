@@ -121,8 +121,15 @@ try {
                                         if (-not $Quiet) { Write-Host -NoNewline $chunk }
                                         $lastData = Get-Date
                                         if ($Until -and $sb.ToString() -match $Until) { $matched = $true; break }
-                                } elseif ($sb.Length -gt $startLen -and ((Get-Date) - $lastData).TotalMilliseconds -gt 300) {
-                                        break               # this command's reply has arrived and gone quiet
+                                } elseif (-not $Until -and $sb.Length -gt $startLen -and ((Get-Date) - $lastData).TotalMilliseconds -gt 300) {
+                                        #   this command's reply has arrived and gone quiet -- BUT ONLY
+                                        # WHEN NOTHING WAS ASKED FOR. A command that works for seconds
+                                        # in silence, which firmware does whenever it talks to slow
+                                        # hardware, goes quiet long before it is finished: the gap says
+                                        # "nothing yet", not "nothing more". Guessing wrong here loses
+                                        # the reply and looks exactly like firmware that never answered.
+                                        # So -Until means what it says -- wait for it, or for -SettleMs.
+                                        break
                                 } else {
                                         Start-Sleep -Milliseconds 5
                                 }

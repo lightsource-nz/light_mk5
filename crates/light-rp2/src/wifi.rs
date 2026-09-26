@@ -240,6 +240,10 @@ pub const ONBOARD: Pins = Pins { pwr: 23, cs: 25, dio: 24, clk: 29 };
 const MAX_BUS_HZ: u32 = 50_000_000;
 
 //   what the part can complain about in the status word that ends every transfer
+//   kept, though nothing reads it: it names the bit the status word uses for "nothing arrived",
+// which is what a reader needs when chasing a bus fault by hand -- see where the mask below
+// deliberately leaves it out
+#[allow(dead_code)]
 const STATUS_DATA_NOT_AVAILABLE: u32 = 0x0000_0001;
 const STATUS_UNDERFLOW: u32 = 0x0000_0002;
 const STATUS_OVERFLOW: u32 = 0x0000_0004;
@@ -443,7 +447,15 @@ impl PioSpi {
                 // status whose four bytes are identical is that echo, not a fault, and warning
                 // about it on every successful start-up would teach a reader to ignore the
                 // warning that matters.
-                const TROUBLE: u32 = STATUS_DATA_NOT_AVAILABLE | STATUS_UNDERFLOW | STATUS_OVERFLOW | STATUS_HOST_CMD_DATA_ERR;
+                //   "NO DATA" IS AN ANSWER, NOT A COMPLAINT, which is why it is not in this mask
+                // even though the part reports it in the same word. A driver that asks whether
+                // anything has arrived gets told when nothing has, and the version of it this port
+                // now carries asks constantly -- so including that bit meant hundreds of warnings
+                // across a bring-up that went on to succeed completely. By the same argument as the
+                // echo below: a warning that fires on every successful start-up teaches a reader to
+                // ignore the one that matters. The bit is still readable here if a genuine bus
+                // fault is ever being chased.
+                const TROUBLE: u32 = STATUS_UNDERFLOW | STATUS_OVERFLOW | STATUS_HOST_CMD_DATA_ERR;
                 let echo = status.to_le_bytes().windows(2).all(|p| p[0] == p[1]);
                 if status & TROUBLE != 0 && !echo {
                         light_core::warn!("radio bus: the part answered {status:#010x} to a transfer of {} out, {} in", write.len(), read.len());
@@ -568,9 +580,15 @@ pub struct Radio {
         net: Option<Net>,
         /// Whether a network was actually joined, which decides whether there is one to let go
         /// of before joining another.
+        /// Whether a join has been ATTEMPTED, which is not the same as whether one succeeded --
+        /// and it is attempts, not successes, that the part counts. See [`Radio::join`].
         joined: bool,
         /// When the idle upkeep in [`Radio::poll`] last actually looked at the radio.
         polled_us: u64,
+        /// The short-range radio's side of the same part: a transport carrying the standard
+        /// host-controller protocol. `None` on a build that did not upload its image.
+        #[cfg(feature = "bluetooth")]
+        bt: Option<cyw43::bluetooth::BtDriver<'static>>,
         /// The fetch buffers, held here so they are taken once and reused -- see [`Fetch`].
         buffers: &'static mut Fetch,
 }
@@ -588,7 +606,7 @@ impl Radio {
         /// product's asset pack. This does not return until the radio is answering, which on this
         /// part is a fifth of a second -- it is a start-up cost, paid once, and the alternative is
         /// a radio that is half-awake while the rest of the firmware starts around it.
-        pub fn new(pins: Pins, sys_hz: u32, dma: usize, firmware: &[u8], clm: &[u8]) -> Self {
+        pub fn new(pins: Pins, sys_hz: u32, dma: usize, firmware: &[u8], clm: &[u8], nvram: &[u8]) -> Self {
                 relay_log();
                 let pwr = Output::new(pins.pwr, false);
                 let spi = PioSpi::new(pins, sys_hz, dma);
@@ -601,16 +619,138 @@ impl Radio {
                 // function's own locals with a memcpy of nearly the same size beside it.
                 let state = STATE.init_with(cyw43::State::new);
 
-                let (device, control, runner) = block_on(cyw43::new(state, PwrPin(pwr), spi, firmware));
+                let firmware = aligned(firmware).expect("the radio's image is where the pack puts it, four-byte aligned");
+                let nvram = aligned(nvram).expect("the radio's settings are where the pack puts them, four-byte aligned");
+                let (device, control, runner) = block_on(cyw43::new(state, PwrPin(pwr), spi, firmware, nvram));
                 //   the task never returns, and a future whose answer is "never" cannot be named
                 // for a static on this compiler -- so it is wrapped in one whose answer is nothing
-                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None, joined: false, polled_us: 0, buffers: FETCH.take() };
+                let mut radio = Self { task: place_task(&RADIO_TASK, async move { runner.run().await }), control, device: Some(device), net: None, joined: false, polled_us: 0, buffers: FETCH.take(), #[cfg(feature = "bluetooth")] bt: None };
 
                 //   the regulatory blob is loaded by the control side TALKING TO the task side, so
                 // the two have to run together: this is the join the framework does by hand, and
                 // the reason the task is placed before the radio is finished being built
                 radio.run_until(|c| c.init(clm));
                 radio
+        }
+
+        /// The same, with the part's short-range radio brought up beside its wireless one.
+        ///
+        ///   ONE PART, ONE BUS, ONE POWER-UP. The two radios are not two devices: they share the
+        /// silicon, the bus this crate built out of PIO, and the image uploaded over it -- which
+        /// is why this is a second constructor rather than a second driver, and why the vendor
+        /// drop the build chooses differs (see the radio firmware helper). The short-range side
+        /// still wants a patch of its own on top, which is the extra image here.
+        ///
+        ///   What comes back for it is a transport, not a stack: it carries the standard
+        /// host-controller protocol and nothing above that. Whatever speaks profiles sits on top
+        /// of it and is not this crate's business.
+        #[cfg(feature = "bluetooth")]
+        pub fn new_with_bluetooth(pins: Pins, sys_hz: u32, dma: usize, firmware: &[u8], clm: &[u8], nvram: &[u8], bt_firmware: &[u8]) -> Self {
+                relay_log();
+                let pwr = Output::new(pins.pwr, false);
+                let spi = PioSpi::new(pins, sys_hz, dma);
+                let state = STATE.init_with(cyw43::State::new);
+
+                let firmware = aligned(firmware).expect("the radio's image is where the pack puts it, four-byte aligned");
+                let bt_firmware = aligned(bt_firmware).expect("the short-range patch is where the pack puts it, four-byte aligned");
+                let nvram = aligned(nvram).expect("the radio's settings are where the pack puts them, four-byte aligned");
+                let (device, bt, control, runner) = block_on(cyw43::new_with_bluetooth(state, PwrPin(pwr), spi, firmware, bt_firmware, nvram));
+                let mut radio = Self {
+                        task: place_task(&RADIO_TASK, async move { runner.run().await }),
+                        control,
+                        device: Some(device),
+                        net: None,
+                        joined: false,
+                        polled_us: 0,
+                        buffers: FETCH.take(),
+                        bt: Some(bt),
+                };
+                radio.run_until(|c| c.init(clm));
+                radio
+        }
+
+        /// The short-range radio's own address, read out of the running controller.
+        ///
+        ///   THE SAME PROOF THE WIRELESS SIDE GIVES, for the same reason: an address here did not
+        /// come from the image, it came back over the bus from a controller that accepted a reset
+        /// and answered a question. It is the one cheap thing that distinguishes "the patch was
+        /// uploaded and the radio is alive" from "the upload went somewhere and nothing said so".
+        ///
+        /// `None` if this radio was built without the short-range image, or if the controller does
+        /// not answer in time -- which is a fault to report, never a wait to hang on.
+        #[cfg(feature = "bluetooth")]
+        pub fn bluetooth_address(&mut self) -> Option<[u8; 6]> {
+                use bt_hci::cmd::{controller_baseband::Reset, info::ReadBdAddr, Cmd as _};
+                use bt_hci::event::{CommandCompleteWithStatus, Event};
+                use bt_hci::transport::Transport as _;
+                use bt_hci::ControllerToHostPacket;
+
+                //   disjoint borrows: the exchange below needs the transport, and driving it needs
+                // the task that carries its packets over the bus
+                let Radio { task, bt, .. } = self;
+                let bt = bt.as_ref()?;
+                let mut buf = [0u8; 259];
+
+                let work = async {
+                        //   reset first, which is the protocol's own opening move: the controller
+                        // comes up holding whatever the upload left in it
+                        bt.write(&Reset::new()).await.ok()?;
+                        loop {
+                                //   the packet borrows the buffer, so what is wanted from it is
+                                // taken out before the next read needs the buffer back
+                                let (opcode, address) = {
+                                        //   an event arrives as a packet and is then read as one of
+                                        // the kinds it might be; only the completion of a command
+                                        // concerns this errand
+                                        match bt.read(&mut buf).await.ok()? {
+                                                ControllerToHostPacket::Event(packet) => match Event::try_from(packet) {
+                                                        Ok(Event::CommandComplete(done)) => {
+                                                                let opcode = done.cmd_opcode;
+                                                                //   the return parameters are only
+                                                                // readable once the status in front
+                                                                // of them has been accounted for
+                                                                let address = if opcode == ReadBdAddr::OPCODE {
+                                                                        CommandCompleteWithStatus::try_from(done)
+                                                                                .ok()
+                                                                                .and_then(|done| done.to_result::<ReadBdAddr>().ok())
+                                                                                .map(|a| {
+                                                                                        let mut out = [0u8; 6];
+                                                                                        out.copy_from_slice(&a.raw()[..6]);
+                                                                                        out
+                                                                                })
+                                                                } else {
+                                                                        None
+                                                                };
+                                                                (Some(opcode), address)
+                                                        }
+                                                        _ => (None, None),
+                                                },
+                                                // anything else on the way past is not this errand's
+                                                _ => (None, None),
+                                        }
+                                };
+                                if let Some(address) = address {
+                                        return Some(address);
+                                }
+                                if opcode == Some(Reset::OPCODE) {
+                                        bt.write(&ReadBdAddr::new()).await.ok()?;
+                                }
+                        }
+                };
+
+                let deadline = crate::now_us().saturating_add(BLUETOOTH_TIMEOUT_US);
+                let waker = noop_waker();
+                let mut cx = Context::from_waker(&waker);
+                let mut work = core::pin::pin!(work);
+                loop {
+                        let _ = task.as_mut().poll(&mut cx);
+                        if let Poll::Ready(v) = work.as_mut().poll(&mut cx) {
+                                return v;
+                        }
+                        if crate::now_us() >= deadline {
+                                return None;
+                        }
+                }
         }
 
         /// Run the radio's own task until a piece of control work finishes.
@@ -899,6 +1039,89 @@ impl Radio {
         }
 
         /// Join a network, and say plainly whether it worked.
+        /// Every network the radio can see, handed one at a time to `found`.
+        ///
+        ///   WHAT THE RADIO CAN SEE, WHICH IS A DIFFERENT QUESTION FROM WHETHER IT CAN JOIN. A join
+        /// that comes back "no such network" has two quite separate explanations -- the network is
+        /// not there, or this radio is not receiving properly -- and they are indistinguishable from
+        /// the outside. Worse, a join cannot be tried at all without a passphrase, so the one
+        /// diagnostic that needs no secret is the one that tells the two apart.
+        ///
+        ///   It earns its place beyond that: it is how a person finds out what a board's radio makes
+        /// of a room, and it is the first thing to reach for when a radio's configuration is
+        /// suspected, since bad regulatory or calibration data shows up here as a short list or an
+        /// empty one rather than as an error.
+        ///
+        /// Blocking, and a second or two: the radio visits every channel it is allowed.
+        pub fn scan(&mut self, mut found: impl FnMut(&str, &[u8; 6], i16, u16)) -> usize {
+                //   counted in a cell rather than a plain local, so the tally survives the sweep
+                // being cut short: the caller has already been handed every network found up to
+                // that point, and reporting none of them would be a lie about what was heard
+                let seen = core::cell::Cell::new(0usize);
+                //   ONE ENTRY PER RADIO HEARD, NOT ONE PER TIME IT WAS HEARD. What arrives here is
+                // every beacon the sweep receives, and a sweep visits each channel more than once,
+                // so an access point in the room answers several times and used to be listed
+                // several times -- the same name and channel with a different signal each time,
+                // which reads as several networks that cannot be told apart. Kept apart by the
+                // address of the radio that sent the beacon rather than by the name, because two
+                // radios serving one name are genuinely two things worth seeing, and one radio
+                // answering twice is not.
+                //
+                //   Bounded, and deliberately generously: past the end nothing can be remembered,
+                // so repeats would be listed again. That is the better failure -- a long list with
+                // repeats still says what is in range, where dropping the overflow would quietly
+                // claim a network is absent.
+                let heard = core::cell::RefCell::new(([[0u8; 6]; SCAN_MAX], 0usize));
+                //   the borrow dance the rest of this file does: the errand needs the control side,
+                // driving it needs the task that carries its traffic
+                let Radio { task, control, .. } = self;
+                let waker = noop_waker();
+                let mut cx = Context::from_waker(&waker);
+                let work = async {
+                        let mut scanner = control.scan(cyw43::ScanOptions::default()).await;
+                        while let Some(bss) = scanner.next().await {
+                                {
+                                        let mut h = heard.borrow_mut();
+                                        let (list, count) = &mut *h;
+                                        if list[..*count].contains(&bss.bssid) {
+                                                continue;
+                                        }
+                                        if *count < list.len() {
+                                                list[*count] = bss.bssid;
+                                                *count += 1;
+                                        }
+                                }
+                                let len = usize::from(bss.ssid_len).min(bss.ssid.len());
+                                //   a name that is not text is reported as empty rather than
+                                // guessed at: a hidden network answers with nothing here
+                                let name = core::str::from_utf8(&bss.ssid[..len]).unwrap_or("");
+                                //   THE SIGNAL IS THE FIRST READING, and it is a sample rather than
+                                // a measurement: the radio reports what one beacon arrived at, and
+                                // successive beacons from the same place differ by several decibels.
+                                // Good for "is it in range", not for comparing two sweeps.
+                                //   THE ADDRESS OF THE RADIO IS REPORTED, not just the name, and it
+                                // is what makes the list readable: several radios serving one name
+                                // is the ordinary shape of a network that covers a building, and
+                                // without the address those entries look like the same network
+                                // listed twice by mistake.
+                                found(name, &bss.bssid, bss.rssi, bss.chanspec);
+                                seen.set(seen.get() + 1);
+                        }
+                };
+                let deadline = crate::now_us().saturating_add(SCAN_TIMEOUT_US);
+                let mut work = core::pin::pin!(work);
+                loop {
+                        let _ = task.as_mut().poll(&mut cx);
+                        if work.as_mut().poll(&mut cx).is_ready() {
+                                break;
+                        }
+                        if crate::now_us() >= deadline {
+                                break;
+                        }
+                }
+                seen.get()
+        }
+
         ///
         /// Blocking, and it can take seconds: the radio is scanning, associating and running a
         /// key exchange, and there is nothing for the rest of the firmware to do in the meantime
@@ -914,24 +1137,65 @@ impl Radio {
                 // just the same; taking it properly down and up again is not something the driver
                 // offers from here. So the honest answer is to say no and explain, rather than to
                 // try something that reads as tidy and takes the device out.
+                //
+                //   AND IT IS THE ATTEMPT THAT COUNTS, NOT THE SUCCESS. This guard used to be set
+                // only where a join returned Ok, which left the far more likely case open: a join
+                // that FAILS has already brought the interface up, so the retry a person naturally
+                // makes -- after a typo in the passphrase, or a network that refused once -- was
+                // the thing that stopped the board. Marked before the attempt, so a refusal is a
+                // refusal whichever way the first one went.
+                //   CHECKED HERE, BEFORE THE PART IS TOUCHED, and that placement is the whole
+                // value of it. The driver treats a command the radio refuses as fatal, and the
+                // radio refuses a passphrase that is the wrong length outright -- so a mistyped
+                // passphrase, which is the most ordinary mistake there is at this prompt, used to
+                // stop the board rather than come back as an answer. Rejecting it here costs a
+                // comparison, and because nothing has been said to the radio yet it also does not
+                // spend the single attempt below: a typo can simply be typed again.
+                if ssid.is_empty() || ssid.len() > SSID_MAX {
+                        return Err(JoinError::BadName);
+                }
+                //   an empty passphrase is checked nowhere here on purpose: it means a network
+                // that asks for none, which the arm below turns into a different request
+                if !password.is_empty() && !(PASSPHRASE_MIN..=PASSPHRASE_MAX).contains(&password.len()) {
+                        return Err(JoinError::BadPassphrase);
+                }
+
                 if self.joined {
                         return Err(JoinError::AlreadyJoined);
                 }
+                self.joined = true;
 
                 //   an empty passphrase is a network that asks for none, which is a different
                 // request rather than the same one with nothing in it
-                let options = if password.is_empty() { cyw43::JoinOptions::new_open() } else { cyw43::JoinOptions::new(password.as_bytes()) };
+                //   THE DRIVER'S DEFAULT IS LEFT ALONE, which asks to negotiate as a station that
+                // can do either WPA2 or WPA3. Naming WPA2 here instead looks like the safer, more
+                // specific choice and is not: it commits the radio to the older key exchange, and
+                // an access point offering WPA3 -- including one offering both -- answers that by
+                // associating happily and then deauthenticating the moment the keys are exchanged.
+                // From above, that is indistinguishable from a wrong passphrase.
+                //
+                //   Worth knowing how this was got wrong once: a network stopped joining after the
+                // driver was upgraded, the default was blamed for having changed, and it was pinned
+                // to WPA2 on that theory. The default had not changed -- it is the same in both
+                // versions -- so the pin explained nothing and broke the WPA3 case. Check what a
+                // dependency actually did before building on what it is assumed to have done.
+                let options = if password.is_empty() {
+                        cyw43::JoinOptions::new_open()
+                } else {
+                        cyw43::JoinOptions::new(password.as_bytes())
+                };
                 match self.run_until_or(JOIN_TIMEOUT_US, |c| c.join(ssid, options)) {
-                        Some(Ok(())) => {
-                                self.joined = true;
-                                Ok(())
-                        }
+                        // already marked above, because the part counts the attempt
+                        Some(Ok(())) => Ok(()),
                         //   the radio's own account of what went wrong, which is the difference
-                        // between looking at the name and looking at everything else
-                        Some(Err(e)) => Err(match e.status {
-                            STATUS_NO_NETWORKS => JoinError::NoSuchNetwork,
-                            STATUS_FAIL => JoinError::Rejected,
-                            other => JoinError::Refused(other),
+                        // between looking at the name and looking at everything else. The driver
+                        // names the two that matter now rather than handing back the raw status it
+                        // used to, so these are its words and not a table of numbers here; a status
+                        // it does not name still comes through as its number
+                        Some(Err(e)) => Err(match e {
+                                cyw43::JoinError::NetworkNotFound => JoinError::NoSuchNetwork,
+                                cyw43::JoinError::AuthenticationFailure => JoinError::Rejected,
+                                cyw43::JoinError::JoinFailure(status) => JoinError::Refused(u32::from(status)),
                         }),
                         None => Err(JoinError::NoAnswer),
                 }
@@ -943,10 +1207,42 @@ impl Radio {
 /// is not there does not hold the application indefinitely.
 const JOIN_TIMEOUT_US: u64 = 20_000_000;
 
-//   what the radio says about a join it did not complete. There are more of these than the two
-// named here; the rest are carried through as their number rather than guessed at
-const STATUS_FAIL: u32 = 1;
-const STATUS_NO_NETWORKS: u32 = 3;
+/// The longest name a network can have, which is the width of the field it travels in.
+const SSID_MAX: usize = 32;
+/// What a protected network will accept as a passphrase. These are the protocol's numbers, not a
+/// local policy: shorter or longer is not a weak passphrase, it is one the radio will not take,
+/// and it says so by refusing the command rather than by failing to associate.
+const PASSPHRASE_MIN: usize = 8;
+const PASSPHRASE_MAX: usize = 63;
+
+/// How many distinct radios a sweep can remember, so it can tell a repeat from a new one. Beyond
+/// this the list grows repeats again rather than losing entries -- see `Radio::scan`. Six bytes
+/// each, so the whole table is small enough to stand on the stack of the call that builds it.
+const SCAN_MAX: usize = 64;
+
+/// How long a scan is given. The radio visits every channel it is permitted and reports as it goes,
+/// so this is a ceiling on the whole sweep rather than a wait for any one answer.
+const SCAN_TIMEOUT_US: u64 = 10_000_000;
+
+/// A blob the driver will take, or `None` because it is not where it must be.
+///
+///   THE DRIVER ASKS FOR ITS BLOBS FOUR-BYTE ALIGNED, and the pack already lays every entry on a
+/// four-byte boundary -- so this is a check that should never fail rather than work to satisfy the
+/// requirement. Copying instead is not an option worth considering: the image alone is a quarter of
+/// a megabyte and there is nowhere near that much memory going spare.
+///
+///   Answered rather than asserted, because a pack whose layout ever changed would otherwise take
+/// the radio down with an alignment fault and no explanation. This way it is a radio that says it
+/// cannot start.
+fn aligned(blob: &[u8]) -> Option<&cyw43::Aligned<cyw43::A4, [u8]>> {
+        if !(blob.as_ptr() as usize).is_multiple_of(4) {
+                return None;
+        }
+        // SAFETY: the driver's wrapper is `#[repr(C)]` over a zero-sized alignment marker and the
+        // value itself, so for a slice it is the same fat pointer with the alignment raised -- and
+        // that alignment is what was just checked. Nothing else about the layout differs.
+        Some(unsafe { &*(blob as *const [u8] as *const cyw43::Aligned<cyw43::A4, [u8]>) })
+}
 
 /// How many connections the network may have open at once. One to fetch with, and room beside it
 /// for whatever the address negotiation and a name lookup want.
@@ -956,6 +1252,12 @@ const SOCKETS: usize = 4;
 /// all. A millisecond is far below anything the upkeep it drives cares about, and far above the
 /// application's loop period, which is what makes it cheap.
 const IDLE_POLL_US: u64 = 1_000;
+
+/// How long the short-range controller is given to answer a question before it is called absent.
+/// Generous: it is a part that has just been handed an image, and the alternative to a deadline
+/// here is a board that stops with no console and no reason.
+#[cfg(feature = "bluetooth")]
+const BLUETOOTH_TIMEOUT_US: u64 = 5_000_000;
 
 const CONFIGURE_TIMEOUT_US: u64 = 20_000_000;
 
@@ -988,6 +1290,14 @@ pub enum JoinError {
         /// it survives -- see `Radio::join`. Refusing is the point: the alternative is not a
         /// failed join, it is a stopped board.
         AlreadyJoined,
+        /// The name is empty, or longer than a network name can be. Caught before the radio is
+        /// asked anything, so the attempt is still available.
+        BadName,
+        /// The passphrase is not a length a protected network accepts. Caught before the radio is
+        /// asked anything -- both because the radio answers this one by refusing the command
+        /// outright, which the driver does not survive, and so that the obvious correction can
+        /// just be typed again.
+        BadPassphrase,
 }
 
 /// Somewhere to write a request into, so it can be built with the ordinary formatting machinery

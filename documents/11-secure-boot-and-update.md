@@ -163,6 +163,13 @@ between them.
   rejected by the chip and the transport carries no trust it would have to be given; and a
   **Rust-native network stack** over the radio rather than the platform SDK's C one, which is the
   same direction every other transport in the framework has moved.
+- **What limits an over-the-air update is writing it down, not carrying it** (mk5, measured). A
+  305 KiB image over a radio at the weak end of usable arrived in 6.6 seconds -- of which 6.4 was
+  spent programming storage and 0.2 waiting for the network, in reads averaging 1.4 KiB. So the link
+  has a great deal of headroom, and anything done to make an update faster belongs on the storage
+  side. Worth stating because the opposite was believed for a while, on a figure three times slower
+  measured before the build carried its optimisation settings: an unoptimised write path looked
+  exactly like a slow radio, and the number was recorded as unexplained rather than as suspect.
 - **Making a device secure is irreversible and belongs to manufacture.** Writing the key hash and
   enabling verification cannot be undone; a development board is either left open or given the
   development key, and no bench procedure writes one-time memory.

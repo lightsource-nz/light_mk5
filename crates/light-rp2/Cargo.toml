@@ -26,6 +26,12 @@ usb-console = ["dep:usb-device", "dep:usbd-serial"]
 # this crate builds out of PIO (src/wifi.rs), plus the clock facility that driver asks the
 # application to supply. A board without the part leaves this off and links none of it
 wifi = ["dep:cyw43", "dep:embassy-time-driver", "dep:embedded-hal-1", "dep:embassy-net-driver", "dep:embassy-net", "dep:log"]
+#   the SAME part's short-range radio, which is a second image uploaded into it beside the first
+# and a second driver handle out the other side -- a transport carrying the standard host-controller
+# protocol, for a host stack to sit on. Additive to `wifi` rather than an alternative to it: one
+# part, one bus, one power-up, and the vendor drop whose image carries both is what the build
+# switches to when this is asked for (see LightRadio.cmake).
+bluetooth = ["wifi", "cyw43/bluetooth", "dep:bt-hci"]
 
 [dependencies]
 light-core = { path = "../light-core" }
@@ -50,7 +56,15 @@ usbd-serial = { version = "0.2", optional = true }
 # else: the failure that matters here is one command out of a conversation of hundreds answering
 # with a status, and without the driver's own account of it there is nothing to go on. src/wifi.rs
 # forwards it into the framework's log, so it arrives on the same console as everything else
-cyw43 = { version = "0.5", default-features = false, features = ["log"], optional = true }
+#   0.7 AND NOT 0.5, and the reason is not this crate's: a host stack for the part's short-range
+# radio and this driver must agree on the crate that defines the protocol between them, and they
+# agree only from here on. So the version is pinned by something above rather than by anything
+# wanted here -- which is why the upgrade was made and proven on its own, with the wireless path
+# and an over-the-air update, before any stack was put on top of it.
+cyw43 = { version = "0.7", default-features = false, features = ["log"], optional = true }
+#   the host-controller protocol's own types, so a command is named rather than assembled out of
+# opcodes. The same version the driver above speaks, and only pulled in with `bluetooth`
+bt-hci = { version = "0.8", default-features = false, optional = true }
 log = { version = "0.4", default-features = false, optional = true }
 embassy-net-driver = { version = "0.2", optional = true }
 #   the network over the radio: addresses, routing and connections, over the same smoltcp the

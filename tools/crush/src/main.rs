@@ -115,6 +115,24 @@ pub enum RadioCmd {
                 #[arg(long = "clm", value_name = "FILE")]
                 clm: PathBuf,
         },
+        /// Lift a radio's Bluetooth image out of the vendor header that carries it. A part that
+        /// does both ships two images in two headers; this one has nothing to cut it into
+        Bluetooth {
+                /// The vendor's Bluetooth firmware header
+                input: PathBuf,
+                /// Where the uploaded image goes
+                #[arg(long = "firmware", value_name = "FILE")]
+                firmware: PathBuf,
+        },
+        /// Lift a module's NVRAM settings out of the vendor header that carries them: its
+        /// calibration and identity, shipped as C strings rather than as an array
+        Nvram {
+                /// The vendor's NVRAM header
+                input: PathBuf,
+                /// Where the settings go
+                #[arg(long = "nvram", value_name = "FILE")]
+                nvram: PathBuf,
+        },
 }
 
 #[derive(Subcommand, Debug)]
@@ -319,6 +337,8 @@ pub fn run_command(ctx: &mut Context, command: Command) -> CmdResult {
                 },
                 Command::Radio { cmd } => match cmd {
                         RadioCmd::Firmware { input, firmware, clm } => radio_firmware(&input, &firmware, &clm),
+                        RadioCmd::Bluetooth { input, firmware } => radio_bluetooth(&input, &firmware),
+                        RadioCmd::Nvram { input, nvram } => radio_nvram(&input, &nvram),
                 },
                 Command::Console(_) => Err("console cannot be nested".into()),
         }
@@ -382,6 +402,27 @@ fn radio_firmware(input: &std::path::Path, firmware: &std::path::Path, clm: &std
         ));
         write_out(firmware, &split.firmware)?;
         write_out(clm, &split.clm)?;
+        Ok(())
+}
+
+/// Lift a radio's Bluetooth image out of its own vendor header.
+fn radio_bluetooth(input: &std::path::Path, firmware: &std::path::Path) -> CmdResult {
+        let text = std::fs::read_to_string(input).map_err(|e| format!("could not read '{}': {e}", input.display()))?;
+        let image = crush_core::radio::bluetooth(&text).map_err(|e| format!("'{}': {e}", input.display()))?;
+        log::info(&format!("radio bluetooth from '{}': {} bytes of image", input.display(), image.len()));
+        write_out(firmware, &image)?;
+        Ok(())
+}
+
+/// Lift a module's NVRAM settings out of its vendor header.
+fn radio_nvram(input: &std::path::Path, nvram: &std::path::Path) -> CmdResult {
+        let text = std::fs::read_to_string(input).map_err(|e| format!("could not read '{}': {e}", input.display()))?;
+        let settings = crush_core::radio::nvram(&text).map_err(|e| format!("'{}': {e}", input.display()))?;
+        //   the count of settings, not just the byte count: it is the number a person can sanity-check
+        // against the header they pointed at
+        let count = settings.split(|b| *b == 0).filter(|s| !s.is_empty()).count();
+        log::info(&format!("radio nvram from '{}': {} settings, {} bytes", input.display(), count, settings.len()));
+        write_out(nvram, &settings)?;
         Ok(())
 }
 

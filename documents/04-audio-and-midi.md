@@ -260,3 +260,18 @@ every *other* mounted device that has a cable C.
 - **Two configuration counts, one guard.** Because the host stack's interface count and the
   `Forwarder`'s slot count are set independently, the out-of-range `mount` refusal is the deliberate
   seam that keeps a drift between them from corrupting a slot.
+- **A wireless MIDI link is another `Transport`, not another engine** (mk5 decision). `Transport` is
+  already implemented four times over — a USB host stack, two serial ports, and a test mock — and
+  `Kind` already distinguishes a link that is mounted for the life of the program from a device on a
+  bus. So carrying MIDI over the short-range radio adds a fifth implementation and a `Kind`, and the
+  routing, the merging and the counters are untouched. The engine never learns that a wireless link
+  exists.
+  - **Its packet format is portable, so it is tested on the host.** The wireless MIDI profile packs
+    several events into one notification with timestamps of its own and carries running status
+    across them; that is codec work, and codec work belongs where it can be tested without a radio.
+    The profile and its encoding live in a portable crate above the port, which supplies only the
+    transport ([07-ports-and-shell.md](07-ports-and-shell.md)).
+  - **It is not the low-latency path and should not be presented as one.** The interval at which a
+    wireless link is polled is chosen by the device that connected to us, not by this firmware, and
+    its floor is several milliseconds against the USB path's one. The profile's timestamps let a
+    receiver reconstruct *when* events happened; they do not make them arrive sooner.
