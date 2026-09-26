@@ -116,6 +116,17 @@ font, or a theme is data: an authored file and one call, no firmware source touc
   begin at the same place is right without the scripts knowing anything about it. The ELF stays as
   the debugger's symbols. Every write is read back, and **programming is its own tool run**, so a
   refused write is a status rather than a line of text a debug session would carry on past.
+- **Anything about starting up is captured with `-FromReset`, never by opening the console
+  afterwards** (mk5 convention). A board says everything it has to say about coming up in its first
+  few milliseconds: the clock it settled on, the assets it checked, which image the hardware chose,
+  and any complaint that stops it before the runtime turns over. A console opened after the fact sees
+  none of it, and where the board then stops the stream is *empty* — which reads exactly like
+  hardware that never came up, and is the wrong conclusion. `-FromReset` resets the board over the
+  debugger while the console already holds the serial port (two devices, so they do not contend), so
+  the transcript begins at the board's own zero. Worth stating as a rule because the failure is
+  silent and self-confirming: it was diagnosed as a framework defect, a panic that could not report
+  itself, for as long as it took to capture the reset properly and find the report had been there all
+  along.
 - `scripts/console.ps1` / `debug.ps1` — open the board's console / a debug session. `console.ps1`
   captures output for a window (`-Seconds`, `-Until`), or drives the CLI non-interactively with
   `-Send "cmd"` (or a list) — sending each command and capturing its reply — so a script, CI, or an

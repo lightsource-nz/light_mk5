@@ -49,7 +49,17 @@ param(
         [int]$SettleMs = 1500,
         [switch]$Quiet,
         [string]$Port,
-        [string]$Board
+        [string]$Board,
+        #   run once AFTER the port is open and BEFORE anything is read or sent.
+        #
+        #   WHAT THIS IS FOR: everything a board says about coming up, it says in its first few
+        # milliseconds -- the clock it settled on, the assets it checked, which image the hardware
+        # chose, and any complaint that stops it before the runtime turns over. A console opened
+        # after the board has started sees none of that. Where the board then stops, the stream is
+        # empty and reads exactly like hardware that never came up, which is a wrong conclusion that
+        # is very easy to reach and expensive to leave. So the reset belongs INSIDE the capture, and
+        # this is where a caller puts it: `-OnOpen { ... reset the board ... }`.
+        [scriptblock]$OnOpen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +89,14 @@ $sp.ReadBufferSize = 131072
 $sp.Open()
 $sp.DtrEnable = $true          # again after Open(), as some drivers reset it on open
 
+#   the port is open, so nothing the board says from here on can be missed -- which is the whole
+# point of doing this here rather than before. Whatever it prints while this runs is already being
+# buffered by the driver and is read by the loops below.
+if ($OnOpen) {
+        if (-not $Quiet) { Write-Host "resetting the board with the console already open" }
+        & $OnOpen
+}
+
 $sb = New-Object System.Text.StringBuilder
 $matched = $false
 #   why the port stopped answering, when it did: set by Read-Chunk, reported at the end
@@ -103,8 +121,14 @@ try {
                 if (-not $Quiet) { Write-Host "driving $($chosen.Device): $($Send.Count) command(s) (DTR asserted)" }
                 #   let the board settle and its boot output land, then drain it so the transcript
                 # is just the command replies (use a plain capture if the boot log is what you want)
-                Start-Sleep -Milliseconds 700
-                [void](Read-Chunk -From $sp -Gone ([ref]$gone))
+                #
+                #   UNLESS THE BOOT OUTPUT IS THE POINT. With -OnOpen the board was reset a moment
+                # ago on purpose, and what it said while starting is exactly what was being asked
+                # for -- draining it here would throw away the reason for resetting at all.
+                if (-not $OnOpen) {
+                        Start-Sleep -Milliseconds 700
+                        [void](Read-Chunk -From $sp -Gone ([ref]$gone))
+                }
                 #   -Until DESCRIBES THE LAST COMMAND, not every one of them. It names the thing the
                 # whole errand is waiting for, and that arrives in answer to the final command -- so
                 # the ones before it go back to ending on a quiet gap. Applying it to all of them
