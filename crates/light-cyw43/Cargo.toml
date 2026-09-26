@@ -1,0 +1,48 @@
+[package]
+workspace = "../../firmware"
+name = "light-cyw43"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "a driver for a combined wireless and short-range radio part -- one chip, two radios, one half-duplex bus -- over light_core::hal::RadioBus, so it belongs to the part rather than to any chip and any port that can supply the bus may link it"
+
+[features]
+#   the SAME part's short-range radio: a second image uploaded into it beside the first, and a
+# second handle out the other side carrying the standard host-controller protocol for a host stack
+# to sit on. ADDITIVE rather than an alternative -- one part, one bus, one power-up -- and the build
+# switches to the vendor drop whose image carries both when it is asked for (see LightRadio.cmake)
+bluetooth = ["cyw43/bluetooth", "dep:bt-hci"]
+
+[dependencies]
+light-core = { path = "../light-core" }
+#   the portable contract this crate implements: credentials that cannot be built wrong, what a
+# scan heard, why a join failed. The rules live there and are host-tested there
+light-wireless = { path = "../light-wireless" }
+#   the part's driver.
+#   0.7 AND NOT 0.5, and the reason is not this crate's: a host stack for the short-range radio and
+# this driver must agree on the crate that defines the protocol between them, and they agree only
+# from here on. So the version is pinned by something above rather than by anything wanted here --
+# which is why the upgrade was made and proven on its own, with the wireless path and an
+# over-the-air update, before any stack was put on top of it.
+#   with `log`, because a radio that refuses says so through its driver's logging and nowhere else:
+# the failure that matters is one command out of a conversation of hundreds answering with a status,
+# and without the driver's own account of it there is nothing to go on. This crate forwards it into
+# the framework's log, so it arrives on the same console as everything else
+cyw43 = { version = "0.7", default-features = false, features = ["log"] }
+log = { version = "0.4", default-features = false }
+#   the host-controller protocol's own types, so a command is named rather than assembled out of
+# opcodes. The same version the driver above speaks, and only pulled in with `bluetooth`
+bt-hci = { version = "0.8", default-features = false, optional = true }
+#   the ecosystem's pin trait, which the driver holds the part's reset line through. One adapter
+# over the framework's, whose operations cannot fail
+embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
+embassy-net-driver = { version = "0.2" }
+#   the network over the radio: addresses, routing and connections, over the same smoltcp the rest
+# of the embedded world uses. Only what a fetch needs is turned on -- one address family, one
+# medium, connections and the means of being given an address.
+#   IT TRAVELS WITH THE DRIVER FOR NOW because it is bound to the driver's packet interface, and
+# being stranded in a port is worse. Lifting it out is the network subsystem's first task
+embassy-net = { version = "0.7", default-features = false, features = ["tcp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+#   NO TIME DRIVER HERE, deliberately: the stack below asks for a microsecond tick, and that tick is
+# the CHIP's rather than the part's -- so the port registers it and this crate only consumes it. Two
+# crates registering one would not link.

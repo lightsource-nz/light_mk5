@@ -15,6 +15,9 @@ members = [
         "../crates/light-stm32f4",
         # the bare-CMSIS shell glue, shared by the STM32 boards
         "../crates/light-shell-cmsis",
+        #   a radio part's driver: not a port, but not portable either -- it belongs to the PART, so
+        # any chip that can supply its bus seam may link it
+        "../crates/light-cyw43",
         # board-support layers
         "../crates/light-board-touch169",
         "../crates/light-board-touch28",

@@ -42,7 +42,10 @@ pub enum CredentialError {
 /// A network to join: its name, and the passphrase if it is protected.
 ///
 /// Valid by construction -- see the crate documentation for why that is the whole point.
-#[derive(Clone)]
+///
+/// `Copy`, because the ordinary way to get a set of credentials from a console to a radio is to put
+/// it on an event bus, and an event is copied rather than moved.
+#[derive(Clone, Copy)]
 pub struct Credentials {
         ssid: [u8; SSID_MAX],
         ssid_len: u8,

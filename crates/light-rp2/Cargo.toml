@@ -22,16 +22,12 @@ usb-host = ["dep:light-midi", "dep:cotton-usb-host", "dep:futures", "dep:defmt"]
 # it, run from the core-1 loop in src/shell.rs. Every board whose native USB port is a device
 # carries it; a host-role board (usb-host) leaves it off and its console is the UART alone
 usb-console = ["dep:usb-device", "dep:usbd-serial"]
-#   the wireless part some boards of this family carry: the ecosystem's driver for it over a bus
-# this crate builds out of PIO (src/wifi.rs), plus the clock facility that driver asks the
-# application to supply. A board without the part leaves this off and links none of it
-wifi = ["dep:cyw43", "dep:embassy-time-driver", "dep:embedded-hal-1", "dep:embassy-net-driver", "dep:embassy-net", "dep:log"]
-#   the SAME part's short-range radio, which is a second image uploaded into it beside the first
-# and a second driver handle out the other side -- a transport carrying the standard host-controller
-# protocol, for a host stack to sit on. Additive to `wifi` rather than an alternative to it: one
-# part, one bus, one power-up, and the vendor drop whose image carries both is what the build
-# switches to when this is asked for (see LightRadio.cmake).
-bluetooth = ["wifi", "cyw43/bluetooth", "dep:bt-hci"]
+#   THE TWO THINGS A RADIO WANTS FROM THIS CHIP, and no more: the half-duplex bus, built out of PIO
+# because no SPI peripheral turns a data line around mid-transfer, and the microsecond tick a radio
+# stack asks the application to supply. The DRIVER is not here -- it belongs to the part rather than
+# to this chip, so it is its own crate above `light_core::hal::RadioBus` (see light-cyw43) and a
+# board links it beside this one. A board without a radio leaves this off and links neither
+wifi = ["dep:embassy-time-driver"]
 
 [dependencies]
 light-core = { path = "../light-core" }
@@ -49,30 +45,11 @@ critical-section = { version = "1.2", features = ["restore-state-bool"] }
 # model, and the CDC-ACM class the console rides on. Both no_std, no allocation
 usb-device = { version = "0.3", optional = true }
 usbd-serial = { version = "0.2", optional = true }
-#   the wireless part's driver, its view of a network interface, and the clock facility it is
-# written against -- a microsecond tick, which is what this chip's timer already counts for the
-# framework's own log, so src/wifi.rs supplies it in four lines
-#   with `log`, because a radio that refuses says so through its driver's logging and nowhere
-# else: the failure that matters here is one command out of a conversation of hundreds answering
-# with a status, and without the driver's own account of it there is nothing to go on. src/wifi.rs
-# forwards it into the framework's log, so it arrives on the same console as everything else
-#   0.7 AND NOT 0.5, and the reason is not this crate's: a host stack for the part's short-range
-# radio and this driver must agree on the crate that defines the protocol between them, and they
-# agree only from here on. So the version is pinned by something above rather than by anything
-# wanted here -- which is why the upgrade was made and proven on its own, with the wireless path
-# and an over-the-air update, before any stack was put on top of it.
-cyw43 = { version = "0.7", default-features = false, features = ["log"], optional = true }
-#   the host-controller protocol's own types, so a command is named rather than assembled out of
-# opcodes. The same version the driver above speaks, and only pulled in with `bluetooth`
-bt-hci = { version = "0.8", default-features = false, optional = true }
-log = { version = "0.4", default-features = false, optional = true }
-embassy-net-driver = { version = "0.2", optional = true }
-#   the network over the radio: addresses, routing and connections, over the same smoltcp the
-# rest of the embedded world uses. Only what a fetch needs is turned on -- one address family,
-# one medium, connections and the means of being given an address
-embassy-net = { version = "0.7", default-features = false, features = ["tcp", "dhcpv4", "medium-ethernet", "proto-ipv4"], optional = true }
+#   the clock facility a radio stack is written against -- a microsecond tick, which is what this
+# chip's timer already counts for the framework's own log, so src/wifi.rs supplies it in four lines.
+# REGISTERED HERE AND NOWHERE ELSE: the tick belongs to the chip rather than to the radio part, so
+# the part's driver consumes it and does not provide it. Two providers would not link
 embassy-time-driver = { version = "0.2", features = ["tick-hz-1_000_000"], optional = true }
-embedded-hal-1 = { package = "embedded-hal", version = "1.0", optional = true }
 #   the Cortex-M0+ has no atomic read-modify-write instructions: portable-atomic's
 # critical-section fallback provides swap/fetch_add there through THIS crate's spinlock
 # section, and compiles to the native instructions everywhere else
