@@ -163,13 +163,20 @@ between them.
   rejected by the chip and the transport carries no trust it would have to be given; and a
   **Rust-native network stack** over the radio rather than the platform SDK's C one, which is the
   same direction every other transport in the framework has moved.
-- **What limits an over-the-air update is writing it down, not carrying it** (mk5, measured). A
-  305 KiB image over a radio at the weak end of usable arrived in 6.6 seconds -- of which 6.4 was
-  spent programming storage and 0.2 waiting for the network, in reads averaging 1.4 KiB. So the link
-  has a great deal of headroom, and anything done to make an update faster belongs on the storage
-  side. Worth stating because the opposite was believed for a while, on a figure three times slower
-  measured before the build carried its optimisation settings: an unoptimised write path looked
-  exactly like a slow radio, and the number was recorded as unexplained rather than as suspect.
+- **What limits an over-the-air update is storage, not the link** (mk5, measured). A 305 KiB image
+  was taken in reads averaging 1.4 KiB, and the time divided two ways: **6.4 seconds of storage
+  against 0.2 of network** where the slot had to be erased first, and **1.1 against 0.3** where a
+  previous attempt had already erased it. So storage dominates either way, and **most of it is the
+  erase rather than the write** -- which is where to look first if an update is ever made faster, and
+  which the two figures only separate because they were measured under both conditions. Stating the
+  6.4 alone would imply a slow write path and send anyone optimising in the wrong direction.
+- **The link needs far less headroom than the figures above suggest, and a weak one still fails**
+  (mk5, measured). The same transfer over a link at the very edge of usable did not complete inside
+  its two-minute deadline at all, while an 8 KiB transfer over that same link finished in under two
+  seconds. A small transfer succeeding therefore says nothing about whether a large one will: what
+  collapses is sustained throughput, not reachability. This is why a fetch that runs out of time
+  reports **how many bytes of how many** it managed -- "too slow" alone cannot tell a link that
+  carried almost everything from one that carried nothing, and those want opposite responses.
 - **Making a device secure is irreversible and belongs to manufacture.** Writing the key hash and
   enabling verification cannot be undone; a development board is either left open or given the
   development key, and no bench procedure writes one-time memory.

@@ -105,7 +105,18 @@ try {
                 # is just the command replies (use a plain capture if the boot log is what you want)
                 Start-Sleep -Milliseconds 700
                 [void](Read-Chunk -From $sp -Gone ([ref]$gone))
-                foreach ($cmd in $Send) {
+                #   -Until DESCRIBES THE LAST COMMAND, not every one of them. It names the thing the
+                # whole errand is waiting for, and that arrives in answer to the final command -- so
+                # the ones before it go back to ending on a quiet gap. Applying it to all of them
+                # made each earlier command wait out the entire -SettleMs before the next was even
+                # sent: three commands with a generous settle turned a two-second job into nine
+                # minutes, and looked for all the world like firmware that had stopped answering.
+                $last = $Send.Count - 1
+                for ($i = 0; $i -le $last; $i++) {
+                        $cmd = $Send[$i]
+                        #   the gap is trusted for every command but the last, where the caller has
+                        # said what to wait for
+                        $waitForPattern = $Until -and ($i -eq $last)
                         if ($gone) { break }
                         $sp.WriteLine($cmd)                 # trailing newline = Enter to the line reader
                         if (-not $Quiet) { Write-Host "> $cmd" }
@@ -121,14 +132,15 @@ try {
                                         if (-not $Quiet) { Write-Host -NoNewline $chunk }
                                         $lastData = Get-Date
                                         if ($Until -and $sb.ToString() -match $Until) { $matched = $true; break }
-                                } elseif (-not $Until -and $sb.Length -gt $startLen -and ((Get-Date) - $lastData).TotalMilliseconds -gt 300) {
-                                        #   this command's reply has arrived and gone quiet -- BUT ONLY
-                                        # WHEN NOTHING WAS ASKED FOR. A command that works for seconds
-                                        # in silence, which firmware does whenever it talks to slow
-                                        # hardware, goes quiet long before it is finished: the gap says
-                                        # "nothing yet", not "nothing more". Guessing wrong here loses
-                                        # the reply and looks exactly like firmware that never answered.
-                                        # So -Until means what it says -- wait for it, or for -SettleMs.
+                                } elseif (-not $waitForPattern -and $sb.Length -gt $startLen -and ((Get-Date) - $lastData).TotalMilliseconds -gt 300) {
+                                        #   this command's reply has arrived and gone quiet -- BUT NOT
+                                        # WHERE A PATTERN WAS ASKED FOR. A command that works for
+                                        # seconds in silence, which firmware does whenever it talks to
+                                        # slow hardware, goes quiet long before it is finished: the gap
+                                        # says "nothing yet", not "nothing more". Guessing wrong there
+                                        # loses the reply and looks exactly like firmware that never
+                                        # answered. So on the command the pattern is for, wait for it
+                                        # or for -SettleMs; on the ones before it, the gap is enough.
                                         break
                                 } else {
                                         Start-Sleep -Milliseconds 5
