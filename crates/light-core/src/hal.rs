@@ -236,6 +236,39 @@ pub trait SpiBus {
         fn set_hz(&mut self, hz: u32);
 }
 
+/// A half-duplex, single-wire, word-oriented bus: the host clocks a command out on the data
+/// line, turns the line around, and clocks the answer back in on **the same wire**. Radio
+/// parts of the kind that hold no firmware of their own are driven over one.
+///
+///   NO SPI PERIPHERAL DOES THIS, which is why it is its own seam rather than a mode of
+/// `SpiBus`: reversing the direction of a data line mid-transfer is not something a shift
+/// register is built to do, so a port supplies this from programmable I/O or from bit-banging.
+///
+///   AND IT IS BLOCKING, THOUGH ITS CONSUMERS ARE NOT. Drivers for these parts are written
+/// against asynchronous buses, but underneath such a bus waits on a FIFO -- so declaring the
+/// seam blocking costs nothing and keeps one driver's executor and futures out of the port
+/// interface that every other subsystem shares. A driver crate adapts it upward.
+pub trait RadioBus {
+        /// Clock out a command and its payload; return the status word the part answers with.
+        /// The first word is the command.
+        fn write(&mut self, words: &[u32]) -> u32;
+
+        /// Clock out a one-word command, turn the line around, and fill `read`; return the
+        /// status word.
+        ///
+        /// Some address ranges answer with one unspecified word before the data, so a caller
+        /// wanting `n` words may have to offer `n + 1`. That is the part's business, not the
+        /// bus's: the bus clocks in exactly as many words as it was given room for.
+        fn read(&mut self, command: u32, read: &mut [u32]) -> u32;
+
+        /// Whether the part has something to say. The default reports ready always, which
+        /// yields polling -- correct everywhere, and all a port need do where the part's
+        /// attention line is not wired.
+        fn ready(&mut self) -> bool {
+                true
+        }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockError {
         /// The medium answered wrongly, or not at all.

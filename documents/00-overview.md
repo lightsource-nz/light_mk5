@@ -15,8 +15,8 @@ that produced it.
 
 An embedded application and UI framework for small microcontrollers. It gives a device: a
 cooperative module runtime, a widget toolkit rendered to a panel, touch/IMU/gesture input, audio,
-storage and filesystems, real-time clock, power management, and a console — as portable Rust
-libraries that run unchanged across several chips, and on the host under `cargo test`.
+storage and filesystems, real-time clock, power management, wireless radio, and a console — as
+portable Rust libraries that run unchanged across several chips, and on the host under `cargo test`.
 
 The framework is used by lightsource's own products, which live in their own repositories and
 consume it; the applications in this tree (the widget demo, the dictaphone) are both real
@@ -166,6 +166,8 @@ Portable crates, each depending only on those above it, never on a port:
     light-fs          filesystems: FAT16/FAT32 over any BlockDevice
     light-power       power-supply management: operating points, PD contracts, the request ceiling
     light-power-manager  portable idle/backlight power policy over a per-board mechanism
+    light-wireless    the radio contract: credentials, networks heard, join outcomes, the
+                      WifiRadio / BluetoothController / HciTransport seams
     light_ui_components  higher-level UI components integrating other layers (e.g. a file picker)
 
 Ports (target-only, chosen by the firmware, in the firmware workspace — not host-tested):
@@ -173,6 +175,12 @@ Ports (target-only, chosen by the firmware, in the firmware workspace — not ho
     light-rp2         RP2040 (Cortex-M0+) and RP2350 (Cortex-M33 or Hazard3), one source over the pac
     light-stm32h7     STM32H743 over bare CMSIS
     light-stm32f4     STM32F411 over bare CMSIS
+
+Shared target-only crates — not ports, but not portable either: they belong to a *part* rather than a
+chip, and any port that can supply the seam they need may link them:
+
+    light-shell-cmsis the bare-CMSIS shell glue, shared by the STM32 boards
+    a radio driver    one radio part over the RadioBus seam (see [12-wireless.md](12-wireless.md))
 
 Host tooling (never linked into firmware):
 
@@ -206,6 +214,7 @@ differing sizes, and an OLED-panel board.
 | [09-application-model.md](09-application-model.md) | The application model: portable app crates, board-support crates, per-board instantiation crates, the design-as-data workflow, the worked examples. |
 | [10-build-and-release.md](10-build-and-release.md) | The build system: CMake + Corrosion, the presets, the `light-*.ps1` script layer, flashing, host tests, versioning and releases. |
 | [11-secure-boot-and-update.md](11-secure-boot-and-update.md) | Image authenticity and field update: what is signed, what the hardware verifies, the slot and probation model, rollback, the asset partition, and keys. |
+| [12-wireless.md](12-wireless.md) | `light-wireless`: the radio contract — credentials, scan results, join outcomes — the `RadioBus` seam, radio drivers as shared target-only crates, and the controller interface a Bluetooth host stack sits on. |
 
 Each subsystem document states, for its crates: the responsibility, the public surface (the types
 and traits that define its contract), the behaviour and the invariants, and the notable design

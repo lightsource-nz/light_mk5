@@ -2026,6 +2026,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-wireless"
+version = "0.1.0"
+
+[[package]]
 name = "light_app_dictaphone"
 version = "0.1.0"
 dependencies = [

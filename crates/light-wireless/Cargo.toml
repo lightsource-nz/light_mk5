@@ -1,0 +1,11 @@
+[package]
+name = "light-wireless"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the portable radio contract -- credentials that cannot be built wrong, the networks a scan heard, why a join failed, and the seams a radio driver implements; no hardware and no vendor, so the policy lives here once instead of once per port"
+
+#   NOTHING, DELIBERATELY. The bus a radio is driven over is a port interface and belongs with the
+# others, so this crate holds only the contract above it -- which is pure data and pure rules, and
+# is the reason the whole of it runs under `cargo test`.
+[dependencies]
