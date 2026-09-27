@@ -167,7 +167,7 @@ Portable crates, each depending only on those above it, never on a port:
     light-power       power-supply management: operating points, PD contracts, the request ceiling
     light-power-manager  portable idle/backlight power policy over a per-board mechanism
     light-wireless    the radio contract: credentials, networks heard, join outcomes, the
-                      WifiRadio / BluetoothController / HciTransport seams
+                      WifiRadio and BluetoothController seams
     light_ui_components  higher-level UI components integrating other layers (e.g. a file picker)
 
 Ports (target-only, chosen by the firmware, in the firmware workspace — not host-tested):

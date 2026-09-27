@@ -27,7 +27,12 @@ use light_core::{ConstStaticCell, StaticCell};
 //   RE-EXPORTED RATHER THAN RESTATED: these are the contract, identical whatever the part, so a
 // consumer of this driver and a consumer of any other name the same types. Taking them from here
 // saves an application naming two crates to do one thing.
-pub use light_wireless::{CredentialError, Credentials, HciError, HciTransport, JoinError, ScanEntry, Security, Sightings, WirelessError};
+pub use light_wireless::{CredentialError, Credentials, JoinError, ScanEntry, Security, Sightings, WirelessError};
+
+//   the short-range side's host stack, hosted the same way the wireless side's is: static
+// resources, and a pass of its runner from the loop that owns the radio
+#[cfg(feature = "bluetooth")]
+pub mod ble;
 pub use light_net::{Config, FetchError, Incoming, NetError};
 
 /// Microseconds since boot, from the framework's own clock.
@@ -454,6 +459,17 @@ impl Radio {
                                 return None;
                         }
                 }
+        }
+
+        /// Hand the short-range side over to a host stack, which owns it from then on.
+        ///
+        ///   ONE OR THE OTHER, NEVER BOTH. The question-and-answer used above to read the address
+        /// reads the controller's events directly; a stack does the same, and two readers of one
+        /// event stream each see the half the other did not. So the handle moves rather than being
+        /// shared, and this answers `None` once it has gone.
+        #[cfg(feature = "bluetooth")]
+        pub fn host_bluetooth(&mut self, address: [u8; 6]) -> Option<ble::Ble> {
+                self.bt.take().map(|bt| ble::Ble::new(bt, address))
         }
 
         /// Run the radio's own task until a piece of control work finishes.

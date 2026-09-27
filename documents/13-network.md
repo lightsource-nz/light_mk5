@@ -18,7 +18,7 @@ Two things are deliberately **not** in it:
 - **The protocol stack is a dependency, not something the framework writes.** Addressing, routing
   and connections over the packet interface a radio exposes are a large, well-served body of work.
   The framework consumes such a stack exactly as it consumes a Bluetooth host stack above
-  `HciTransport`.
+  the ecosystem's HCI transport trait, which the radio driver implements directly.
 - **The socket plumbing belongs to whatever owns the packet interface** — in practice a radio
   driver, because a stack is built on that driver's device handle and cannot be separated from it.
   A driver holds the stack, does the reads and writes, and uses this crate for everything above the

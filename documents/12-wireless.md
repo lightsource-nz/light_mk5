@@ -39,7 +39,7 @@ contract and on the port interface, never on a port; the application chooses whi
 ## The crates
 
     light-wireless      portable, host-tested: credentials, scan results, join outcomes,
-                        the WifiRadio / BluetoothController / HciTransport seams
+                        the WifiRadio and BluetoothController seams
     a radio driver      target-only, shared: one part, over the RadioBus seam
     a port              the bus, the power line, the clock
 
@@ -65,9 +65,10 @@ In `light-wireless`:
   answer, refused, already attempted, or credentials that were never sent.
 - **`WifiRadio`** — bring the radio up, read its address, join, scan, drive a general-purpose pin.
 - **`BluetoothController`** — bring the short-range controller up and read its address.
-- **`HciTransport`** — the byte interface a Bluetooth host stack sits on: hand a packet down, take a
-  packet up. The framework implements this seam and consumes a host stack above it; it does not
-  write the host stack.
+There is deliberately **no framework seam for the short-range side's packet interface**: a driver and
+a host stack already agree on the ecosystem's own HCI crate, and a trait in between would have an
+implementation on one side, an adapter on the other, and no consumer. A host stack attaches to the
+driver directly. See the decisions below.
 
 ## Behaviour and invariants
 
@@ -148,9 +149,23 @@ In `light-wireless`:
   see the gap. A single type with the limits in it, exercised on the host, removes that class of
   defect rather than fixing an instance of it.
 - **The subsystem ends at the controller interface.** Above it, a Bluetooth host stack is a
-  dependency the framework consumes through `HciTransport`, not something it writes: advertising,
-  connections and attribute protocols are a large, well-served body of work, and reimplementing them
-  would be a second framework inside this one.
+  dependency the framework consumes, not something it writes: advertising, connections and attribute
+  protocols are a large, well-served body of work, and reimplementing them would be a second
+  framework inside this one.
+- **A host stack attaches to the driver directly, and the framework declares no seam between them**
+  (mk5 decision). One was written and then removed unused: a driver for such a part implements the
+  ecosystem's HCI transport trait, and every host stack consumes that same trait, so a framework
+  trait in between had an implementation on one side, an adapter on the other, and no consumer.
+  The general rule it stands for: **a seam earns its place by being the thing two sides would
+  otherwise disagree about.** Where they already agree, declaring one adds a boundary the framework
+  does not own and cannot change.
+- **Which host stack may be used is decided by the driver, not by preference** (mk5, measured). The
+  driver and the stack must resolve to **one** version of the HCI crate — two are semver-distinct
+  types, and the driver's transport then cannot satisfy the stack's bound at all. In practice that
+  leaves exactly one usable pairing at any time, and it is found by reading what each requires rather
+  than by taking the newest of each. The same arithmetic applies to the timekeeping crate, where the
+  cost of getting it wrong is worse than a type error: two copies each register a global driver, and
+  the image does not link.
 - **The network stack stays with the driver until it has its own subsystem.** Sockets and transfers
   are bound to the driver's packet interface, so they travel with it rather than being stranded in a
   port. Lifting them out is the network subsystem's first task, and the seam it will cut is the

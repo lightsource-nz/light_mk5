@@ -324,32 +324,16 @@ pub trait BluetoothController {
         fn bluetooth_address(&mut self) -> Option<[u8; 6]>;
 }
 
-/// Why a controller packet did not get through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HciError {
-        /// The controller is not up.
-        NotReady,
-        /// Nothing to read.
-        WouldBlock,
-        /// The packet is longer than the transport will carry.
-        TooLong,
-}
-
-/// The packet interface a Bluetooth host stack sits on.
-///
-///   THIS IS WHERE THE FRAMEWORK STOPS. Above this seam -- advertising, connections, the attribute
-/// protocol -- is a large and well-served body of work that the framework CONSUMES rather than
-/// writes; reimplementing it would be a second framework inside this one. What the framework owes
-/// that stack is this: a way to hand a packet down to the controller and take one back up.
-pub trait HciTransport {
-        /// Hand one packet to the controller.
-        fn write(&mut self, packet: &[u8]) -> Result<(), HciError>;
-
-        /// Take one packet from the controller into `buf`, returning its length.
-        /// [`HciError::WouldBlock`] when there is nothing waiting -- which is the ordinary case on a
-        /// polled pass, not a fault.
-        fn read(&mut self, buf: &mut [u8]) -> Result<usize, HciError>;
-}
+//   THE FRAMEWORK DECLARES NO PACKET INTERFACE OF ITS OWN FOR THE SHORT-RANGE SIDE, and the absence
+// is deliberate. One was written here -- a byte seam for a host stack to sit on -- before it was
+// checked against what the stack and the driver already agree on, and they agree on the ecosystem's
+// own HCI crate: the driver implements ITS transport trait, and every host stack consumes that
+// trait. A framework trait in between would have had an implementation on one side, an adapter on
+// the other, and no consumer at all.
+//
+//   Which is the general rule this stands for: a seam earns its place by being the thing two sides
+// would otherwise disagree about. Where they already agree, declaring one adds a boundary the
+// framework does not own and cannot change.
 
 #[cfg(test)]
 mod tests {

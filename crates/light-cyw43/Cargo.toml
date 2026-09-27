@@ -11,7 +11,7 @@ description = "a driver for a combined wireless and short-range radio part -- on
 # second handle out the other side carrying the standard host-controller protocol for a host stack
 # to sit on. ADDITIVE rather than an alternative -- one part, one bus, one power-up -- and the build
 # switches to the vendor drop whose image carries both when it is asked for (see LightRadio.cmake)
-bluetooth = ["cyw43/bluetooth", "dep:bt-hci"]
+bluetooth = ["cyw43/bluetooth", "dep:bt-hci", "dep:trouble-host"]
 
 [dependencies]
 light-core = { path = "../light-core" }
@@ -40,6 +40,23 @@ log = { version = "0.4", default-features = false }
 #   the host-controller protocol's own types, so a command is named rather than assembled out of
 # opcodes. The same version the driver above speaks, and only pulled in with `bluetooth`
 bt-hci = { version = "0.8", default-features = false, optional = true }
+#   the short-range host stack: advertising, connections and the attribute protocol, which the
+# framework consumes rather than writes.
+#   0.6 AND NOT THE NEWEST, and the choice is arithmetic rather than preference. This stack and the
+# part's driver must resolve to ONE version of the HCI crate above -- two are semver-distinct types,
+# and the driver's transport then cannot satisfy the stack's bound at all. The driver needs 0.8;
+# trouble-host 0.7 needs 0.9 and 0.8 needs 0.10, so 0.6 is the only pairing there is. It also asks
+# for the same timekeeping crate the driver does, which matters more than it looks: two copies each
+# register a global driver and the image does not link.
+#   PERIPHERAL ONLY: this part advertises and is connected to, it does not go looking. A board is
+# the thing being updated and the thing being played, so the other end is always the one that starts
+#   default-packet-pool: the stack's buffers sized by its own defaults rather than by a pool this
+# crate declares. Worth revisiting once a transfer has been measured -- the pool's packet size is
+# what a large transfer moves in, and the default is chosen for messages rather than for images
+#   with `log`, for the same reason the part's driver has it: what a stack does with a controller
+# is a conversation of commands and events, and when it puts nothing on the air it reports the
+# reason there and nowhere else. It joins the same relay and arrives on the same console
+trouble-host = { version = "0.6", default-features = false, features = ["peripheral", "gatt", "default-packet-pool", "log"], optional = true }
 #   the ecosystem's pin trait, which the driver holds the part's reset line through. One adapter
 # over the framework's, whose operations cannot fail
 embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
