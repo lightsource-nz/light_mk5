@@ -11,7 +11,7 @@ description = "a driver for a combined wireless and short-range radio part -- on
 # second handle out the other side carrying the standard host-controller protocol for a host stack
 # to sit on. ADDITIVE rather than an alternative -- one part, one bus, one power-up -- and the build
 # switches to the vendor drop whose image carries both when it is asked for (see LightRadio.cmake)
-bluetooth = ["cyw43/bluetooth", "dep:bt-hci", "dep:trouble-host"]
+bluetooth = ["cyw43/bluetooth", "dep:bt-hci", "dep:trouble-host", "dep:embassy-sync", "dep:static_cell"]
 
 [dependencies]
 light-core = { path = "../light-core" }
@@ -56,7 +56,14 @@ bt-hci = { version = "0.8", default-features = false, optional = true }
 #   with `log`, for the same reason the part's driver has it: what a stack does with a controller
 # is a conversation of commands and events, and when it puts nothing on the air it reports the
 # reason there and nowhere else. It joins the same relay and arrives on the same console
-trouble-host = { version = "0.6", default-features = false, features = ["peripheral", "gatt", "default-packet-pool", "log"], optional = true }
+trouble-host = { version = "0.6", default-features = false, features = ["peripheral", "gatt", "derive", "default-packet-pool", "log"], optional = true }
+#   named here because the service macros expand to code that reaches for them by path, so they are
+# this crate's dependencies even though nothing here writes them.
+#   THE VERSION MUST BE THE ONE THE STACK USES, not the newest: the expansion feeds the stack's own
+# types, and a second copy of a synchronisation primitive is a different type that will not fit. The
+# part's driver pulls a later one, so both are in the tree and this one is pinned to the stack's
+embassy-sync = { version = "0.7", optional = true }
+static_cell = { version = "2.1", optional = true }
 #   the ecosystem's pin trait, which the driver holds the part's reset line through. One adapter
 # over the framework's, whose operations cannot fail
 embedded-hal-1 = { package = "embedded-hal", version = "1.0" }

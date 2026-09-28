@@ -33,6 +33,15 @@ pub use light_wireless::{CredentialError, Credentials, JoinError, ScanEntry, Sec
 // resources, and a pass of its runner from the loop that owns the radio
 #[cfg(feature = "bluetooth")]
 pub mod ble;
+
+/// What the attribute table calls this device to anything that reads it.
+///
+///   NOT THE ADVERTISED NAME, which is the board's to choose and is passed in: this is the one the
+/// generic-access service reports once connected, and it names the FRAMEWORK because that is what
+/// the table belongs to. A board that wants its own puts it in the advertisement, which is what
+/// anyone scanning actually reads.
+#[cfg(feature = "bluetooth")]
+const ADVERTISED_AS: &str = "light";
 pub use light_net::{Config, FetchError, Incoming, NetError};
 
 /// Microseconds since boot, from the framework's own clock.
