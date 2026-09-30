@@ -15,6 +15,7 @@ macro(light_resolve_pico_platform OUT_VAR BOARD ARCH)
         if("${BOARD}" STREQUAL pico2 OR "${BOARD}" STREQUAL pico2_w
                         OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_1.69
                         OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_2.8
+                        OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_3.5
                         OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_3.49
                         OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_4)
                 if("${ARCH}" STREQUAL riscv32)

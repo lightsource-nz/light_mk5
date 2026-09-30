@@ -11,6 +11,7 @@
                 'conf-light_mk5-host-debug'     = 'build-host'
                 'conf-light_mk5-touch169-debug' = 'build-touch169'
                 'conf-light_mk5-touch28-debug'  = 'build-touch28'
+                'conf-light_mk5-touch35-debug'  = 'build-touch35'
                 'conf-light_mk5-touch349-debug' = 'build-touch349'
                 'conf-light_mk5-touch4-debug'   = 'build-touch4'
                 'conf-light_mk5-pico2-debug'    = 'build-pico2'
@@ -42,6 +43,7 @@
                 # uf2 because the 1.69 exposes no SWD pads
                 'ui_demo_touch169' = @{ Preset = 'conf-light_mk5-touch169-debug'; Flash = 'uf2' }
                 'ui_demo_touch28'  = @{ Preset = 'conf-light_mk5-touch28-debug'; Flash = 'uf2' }
+                'ui_demo_touch35'  = @{ Preset = 'conf-light_mk5-touch35-debug'; Flash = 'uf2' }
                 'ui_demo_touch349' = @{ Preset = 'conf-light_mk5-touch349-debug'; Flash = 'uf2' }
                 # the dictaphone: more applications on the 3.49, same board and tree --
                 # the portrait interface and the landscape one over the same engine
@@ -66,6 +68,12 @@
                 'conf-light_mk5-touch28-debug'  = @{
                         LIGHT_PLATFORM    = 'TARGET'
                         LIGHT_BOARD       = 'waveshare_rp2350_touch_lcd_2.8'
+                        PICO_PLATFORM     = 'rp2350-arm-s'
+                        Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
+                }
+                'conf-light_mk5-touch35-debug'  = @{
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'waveshare_rp2350_touch_lcd_3.5'
                         PICO_PLATFORM     = 'rp2350-arm-s'
                         Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
                 }

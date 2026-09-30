@@ -90,6 +90,16 @@
             }
         },
         {
+            "name": "conf-light-waveshare-touch35",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "waveshare_rp2350_touch_lcd_3.5"
+            }
+        },
+        {
             "name": "conf-light-waveshare-touch4",
             "inherits": [
                 "conf-light-pico-base"

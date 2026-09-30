@@ -21,11 +21,13 @@ members = [
         # board-support layers
         "../crates/light-board-touch169",
         "../crates/light-board-touch28",
+        "../crates/light-board-touch35",
         "../crates/light-board-touch4",
         "../crates/light-board-touch349",
         # per-board instantiation crates (touch fleet)
         "../crates/light_app_ui_demo_touch169",
         "../crates/light_app_ui_demo_touch28",
+        "../crates/light_app_ui_demo_touch35",
         "../crates/light_app_ui_demo_touch349",
         "../crates/light_app_ui_demo_touch4",
         "../crates/light_dictaphone_touch349",

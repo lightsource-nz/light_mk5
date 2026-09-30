@@ -1,0 +1,7 @@
+{
+  "extends": "light_app_ui_demo",
+  "device": { "width": 320, "height": 480 },
+  "pages": [
+    { "title": "mk5 3.5" }
+  ]
+}

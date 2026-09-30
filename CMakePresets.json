@@ -62,6 +62,19 @@
             }
         },
         {
+            "name": "conf-light_mk5-touch35-debug",
+            "description": "The Waveshare RP2350-Touch-LCD-3.5: the widget demo on the 320x480 ST7796S SPI panel with the FT6336U touch controller, single-buffered (region). Flashed over BOOTSEL.",
+            "inherits": [
+                "conf-light-waveshare-touch35",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-touch35",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
+            }
+        },
+        {
             "name": "conf-light_mk5-touch4-debug",
             "description": "The Waveshare RP2350-Touch-LCD-4: the widget demo on the 480x480 RGB (DPI) panel -- the ST7701S over the pure-hardware PIO scanout engine. Flashed over BOOTSEL.",
             "inherits": [

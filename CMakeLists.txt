@@ -59,7 +59,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         # the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/firmware/Cargo.toml
-                CRATES light_app_ui_demo_touch169 light_app_ui_demo_touch28 light_app_ui_demo_touch349 light_app_dictaphone_touch349 light_app_dictaphone_wide_touch349 light_app_lui_touch349 light_app_ui_demo_touch4 light_app_pico2 light_app_usb_host_probe light_app_h7 light_app_f411
+                CRATES light_app_ui_demo_touch169 light_app_ui_demo_touch28 light_app_ui_demo_touch35 light_app_ui_demo_touch349 light_app_dictaphone_touch349 light_app_dictaphone_wide_touch349 light_app_lui_touch349 light_app_ui_demo_touch4 light_app_pico2 light_app_usb_host_probe light_app_h7 light_app_f411
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
@@ -97,6 +97,8 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                         add_subdirectory(module/ui_demo_touch169)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_2.8")
                         add_subdirectory(module/ui_demo_touch28)
+                elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_3.5")
+                        add_subdirectory(module/ui_demo_touch35)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_3.49")
                         #   three applications, one tree: same board, same shell
                         # configuration, each its own executable and UF2 -- flash the one
