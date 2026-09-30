@@ -229,6 +229,7 @@ pub struct PioI2sOut {
         //   the capture (microphone) side, present after `attach_capture`
         _din: Option<Input>,
         pin_din: usize,
+        pin_dout: usize,
         cap_ch: [usize; 2],
         cap_bufs: Option<[&'static mut [u16; CAP_WORDS]; 2]>,
         cap_last_busy: [bool; 2],
@@ -319,6 +320,7 @@ impl PioI2sOut {
                         bufs: None,
                         _din: None,
                         pin_din: 0,
+                        pin_dout: dout,
                         cap_ch: [0; 2],
                         cap_bufs: None,
                         cap_last_busy: [false; 2],
@@ -472,6 +474,28 @@ impl PioI2sOut {
                 let pio = unsafe { &*pac::PIO1::ptr() };
                 let pc = pio.sm(SM_DIN).sm_addr().read().bits();
                 (highs, pc)
+        }
+
+        /// Probe the data-out side: sample the DOUT pad `n` times and count highs, alongside the
+        /// data machine's program counter, its TX FIFO level and the PIO's enable bits. The
+        /// playback counterpart of [`din_probe`](Self::din_probe): taken while audio plays, a
+        /// toggling pad means samples reach the codec; a pad stuck low with a moving counter
+        /// means the machine shifts out zeros; a counter parked on one `wait` means it never
+        /// sees the codec's clocks.
+        pub fn dout_probe(&self, n: u32) -> (u32, u32, u32, u32) {
+                let sio = unsafe { &*pac::SIO::ptr() };
+                let bit = 1u32 << (self.pin_dout & 31);
+                let mut highs = 0u32;
+                for _ in 0..n {
+                        if sio.gpio_in().read().bits() & bit != 0 {
+                                highs += 1;
+                        }
+                }
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                let pc = pio.sm(SM_DOUT).sm_addr().read().bits();
+                let tx_level = (pio.flevel().read().bits() >> (SM_DOUT * 8)) & 0xF;
+                let enabled = pio.ctrl().read().sm_enable().bits() as u32;
+                (highs, pc, tx_level, enabled)
         }
 
         /// Enable the DIN state machine alone -- no DMA armed -- so its RX FIFO fills for
@@ -715,6 +739,9 @@ impl light_core::AudioStream for I2sStream {
         }
 
         fn debug_probe(&mut self) {
+                //   the data-out side first, while whatever is playing still plays
+                let (highs, pc, tx_level, enabled) = self.i2s.dout_probe(4000);
+                light_core::info!("micdbg: DOUT GPIO high {}/4000, sm pc {}, tx fifo {}, sm enable {:#x}", highs, pc, tx_level, enabled);
                 //   sample the raw DIN pad, then read the PIO FIFO directly. Splits "the codec's data
                 // line is dead" from "the state machine misreads a toggling line"
                 let (highs, pc) = self.i2s.din_probe(4000);

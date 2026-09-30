@@ -935,6 +935,15 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                 let _ = self.bus.publish(Event::ListNav { prev: self.picker.has_prev(), next: self.picker.has_next() });
         }
 
+        /// Put the speaker amplifier back in its resting state: on (`load` enables it, and
+        /// playback and tones rely on it), except while a take is capturing, when it is held off
+        /// so the speaker cannot feed the microphone. Every path that switches it off for its own
+        /// purposes hands it back through here -- a diagnostic that left it off once silenced
+        /// every later tone and playback with nothing to say why.
+        fn amp_rest(&mut self) {
+                self.pa.set(!(self.rec.is_some() || self.rec_null));
+        }
+
         fn rec_start(&mut self, path: &str) {
                 if self.rec.is_some() || self.rec_null {
                         info!("rec: already recording");
@@ -1320,7 +1329,13 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                                         } else {
                                                 self.codec.set_adc_to_dac(false)
                                         };
-                                        self.pa.set(on);
+                                        //   on drives the speaker regardless; off ends only the
+                                        // loopback, and the amplifier returns to rest (on)
+                                        if on {
+                                                self.pa.set(true);
+                                        } else {
+                                                self.amp_rest();
+                                        }
                                         match r {
                                                 Ok(()) => info!("micmon {}: talk near the board", if on { "on -- speaker carries the mic" } else { "off" }),
                                                 Err(e) => warn!("micmon failed: {e:?}"),
@@ -1339,6 +1354,7 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                                                 }
                                         }
                                         self.stream.debug_probe();
+                                        self.amp_rest();
                                 }
                                 Event::Command(Command::PlayStop) => self.play_stop(),
                                 Event::Command(Command::PlayStatus) => {
