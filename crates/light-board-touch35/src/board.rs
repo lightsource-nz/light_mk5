@@ -8,7 +8,7 @@
 
 use light_core::atomic::{AtomicBool, Ordering};
 use light_input::drivers::ft6336::CoordMap;
-use light_input::imu::AxisMap;
+use light_input::imu::{self, AxisMap};
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
 use light_rp2::pwm::PwmOutput;
@@ -44,9 +44,10 @@ pub const I2C_HZ: u32 = 400_000;
 /// transform -- confirmed on the glass: taps land under the finger.
 pub const TOUCH_MAP: CoordMap = CoordMap { x_max: DISPLAY_WIDTH - 1, y_max: DISPLAY_HEIGHT - 1, invert_x: false, invert_y: false, swap_xy: false };
 
-/// QMI8658 on the same bus. How it is mounted is unmeasured: identity until the
-/// three-observation calibration (upright, flat face-up, device X by right-handedness).
-pub const IMU_AXIS_MAP: AxisMap = AxisMap::IDENTITY;
+/// How this board mounts the QMI8658, MEASURED with the +1g-points-up convention: upright read
+/// chip [-950, +60, -100] (up the screen = -chip X), flat face-up read [+35, +208, -953] (out of
+/// the screen = -chip Z), and device X follows by right-handedness (= -chip Y).
+pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::Y, imu::X, imu::Z], sign: [-1, -1, -1] };
 
 /// DMA channel for the display bus, from the top of the range.
 pub const DISPLAY_DMA_CH: usize = 15;

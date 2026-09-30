@@ -6,9 +6,7 @@
 //!
 //! Bring-up status: the panel shows true colours upright (MADCTL BGR, inversion on), the
 //! FT6336 answers and taps land under the finger, and the SPI clock runs at 75 MHz (a full
-//! repush peaks near 41 ms) -- all confirmed on the hardware. Still open: the IMU axis map is
-//! IDENTITY until the three-observation calibration is done, so orientation changes will likely
-//! be WRONG -- that is the measurement, not a bug.
+//! repush peaks near 41 ms), and the IMU axis map is measured -- all confirmed on the hardware.
 
 #![no_std]
 
@@ -95,8 +93,7 @@ pub extern "C" fn light_app_core1_main(_info: &ShellInfo) -> ! {
 const FPS: u32 = 30;
 const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
 
-/// The fleet's table; the axis map is the UNMEASURED identity, so until the calibration
-/// session these rotations are the thing under test, not a fact.
+/// The fleet's table, over the measured axis map.
 fn rotation_map(o: Orientation) -> Option<Rotation> {
         match o {
                 Orientation::Portrait => Some(Rotation::R0),
