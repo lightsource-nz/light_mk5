@@ -317,6 +317,11 @@ implemented so far as a reference driver: the NXP PCF85063A.
   - `set(&t: &Datetime) -> Result<(), I2cError>` — set every field in one write and clear the
     oscillator-stop flag.
 - `I2C_ADDR = 0x51`, `YEAR_BASE = 1970`.
+- `command` — the `rtc` console command, parsed once for every board:
+  `parse_command(words, show, set) -> Parsed<E>` (no argument is `show`; `set YYYY-MM-DD HH:MM:SS` is
+  `set(datetime)`; anything else is the usage line), `parse_datetime(date, time) -> Option<Datetime>`
+  (years `1970..=2069`, the span the two-digit year register holds), `weekday(y, m, d)` (0 = Sunday),
+  and `USAGE`. The caller supplies its two events, because they live in its own event vocabulary.
 
 ### Behaviour and invariants
 

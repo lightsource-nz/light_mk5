@@ -1,9 +1,11 @@
 //! Real-time clocks behind [`light_core::hal::I2cBus`]. The [`Rtc`] trait is the driver contract,
-//! the reference driver is the PCF85063A, and [`RtcMod`] is the runtime module that keeps and
-//! reports the clock generically over the driver and an application's event type.
+//! the reference driver is the PCF85063A, [`RtcMod`] is the runtime module that keeps and reports
+//! the clock generically over the driver and an application's event type, and [`command`] is the
+//! `rtc` console command every board shares.
 
 #![no_std]
 
+pub mod command;
 pub mod module;
 pub mod pcf85063a;
 

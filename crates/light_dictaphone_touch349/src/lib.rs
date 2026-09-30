@@ -339,56 +339,12 @@ impl Module for BoardMod {
 
 // --- the console table ---------------------------------------------------------------------
 
-fn split3(s: &str, sep: char) -> Option<(u16, u8, u8)> {
-        let mut it = s.split(sep);
-        let a = it.next()?.parse().ok()?;
-        let b = it.next()?.parse().ok()?;
-        let c = it.next()?.parse().ok()?;
-        if it.next().is_some() {
-                return None;
-        }
-        Some((a, b, c))
-}
-
-/// Zeller's congruence, mapped to 0 = Sunday, the register's convention.
-fn weekday(y: u16, m: u8, d: u8) -> u8 {
-        let (mut y, mut m) = (i32::from(y), i32::from(m));
-        if m < 3 {
-                m += 12;
-                y -= 1;
-        }
-        let (k, j) = (y % 100, y / 100);
-        let h = (i32::from(d) + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
-        ((h + 6) % 7) as u8
-}
-
 fn parse_rtc(w: &mut Words) -> Parsed<AppEvent> {
-        match w.next() {
-                None => Parsed::Event(Event::Ext(Ext::RtcShow)),
-                Some("set") => {
-                        let (Some(date), Some(time)) = (w.next(), w.next()) else { return Parsed::Usage };
-                        let Some((year, month, day)) = split3(date, '-') else { return Parsed::Usage };
-                        let Some((hour, minute, second)) = split3(time, ':') else { return Parsed::Usage };
-                        let valid = (1..=12).contains(&month) && (1..=31).contains(&day) && hour < 24 && minute < 60 && second < 60 && (1970..=2069).contains(&year);
-                        if !valid {
-                                return Parsed::Usage;
-                        }
-                        Parsed::Event(Event::Ext(Ext::RtcSet(Datetime {
-                                year,
-                                month,
-                                day,
-                                weekday: weekday(year, month, day),
-                                hour: hour as u8,
-                                minute: minute as u8,
-                                second: second as u8,
-                        })))
-                }
-                _ => Parsed::Usage,
-        }
+        light_rtc::command::parse_command(w, Event::Ext(Ext::RtcShow), |t| Event::Ext(Ext::RtcSet(t)))
 }
 
 static COMMANDS: &[CliCommand<AppEvent>] = &dictaphone_commands![Ext;
-        CliCommand { name: "rtc", usage: "rtc | rtc set YYYY-MM-DD HH:MM:SS", parse: parse_rtc },
+        CliCommand { name: "rtc", usage: light_rtc::command::USAGE, parse: parse_rtc },
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(Event::Ext(Ext::Sd)) },
 ];
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
