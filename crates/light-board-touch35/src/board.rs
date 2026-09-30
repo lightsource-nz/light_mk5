@@ -11,6 +11,7 @@ use light_input::drivers::ft6336::CoordMap;
 use light_input::imu::{self, AxisMap};
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
+use light_rp2::i2s::PioI2sOut;
 use light_rp2::pwm::PwmOutput;
 use light_rp2::spi::Spi0Display;
 use light_rp2::spi_bus::Spi1Bus;
@@ -58,20 +59,27 @@ pub const DISPLAY_DMA_CH: usize = 15;
 pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
 pub const BACKLIGHT_CARRIER_HZ: u32 = 30_000;
 
-// Declared so nothing reuses them; no drivers yet.
-// interrupts from the parts on the shared bus
+// The interrupt lines from the parts on the shared bus: declared so nothing reuses them, and left
+// unused -- every one of those parts is polled
 pub const PIN_RTC_INT: usize = 37;
 pub const PIN_IMU_INT1: usize = 38;
 pub const PIN_PMIC_IRQ: usize = 39;
 /// The AXP2101's power key, level-shifted onto a GPIO (the board carries its own pull-up).
 pub const PIN_POWER_KEY: usize = 40;
-// the ES8311 codec's I2S, and the NS4150B speaker amplifier's enable (high = on)
+// the ES8311 codec's I2S (the codec is the I2S master; this side makes MCLK and answers its
+// BCLK/LRCK), and the NS4150B speaker amplifier's enable (high = on)
 pub const PIN_I2S_DOUT: usize = 12;
 pub const PIN_I2S_DIN: usize = 13;
 pub const PIN_I2S_MCLK: usize = 14;
 pub const PIN_I2S_LRCK: usize = 15;
 pub const PIN_I2S_BCLK: usize = 16;
 pub const PIN_AMP_EN: usize = 17;
+/// The codec runs at 256 x Fs from the MCLK this side generates.
+pub const AUDIO_SAMPLE_HZ: u32 = 24_000;
+pub const AUDIO_MCLK_HZ: u32 = AUDIO_SAMPLE_HZ * 256;
+/// DMA channels for the playback ping-pong and the capture ping-pong, below the display's.
+pub const AUDIO_DMA_CH: [usize; 2] = [13, 14];
+pub const AUDIO_CAP_DMA_CH: [usize; 2] = [11, 12];
 // the TF slot, wired for both SPI1 (SCK/MOSI/MISO/CS) and 4-bit SDIO (CLK/CMD/D0..D3); driven in
 // SPI mode, with the two SDIO-only data lines left alone. No card-detect line is wired.
 pub const PIN_SD_SCK: usize = 26;
@@ -96,6 +104,8 @@ pub struct Peripherals {
         pub touch_reset: Output,
         /// The speaker amplifier, held off until something drives audio.
         pub amp_en: Output,
+        /// The codec's I2S: playback out, the microphone's capture in, on PIO1.
+        pub i2s: PioI2sOut,
         /// The power key's level, through the PMIC's level shifter: high while held.
         pub power_key: Input,
         /// The TF slot's bus, at the card-initialisation rate until a card is brought up.
@@ -115,6 +125,11 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
         unsafe {
                 Some(Peripherals {
                         amp_en: Output::new(PIN_AMP_EN, false),
+                        i2s: {
+                                let mut i2s = PioI2sOut::new(PIN_I2S_DOUT, PIN_I2S_BCLK, PIN_I2S_LRCK, PIN_I2S_MCLK, clocks.sys_hz, AUDIO_MCLK_HZ, AUDIO_DMA_CH[0], AUDIO_DMA_CH[1]);
+                                i2s.attach_capture(PIN_I2S_DIN, AUDIO_CAP_DMA_CH[0], AUDIO_CAP_DMA_CH[1]);
+                                i2s
+                        },
                         power_key: Input::new_pull_up(PIN_POWER_KEY),
                         sd_spi: Spi1Bus::new(clocks.peri_hz, PIN_SD_SCK, PIN_SD_MOSI, PIN_SD_MISO, 300_000),
                         sd_cs: Output::new(PIN_SD_CS, true),

@@ -303,8 +303,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let i2c: &'static RefCell<I2c1> = I2C.init(RefCell::new(p.i2c));
         let touch = Ft6336::new(i2c, p.touch_int, p.touch_reset, TOUCH_MAP, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
-        //   the amplifier stays off: nothing here drives audio
+        //   the amplifier stays off and the I2S idles: audio on this board is the dictaphone's
         let _amp_en = p.amp_en;
+        let _i2s = p.i2s;
         let mut pmic = Pmic::new(i2c);
         match pmic.probe().and_then(|found| if found { pmic.init().map(|()| true) } else { Ok(false) }) {
                 Ok(true) => info!("pmic: AXP2101 up"),

@@ -44,6 +44,7 @@
                 'ui_demo_touch169' = @{ Preset = 'conf-light_mk5-touch169-debug'; Flash = 'uf2' }
                 'ui_demo_touch28'  = @{ Preset = 'conf-light_mk5-touch28-debug'; Flash = 'uf2' }
                 'ui_demo_touch35'  = @{ Preset = 'conf-light_mk5-touch35-debug'; Flash = 'uf2' }
+                'dictaphone_touch35' = @{ Preset = 'conf-light_mk5-touch35-debug'; Flash = 'uf2' }
                 'ui_demo_touch349' = @{ Preset = 'conf-light_mk5-touch349-debug'; Flash = 'uf2' }
                 # the dictaphone: more applications on the 3.49, same board and tree --
                 # the portrait interface and the landscape one over the same engine

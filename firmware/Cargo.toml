@@ -34,6 +34,7 @@ members = [
         # the module/* executables' instantiation crates
         "../module/dictaphone_touch349/rust",
         "../module/dictaphone_wide_touch349/rust",
+        "../module/dictaphone_touch35/rust",
         "../module/light_lui_touch349/rust",
         "../module/light_pico2/rust",
         "../module/usb_host_probe/rust",

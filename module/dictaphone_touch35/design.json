@@ -1,0 +1,4 @@
+{
+  "extends": "light_app_dictaphone",
+  "device": { "width": 320, "height": 480 }
+}
