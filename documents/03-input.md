@@ -106,12 +106,12 @@ is asked; only one is held, and a second completing before the first is collecte
 A touch controller is supported by writing a driver that produces `Event` and implements
 `HardwareGestures` (declining unless the part has a real engine); the gesture tracker and the
 `BoardEvent` contract are written against that seam, not against any one chip, so a new controller is
-a new driver and nothing above it changes. Four reference drivers ship. All but the AXS share one
+a new driver and nothing above it changes. Five reference drivers ship. All but the AXS share one
 poll architecture; each replaces only the wire protocol underneath it.
 
 ### The shared poll discipline
 
-Three of the four drivers (CST816T, CST328, GT911) — and the AXS in all but one respect — carry the
+Four of the five drivers (CST816T, CST328, GT911, FT6336) — and the AXS in all but one respect — carry the
 same defensive `poll(now_ms)` loop, whose rules are against a *shared bus and a sleeping controller*,
 not against any one chip. The touch controller shares its I2C bus with the IMU, and several of these
 parts auto-sleep; retrying a sleeping chip aborts transfers the IMU needs. The discipline:
@@ -235,6 +235,22 @@ The GT911 carries an explicit **`CoordMap`** — `x_max`, `y_max`, `invert_x`, `
 measured on bring-up. Raw coordinates are clamped to the maxima, then inverted, then (a square panel
 can hide this until measured) `swap_xy` exchanges the axes last.
 
+### FT6336 — `ft6336::Ft6336`
+
+A reference driver for the FocalTech two-point part at address `0x38`, with 8-bit registers. One
+5-byte read from `TD_STATUS` (`0x02`) carries the touch count and the first point: the top two bits
+of the X high byte are the event flag (press, lift, contact) and the low nibbles of the X/Y high
+bytes are coordinate bits 11..8. Like the GT911, reports are *explicit in both directions*: a zero
+count, a lift flag, or an out-of-range count (the part reports `0x0F` while idle) is a release, and the
+silence timeout (`RELEASE_TIMEOUT_MS = 200`) is kept only as a stall backstop. In its default mode
+the part holds INT low for as long as a finger is down, which is what "INT says a read is allowed"
+expects. `probe()` reads the chip id at `0xA3` and succeeds for the family ids that share this
+register map. The part has a reset line, so it overrides `reset` with a blocking pulse and boot wait
+for load time; it has no runtime reset-recovery path. Its gesture register is a separate mode that
+suppresses coordinates, so it declines hardware gestures and the software tracker classifies. It
+carries the same `CoordMap` as the GT911, applied clamp, invert, then swap. Only the first point is
+tracked.
+
 ### AXS15231B — `axs15231b::Axs15231bTouch`
 
 A reference driver for the touch half of a combined chip that is also the panel's LCD controller,
@@ -340,7 +356,7 @@ the hardware each pass and publish `BoardEvent`s on the app's bus) live in `ligh
 
 - the **touch controller**, through a **`TouchController` trait** — `poll(now_ms) -> Option<TouchSample>`,
   `probe`, `diagnostics` (the failure counters), and a default-no-op `reset(clock)` a reset-capable
-  part overrides — which the four reference touch drivers implement (mirroring the existing
+  part overrides — which the five reference touch drivers implement (mirroring the existing
   `ImuDriver` on the IMU side); a consumer's own controller implements the same trait and drops
   straight into `TouchMod<A, T, C>`;
 - the **IMU driver**, through the existing `ImuDriver` (`ImuMod<A, D, C>`);

@@ -6,5 +6,6 @@
 pub mod axs15231b;
 pub mod cst328;
 pub mod cst816t;
+pub mod ft6336;
 pub mod gt911;
 pub mod qmi8658;
