@@ -21,4 +21,6 @@ light-rp2 = { path = "../light-rp2", features = ["rp2350", "usb-console"] }
 light-power = { path = "../light-power" }
 light-power-manager = { path = "../light-power-manager" }
 light-rtc = { path = "../light-rtc" }
+light-sd = { path = "../light-sd" }
+light-fs = { path = "../light-fs" }
 light-font = { path = "../light-font" }

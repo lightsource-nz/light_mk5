@@ -13,6 +13,7 @@ use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
 use light_rp2::pwm::PwmOutput;
 use light_rp2::spi::Spi0Display;
+use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::Clocks;
 
 // ST7796S panel, SPI 4-wire on SPI0 (GPIO18/19 mux to SPI0 SCK/TX). No MISO is wired.
@@ -71,7 +72,8 @@ pub const PIN_I2S_MCLK: usize = 14;
 pub const PIN_I2S_LRCK: usize = 15;
 pub const PIN_I2S_BCLK: usize = 16;
 pub const PIN_AMP_EN: usize = 17;
-// the TF slot, wired for both SPI1 (SCK/MOSI/MISO/CS) and 4-bit SDIO (CLK/CMD/D0..D3)
+// the TF slot, wired for both SPI1 (SCK/MOSI/MISO/CS) and 4-bit SDIO (CLK/CMD/D0..D3); driven in
+// SPI mode, with the two SDIO-only data lines left alone. No card-detect line is wired.
 pub const PIN_SD_SCK: usize = 26;
 pub const PIN_SD_MOSI: usize = 27;
 pub const PIN_SD_MISO: usize = 28;
@@ -96,6 +98,9 @@ pub struct Peripherals {
         pub amp_en: Output,
         /// The power key's level, through the PMIC's level shifter: high while held.
         pub power_key: Input,
+        /// The TF slot's bus, at the card-initialisation rate until a card is brought up.
+        pub sd_spi: Spi1Bus,
+        pub sd_cs: Output,
 }
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -111,6 +116,8 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
                 Some(Peripherals {
                         amp_en: Output::new(PIN_AMP_EN, false),
                         power_key: Input::new_pull_up(PIN_POWER_KEY),
+                        sd_spi: Spi1Bus::new(clocks.peri_hz, PIN_SD_SCK, PIN_SD_MOSI, PIN_SD_MISO, 300_000),
+                        sd_cs: Output::new(PIN_SD_CS, true),
                         display_bus: Spi0Display::new(
                                 clocks.peri_hz,
                                 PIN_DISPLAY_SCK,

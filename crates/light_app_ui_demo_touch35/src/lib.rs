@@ -27,6 +27,9 @@ use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::PowerMod;
 use light_rtc::{Datetime, Pcf85063a, RtcMod};
+use light_fs::console::{FsOp, FsPath};
+use light_sd::{CardStore, SpiSd};
+use light_rp2::spi_bus::Spi1Bus;
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 use light_rp2::gpio::{Input, Output};
@@ -66,6 +69,10 @@ enum Ext {
         RtcShow,
         /// Set the real-time clock.
         RtcSet(Datetime),
+        /// Bring the TF card up and report it.
+        Sd,
+        /// One filesystem command against the TF card.
+        Fs { op: FsOp, path: FsPath, arg: FsPath },
 }
 
 type AppEvent = DemoEvent<Ext>;
@@ -95,7 +102,7 @@ fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
         }
 }
 
-static EVENTS: EventBus<AppEvent, 16, 7> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 16, 8> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -145,7 +152,7 @@ impl BoardHook<St7796<Spi0Display>, Ext> for Hook {
                                 // shows immediately rather than on the next interaction
                                 view.ui.invalidate_all();
                         }
-                        Ext::Pmic | Ext::RtcShow | Ext::RtcSet(_) => {}
+                        Ext::Pmic | Ext::RtcShow | Ext::RtcSet(_) | Ext::Sd | Ext::Fs { .. } => {}
                 }
         }
 }
@@ -213,6 +220,39 @@ impl Module for PmicMod {
         }
 }
 
+/// The TF slot's card, shared between the console commands that use it.
+type Card = SpiSd<Spi1Bus, Output>;
+
+//   the TF slot: probed on demand (the `sd` command), not at boot -- an empty slot is ordinary
+struct StorageMod {
+        card: &'static RefCell<Card>,
+        events: Subscription,
+}
+
+impl Module for StorageMod {
+        fn name(&self) -> &'static str {
+                "storage"
+        }
+        fn poll(&mut self) -> Poll {
+                let mut busy = false;
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        match ev {
+                                AppEvent::Ext(Ext::Sd) => {
+                                        busy = true;
+                                        light_sd::shared::report(&mut self.card.borrow_mut(), &mut SysClock);
+                                }
+                                AppEvent::Ext(Ext::Fs { op, path, arg }) => {
+                                        busy = true;
+                                        let mut store = CardStore { card: self.card, clock: SysClock };
+                                        light_fs::console::run(&mut store, op, path.as_str(), arg.as_str());
+                                }
+                                _ => {}
+                        }
+                }
+                if busy { Poll::Busy } else { Poll::Idle }
+        }
+}
+
 // --- the console table ---------------------------------------------------------------------
 
 fn parse_spi(w: &mut Words) -> Parsed<AppEvent> {
@@ -228,7 +268,13 @@ static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "spi", usage: "spi HZ (1000000..100000000; the headroom probe)", parse: parse_spi },
         CliCommand { name: "pmic", usage: "pmic", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Pmic)) },
         CliCommand { name: "rtc", usage: light_rtc::command::USAGE, parse: parse_rtc },
+        CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Sd)) },
+        CliCommand { name: "fs", usage: light_fs::console::USAGE, parse: parse_fs },
 ];
+
+fn parse_fs(w: &mut Words) -> Parsed<AppEvent> {
+        light_fs::console::parse_command(w, |op, path, arg| DemoEvent::Ext(Ext::Fs { op, path, arg }))
+}
 
 fn parse_rtc(w: &mut Words) -> Parsed<AppEvent> {
         light_rtc::command::parse_command(w, DemoEvent::Ext(Ext::RtcShow), |t| DemoEvent::Ext(Ext::RtcSet(t)))
@@ -268,6 +314,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         let mut power_mod = PowerMod::new(Touch35Power { backlight: p.backlight, pmic, power_key: p.power_key }, SysClock, &EVENTS, power_backlight, power_is_stats, |_| None);
         let mut rtc_mod = RtcMod::new(Pcf85063a::new(i2c), &EVENTS, rtc_is_report, rtc_get_set);
+        static CARD: StaticCell<RefCell<Card>> = StaticCell::new();
+        let card: &'static RefCell<Card> = CARD.init(RefCell::new(SpiSd::new(p.sd_spi, p.sd_cs)));
+        let mut storage_mod = StorageMod { card, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut pmic_mod = PmicMod { pmic, events: EVENTS.subscribe().expect("subscriber slot"), next_key_poll_us: 0 };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
@@ -312,10 +361,11 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
-        let mut rt: Runtime<7> = Runtime::new();
+        let mut rt: Runtime<8> = Runtime::new();
         rt.add(&mut power_mod).expect("capacity");
         rt.add(&mut pmic_mod).expect("capacity");
         rt.add(&mut rtc_mod).expect("capacity");
+        rt.add(&mut storage_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");

@@ -966,11 +966,13 @@ dependencies = [
  "light-display",
  "light-draw",
  "light-font",
+ "light-fs",
  "light-input",
  "light-power",
  "light-power-manager",
  "light-rp2",
  "light-rtc",
+ "light-sd",
  "light-ui",
  "light_app_ui_demo",
 ]
