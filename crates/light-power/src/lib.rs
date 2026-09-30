@@ -14,6 +14,7 @@
 
 #![no_std]
 
+pub mod axp2101;
 pub mod husb238;
 
 use light_core::{error, info, warn};

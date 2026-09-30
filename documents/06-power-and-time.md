@@ -2,7 +2,7 @@
 
 This document describes the crates that manage a device's power and keep its clock: `light-power`
 (power-*supply* management — operating points, negotiated PD contracts, a survivable request
-ceiling, and the HUSB238 sink driver), `light-power-manager` (portable power *policy* — idle
+ceiling, the HUSB238 sink driver, and the AXP2101 PMIC driver), `light-power-manager` (portable power *policy* — idle
 backlight-dim and on-battery auto power-off over a per-board mechanism), and `light-rtc` (real-time
 clock drivers, the PCF85063A so far). All three sit near the bottom of the layering, depend only on
 `light-core`, and — like every portable crate — reach hardware only through `light_core::hal`
@@ -18,7 +18,10 @@ Own the *decision* half of power-supply management, separately from any one chip
 writes registers; every judgement — what the source offers, what this board can survive, what became
 of a request — lives in one portable place that is identical for every device. `PowerSource` is the
 seam a consumer implements for its own supply hardware; the crate ships that portable place
-(`Power<S>`) and one reference driver behind it (the HUSB238 USB-PD sink).
+(`Power<S>`) and one reference driver behind it (the HUSB238 USB-PD sink). It also ships a reference
+driver for a power-management IC (the AXP2101), which is not a `PowerSource` — it negotiates nothing
+with the supply — but the part a board's `PowerMechanism` reads for its battery, charger and
+external-power presence, and writes to power the board off.
 
 Two hard-won properties shape everything:
 
@@ -54,6 +57,10 @@ Two hard-won properties shape everything:
 - Constants: `MAX_PROFILES = 8`, `SAFE_MAX_MV = 5000`, `REQUEST_TIMEOUT_MS = 1500`,
   `DEFAULT_POLL_INTERVAL_MS = 500`.
 - `husb238::Husb238<B: I2cBus>` — the driver, plus its register map constants and `I2C_ADDR = 0x08`.
+- `axp2101::Axp2101<B: I2cBus>` — the PMIC driver: `probe`, `init`, `status() -> Status { vbus_good,
+  battery_present, charge: Charge }`, `battery_mv`/`battery_percent` (`None` with no cell fitted),
+  `vbus_mv`, `vsys_mv`, `die_decidegrees`, `take_key_events() -> KeyEvents`, and `power_off`; plus
+  `I2C_ADDR = 0x34`, `CHIP_ID` and the `KEY_*` bits.
 
 ### Behaviour and invariants
 
@@ -159,6 +166,23 @@ refusal knowable before the wire).*
   but a meaningless one that looks like one.
 - The part is marked HUSB238; a board carrying one may read HUSB328 — the same part with the digits
   transposed.
+- **A PMIC driver is a mechanism's dependency, and it never touches a rail.** A board whose main
+  supply comes from a PMIC regulator can be browned out by one wrong write to that regulator's enable
+  or voltage, and which rails feed what is board wiring the driver cannot see — so the driver reads
+  and writes only status, measurement, interrupt and soft-off registers, and leaves the rails and the
+  charger's current and voltage targets (facts about the fitted cell) to the board. It holds nothing
+  but its bus, so a copy is as good as the original: a mechanism's `&self` query (`on_external_power`)
+  reaches the hardware through a copy over a shared-bus handle that is itself `Copy`.
+- **AXP2101 specifics.** Most registers mix fields with reserved or control bits, so every
+  configuration write is read-modify-write; the interrupt status registers are write-1-to-clear, so
+  they are never read-modify-written, and `take_key_events` clears exactly the key bits it took. The
+  14-bit measurements are read high byte first and masked, their upper bits being control fields.
+  `init` enables the battery, input, system-rail and die-temperature channels and battery detection,
+  and routes only the power key's press, release, short and long events to the interrupt status —
+  every other source is masked so the IRQ line is not held by events nobody reads. The part latches
+  key *edges* but exposes no live key level, so a board that reports `power_button_pressed` reads the
+  key from its own GPIO where the key is wired to one. Its VBUS-good bit is a real external-power
+  signal, independent of whether anything enumerated over USB.
 
 ---
 
