@@ -26,6 +26,7 @@ use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::PowerMod;
+use light_rtc::{Datetime, Pcf85063a, RtcMod};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 use light_rp2::gpio::{Input, Output};
@@ -61,6 +62,10 @@ enum Ext {
         SpiHz(u32),
         /// The PMIC readout: presence, charge state, rails, gauge, and the power key.
         Pmic,
+        /// Report the real-time clock.
+        RtcShow,
+        /// Set the real-time clock.
+        RtcSet(Datetime),
 }
 
 type AppEvent = DemoEvent<Ext>;
@@ -77,7 +82,20 @@ fn power_is_stats(e: &AppEvent) -> bool {
         matches!(e, DemoEvent::Command(Command::Stats))
 }
 
-static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
+//   the recognizers the framework RTC module reads this app's events through: report the clock on
+// `stats` or `rtc`, set it on `rtc set`
+fn rtc_is_report(e: &AppEvent) -> bool {
+        matches!(e, DemoEvent::Command(Command::Stats) | DemoEvent::Ext(Ext::RtcShow))
+}
+fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
+        if let DemoEvent::Ext(Ext::RtcSet(t)) = e {
+                Some(*t)
+        } else {
+                None
+        }
+}
+
+static EVENTS: EventBus<AppEvent, 16, 7> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -127,7 +145,7 @@ impl BoardHook<St7796<Spi0Display>, Ext> for Hook {
                                 // shows immediately rather than on the next interaction
                                 view.ui.invalidate_all();
                         }
-                        Ext::Pmic => {}
+                        Ext::Pmic | Ext::RtcShow | Ext::RtcSet(_) => {}
                 }
         }
 }
@@ -209,7 +227,12 @@ fn parse_spi(w: &mut Words) -> Parsed<AppEvent> {
 static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "spi", usage: "spi HZ (1000000..100000000; the headroom probe)", parse: parse_spi },
         CliCommand { name: "pmic", usage: "pmic", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Pmic)) },
+        CliCommand { name: "rtc", usage: light_rtc::command::USAGE, parse: parse_rtc },
 ];
+
+fn parse_rtc(w: &mut Words) -> Parsed<AppEvent> {
+        light_rtc::command::parse_command(w, DemoEvent::Ext(Ext::RtcShow), |t| DemoEvent::Ext(Ext::RtcSet(t)))
+}
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
 // --- entry ----------------------------------------------------------------------------------
@@ -244,6 +267,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         }
 
         let mut power_mod = PowerMod::new(Touch35Power { backlight: p.backlight, pmic, power_key: p.power_key }, SysClock, &EVENTS, power_backlight, power_is_stats, |_| None);
+        let mut rtc_mod = RtcMod::new(Pcf85063a::new(i2c), &EVENTS, rtc_is_report, rtc_get_set);
         let mut pmic_mod = PmicMod { pmic, events: EVENTS.subscribe().expect("subscriber slot"), next_key_poll_us: 0 };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
@@ -288,9 +312,10 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
-        let mut rt: Runtime<6> = Runtime::new();
+        let mut rt: Runtime<7> = Runtime::new();
         rt.add(&mut power_mod).expect("capacity");
         rt.add(&mut pmic_mod).expect("capacity");
+        rt.add(&mut rtc_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");

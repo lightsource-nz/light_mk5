@@ -970,6 +970,7 @@ dependencies = [
  "light-power",
  "light-power-manager",
  "light-rp2",
+ "light-rtc",
  "light-ui",
  "light_app_ui_demo",
 ]
