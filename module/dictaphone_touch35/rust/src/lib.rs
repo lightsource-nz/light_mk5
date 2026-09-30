@@ -214,9 +214,11 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 SysClock,
                 SdStore { card, clock: SysClock },
                 AUDIO_SAMPLE_HZ,
-                //   the codec's mic gain as tuned on the 3.49's microphone: a starting point for this
-                // board's, to be measured on it
-                (0x17, 0xE3),
+                //   the codec's mic gain, MEASURED on this board: the 3.49's tuning (PGA 0x17, digital
+                // 0xE3) put normal speech peaks at ~19% of full scale here, and +6 dB digital (0xEF)
+                // brings them to ~44% -- the same target the 3.49 was tuned to. Retune digitally, in
+                // REG17 only: the analog field's encoding is not linear
+                (0x17, 0xEF),
                 AudioSlots {
                         // SAFETY: the one take of each slot, on the application core
                         rec: unsafe { REC_SLOT.take() },
