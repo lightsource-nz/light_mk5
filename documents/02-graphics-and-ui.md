@@ -201,7 +201,7 @@ drivers**, each of which sees only a `light_core::hal` bus and nothing about the
   fields `bg`, `draw_over`, and the `skipped` counter. Constant `MAX_REGIONS` (8).
 - **`LogicalRegion`** — a signed logical rectangle (content near an edge falls off as negative, not
   wrapped).
-- **Drivers**: `st7789::St7789`, `st7735::St7735`, `sh1107::Sh1107` (all over `SpiDisplayBus`),
+- **Drivers**: `st7789::St7789`, `st7796::St7796`, `st7735::St7735`, `sh1107::Sh1107` (all over `SpiDisplayBus`),
   `axs15231b::Axs15231b` (over `QspiDisplayBus`), `scanout::Scanout` (the degenerate driver for a
   scanned RGB/DPI panel), and `st7701s::init` (a free bit-banged bring-up function, not a
   `DisplayDriver`).
@@ -300,6 +300,11 @@ timings, quirks — are facts about those parts, not the framework.
   GDDRAM offset for where the glass sits (`set_offset`), and a blocking `clear` that must run *after*
   `set_offset` or a band of un-initialised GDDRAM shows as a noise strip. ST7735 also carries a
   `MADCTL` byte for a differently-mounted panel and BGR order.
+- **ST7796** — 4-wire SPI, RGB565, the same chunking and `set_offset`/`clear` rules as the ST7789.
+  Its constructor takes the `MADCTL` byte (scan direction and colour order — how the glass is
+  bonded) and whether display inversion is on, since both are facts about the panel, not the
+  controller. The panel's power, VCOM and gamma registers sit behind a command-set unlock and are
+  sent as the panel vendor's block, bracketed by the unlock and lock sequences.
 - **SH1107** — 1 bpp OLED over SPI, vertical addressing, one column per chunk (eight per poll). The
   `Mono1` row-major source is transposed byte-by-byte into the controller's column-major pages; the
   column address is sent as both nibbles low-first and the page re-armed per column, per the

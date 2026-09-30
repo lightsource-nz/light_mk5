@@ -13,6 +13,7 @@ pub mod sh1107;
 pub mod st7701s;
 pub mod st7735;
 pub mod st7789;
+pub mod st7796;
 
 pub use display::{Display, DisplayDriver, Frame, Region, UpdateError};
 pub use frames::{FrameLayer, LogicalRegion};
