@@ -164,6 +164,8 @@ Portable crates, each depending only on those above it, never on a port:
     light-rtc         real-time clock drivers over the I2C bus trait
     light-sd          SD/TF card access: the SPI-mode block layer
     light-fs          filesystems: FAT16/FAT32 over any BlockDevice
+    light-recorder    WAV record and playback over a codec, a sample transport and a card, as a
+                      runtime module any app wires to its own events
     light-power       power-supply management: operating points, PD contracts, the request ceiling
     light-power-manager  portable idle/backlight power policy over a per-board mechanism
     light-wireless    the radio contract: credentials, networks heard, join outcomes, the
@@ -206,7 +208,7 @@ differing sizes, and an OLED-panel board.
 | [01-core-runtime.md](01-core-runtime.md) | `light-core`: the HAL/port interface, the module runtime, the event bus and mailbox, logging, the console and CLI, the host-test model. |
 | [02-graphics-and-ui.md](02-graphics-and-ui.md) | The rendering stack: `light-font`, `light-draw`, `light-display`, `light-ui`, `light_ui_components`. |
 | [03-input.md](03-input.md) | `light-input`: touch tracking and gestures, the touch controllers, the IMU model and drivers, the `BoardEvent` trait. |
-| [04-audio-and-midi.md](04-audio-and-midi.md) | `light-audio` (codecs, the I2S transport) and `light-midi` (the USB-MIDI forwarder). |
+| [04-audio-and-midi.md](04-audio-and-midi.md) | `light-audio` (codecs, the I2S transport), `light-recorder` (card record and playback) and `light-midi` (the USB-MIDI forwarder). |
 | [05-storage.md](05-storage.md) | `light-sd` (the SPI block layer) and `light-fs` (FAT16/32 over `BlockDevice`). |
 | [06-power-and-time.md](06-power-and-time.md) | `light-power` (PD sink, operating points), `light-power-manager` (idle policy), `light-rtc`. |
 | [07-ports-and-shell.md](07-ports-and-shell.md) | The ports (`light-rp2`, `light-stm32h7`, `light-stm32f4`), the C shells, and the shell ABI. |

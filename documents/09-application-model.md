@@ -171,19 +171,20 @@ a dictaphone and the widget demo) use the same modules.
 
 A runtime module that is the same for every app that has the hardware is a framework crate, never a
 per-app copy. The power lifecycle is `PowerMod` in `light-power-manager` and the real-time clock is
-`RtcMod` in `light-rtc` (see [06-power-and-time.md](06-power-and-time.md)), each generic over its
-driver or mechanism, a clock, and the app event. Audio has no such module: a recorder is an
-application, and its reusable unit is the generic `light_dictaphone_core` crate (see
-[04-audio-and-midi.md](04-audio-and-midi.md)).
+`RtcMod` in `light-rtc` (see [06-power-and-time.md](06-power-and-time.md)), and recording and
+playback is `Recorder` in `light-recorder` (see [04-audio-and-midi.md](04-audio-and-midi.md)), each
+generic over its drivers or mechanism, a clock, and the app event.
 
 How a framework module reads the app's events depends on where those events live. An event that is
 the app event's *own* variant (touch, gesture, orientation) is reached through a trait —
 `light_input::BoardEvent`. An event that lives in the app's board-specific *extension* type (an RTC
 request, a backlight command) is reached through **recognizer functions** passed to the module
 (`is_report: fn(&A) -> bool`, `backlight_of: fn(&A) -> Option<u16>`, …), because the orphan rule
-forbids implementing a framework trait on the app's extension type. So an app wires *drivers,
-mechanisms and recognizer fns*, not hand-written modules; what stays app-side is genuinely app-shaped
-logic (a recorder, an app's own console commands).
+forbids implementing a framework trait on the app's extension type. A module that also *publishes*
+into the app's vocabulary is handed the constructor for that event the same way (the recorder's
+`status_event: fn(AudioStatus) -> A`). So an app wires *drivers, mechanisms and recognizer fns*, not
+hand-written modules; what stays app-side is genuinely app-shaped logic (what a recording is called
+and how a list of them is browsed, an app's own console commands).
 
 ## The worked examples
 
@@ -192,9 +193,9 @@ logic (a recorder, an app's own console commands).
   driven by touch with swipe-back, reorientable from the IMU, themed, and instrumented from the
   console. Its interface is an LUI design shared across the four boards. The reference application
   for the display/UI/input/audio stack.
-- **Dictaphone** (`light_dictaphone_core` + portrait/landscape interface crates) — WAV record and
-  playback to a FAT card through the audio codec, a recordings list, an RTC, in two UI orientations
-  over one engine and one shared board crate.
+- **Dictaphone** (`light_dictaphone_core` + portrait/landscape interface crates) — auto-named WAV
+  takes, a record/play button pair and a browsable recordings list over the framework's
+  `light-recorder`, with an RTC, in two UI orientations; on two boards.
 - **The USB host-role probe** (`usb_host_probe`) — the smallest firmware that puts a native USB port
   in its host role and reports what enumerates. It carries no application: it exists so the host
   seam is built and exercised by this repository, rather than only by the products that use it. The
@@ -206,7 +207,9 @@ logic (a recorder, an app's own console commands).
   the instantiation crate does. This is what keeps the framework crates portable and the board facts
   in one honest place.
 - **App-agnostic vs app-coupled decides where code lives.** Code that is board-specific but does not
-  name an app goes in the board-support crate; code that names the app's events stays app-side. This
-  line is why the touch/IMU modules could be shared but the RTC/audio/board modules could not.
+  name an app goes in the board-support crate; code that names the app's events stays app-side, and a
+  module the same for every app reaches the app's events through recognizer functions instead of
+  naming them — which is how the RTC, power and recorder modules are framework modules while each
+  board's diagnostics module stays the app's.
 - **The interface is data so restyling and relaying are not code changes**, and so an interface can
   be previewed and edited on the desktop exactly as it renders on the panel.

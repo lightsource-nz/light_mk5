@@ -1,8 +1,9 @@
-# Audio and MIDI — `light-audio`, `light-midi`
+# Audio and MIDI — `light-audio`, `light-recorder`, `light-midi`
 
-Two small, transport-independent subsystems. `light-audio` is the portable half of the framework's
+Transport-independent subsystems. `light-audio` is the portable half of the framework's
 audio providers: the codec register logic and the sample-format arithmetic, written against the
-`hal` traits so the transport that actually moves the samples belongs to a port. `light-midi` is a
+`hal` traits so the transport that actually moves the samples belongs to a port. `light-recorder`
+is the runtime module that records to and plays from a card over those parts. `light-midi` is a
 USB-MIDI forwarder engine: it decides which packet goes where, and reaches the wire through a
 transport trait a USB host stack implements. Both crates are `no_std`, both hold no hardware, and
 both are exercised on the host under `cargo test`.
@@ -75,28 +76,71 @@ that is the same on every chip: register sequences and sample math.
   interpreted on the way to a PWM duty value; the `Encoding` enum is the seam a compressed format
   would slot into without changing the call signature.
 
-### No framework audio-player module
+## `light-recorder` — the card recorder and player
 
-The framework deliberately ships no generic audio player/recorder runtime module in `light-audio`.
-Two things in the tree are called `AudioMod`: a small tone/PCM player (the widget demo's, over the
-PWM piezo path — *not* a codec/`AudioStream`) and a full card recorder (the dictaphone's). Lifting a
-codec-plus-`AudioStream` **player primitive** into `light-audio` would dedup nothing, because:
+### Responsibility
 
-- The only codec + `AudioStream` consumer is the codec board's widget demo, and even there the
-  `AudioMod` is a player *and* recorder — the demo records too. A board with only a piezo drives the
-  PWM tone path instead, a different path.
-- The recorder is a reusable generic crate: `light_dictaphone_core::AudioMod<S, B, A, P, C, X>` is
-  generic over the card (the `light_core::hal::Store` seam, see [05-storage.md](05-storage.md)), codec
-  bus (`I2cBus`), transport (`AudioStream`), amp pin, clock, and board event. Any app can depend on it.
-- That module is not decomposable into a framework primitive: it is coupled to a recorder's whole
-  command vocabulary (~twenty `Command`/`UiAction` handlers — record/play/tone/mic/files), and the
-  record/play machinery is methods *on* it. `Recording<Dev>` and `Playback<Dev>` are command-free but
-  are trivial data holders with no logic to extract; the logic is the app's.
+Record the codec's microphone to a WAV file on a card, play 16-bit PCM WAV back through the codec,
+and carry the audio diagnostics, as one runtime module any application wires to its own events. What
+a recording is *called*, how recordings are browsed and what a button does are the application's; the
+recorder does what it is told and says what it is doing.
 
-**The rule:** the audio subsystem's reusable unit is the whole `light_dictaphone_core` crate — a
-recorder is an application, not a framework primitive — and it is reused by being a standalone
-generic crate any app links. The framework-level runtime modules are the RTC and power ones (see
-[06-power-and-time.md](06-power-and-time.md)); audio needs none.
+### Public surface
+
+- **`Recorder<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, E>`** — the runtime
+  module, generic over the card (the `light_core::hal::Store` seam, see
+  [05-storage.md](05-storage.md)), the codec's bus, the sample transport, the speaker amplifier's
+  enable pin, a clock, and the application's event type `E`. Constructed with `new(codec, stream, pa,
+  clock, store, RecorderConfig, RecorderSlots, bus, RecorderEvents)`.
+- **`RecorderEvents<E> { command_of, is_stats, status_event }`** — how the recorder reaches the app's
+  events: `command_of: fn(&E) -> Option<RecorderCommand>` recognises its commands,
+  `is_stats: fn(&E) -> bool` asks for its counters, and `status_event: fn(AudioStatus) -> E` carries
+  its status back into the app's vocabulary.
+- **`RecorderCommand`** — `Tone { hz, ms }`, `ToneOff`, `Volume(u8)`, `RecStart(FsPath)`, `RecStop`,
+  `RecStatus`, `PlayStart(FsPath)`, `PlayStop`, `PlayStatus`, `MicMon(bool)`, `MicDbg`, `Synth`,
+  `MicGain { r14, r17 }`.
+- **`AudioStatus`** — `Idle`, `Recording { secs, take }`, `Playing { secs, total }`, with
+  `is_active()`; published whenever it changes, which includes every elapsed second.
+- **`RecorderConfig { sample_hz, mic_gain, volume }`** — the board's tuning: the sample rate, the
+  codec's mic-gain register pair as measured on the board, and the start-up volume.
+- **`RecorderSlots { rec, play, play_stage }`** — the `.bss` homes for the open take, the open
+  playback (`Recording<Dev>`, `Playback<Dev>`) and a small playback read scratch, taken once
+  (`light_core::CoreSlot`), never inline in the module.
+- `wav_header(sample_hz, data_len)`, `MAX_REC_SECS`, and `console` — the command parsers (`tone`,
+  `volume`, `rec`, `play`, `micmon`, `micgain`, `micdbg`, `synth`), their usage lines, and
+  `wrap(parsed, into)` to lift a parsed command into the app's event.
+
+### Behaviour and invariants
+
+- **Recognizer functions, and one constructor.** The recorder reads the app's events the way the RTC
+  and power modules do (see [09-application-model.md](09-application-model.md)), and it also
+  *publishes*, so it is handed the constructor for the event that carries its status.
+- **The transport streams continuously.** Silence plays when nothing does, so a long frame draw
+  cannot starve the codec into audible chop; underrun accounting counts only while audio is active.
+  Playback tops the port's IRQ-drained prefetch ring up from the card each poll, so a stalled poll
+  spends the ring's lead, not the codec's deadline.
+- **The amplifier rests on.** `load` enables it; a take holds it off (the speaker would feed the
+  microphone, and every card write burst clicks); every path that switches it off for its own
+  purposes — the mic probe, the end of the mic monitor, a failed take setup — returns it to rest.
+  A diagnostic that left it off once silenced every later tone and playback with nothing logged.
+- **A take is a WAV from its first byte.** The header is written blind at start and patched with the
+  real length at stop; a take that captured nothing is removed rather than left as an unplayable
+  header; a take stops itself at `MAX_REC_SECS`; a write failure ends it.
+- **Playback walks the RIFF chunks**, so a desktop-authored WAV with extra chunks plays, and refuses
+  any format other than 16-bit PCM at the codec's rate, mono or stereo (stereo plays its left channel).
+
+### Design decisions and constraints
+
+- **The recorder is a framework module, and the dictaphone is an application over it.** Recording,
+  playback and the diagnostics are the same for every application that has a codec and a card; naming,
+  browsing and buttons are not. So the engine is `light-recorder`, and `light_dictaphone_core` keeps
+  only what makes it a dictaphone — auto-named `REC_NNNN.WAV` takes, a record/play button pair, a
+  browsable recordings list — driving the recorder by `RecorderCommand`s and learning its state only
+  from `AudioStatus`. An application that wants audio without that interface (the widget demo) wires
+  the same `Recorder` to its own events.
+- **The codec is the reference ES8311.** The recorder takes an `Es8311` directly: the mic-gain pair,
+  the ADC-to-DAC monitor and the volume mapping are that part's. A second codec would put those
+  behind a codec trait; one codec does not justify the seam.
 
 ## The streaming contract — `AudioStream` and `PioI2sOut`
 
