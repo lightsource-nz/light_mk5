@@ -978,6 +978,7 @@ dependencies = [
  "light-fs",
  "light-input",
  "light-power-manager",
+ "light-recorder",
  "light-rp2",
  "light-rtc",
  "light-sd",

@@ -23,4 +23,5 @@ light-power-manager = { path = "../light-power-manager" }
 light-rtc = { path = "../light-rtc" }
 light-sd = { path = "../light-sd" }
 light-fs = { path = "../light-fs" }
+light-recorder = { path = "../light-recorder" }
 light-font = { path = "../light-font" }

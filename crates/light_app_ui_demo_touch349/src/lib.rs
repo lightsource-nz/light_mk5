@@ -22,15 +22,16 @@ use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, CoreSlot, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a, RtcMod};
 use light_fs::console::{FsOp, FsPath};
-use light_fs::{Fat, File as FsFile, FsError};
-use light_sd::SpiSd;
+use light_recorder::console as recorder_console;
+use light_recorder::{AudioStatus, Playback, Recorder, RecorderCommand, RecorderConfig, RecorderEvents, RecorderSlots, Recording};
+use light_sd::{CardStore, SpiSd};
 use light_board_touch349::{board, Touch349Power};
 use light_power_manager::PowerMod;
 use light_input::{ImuMod, TouchMod};
@@ -38,7 +39,7 @@ use light_rp2::shell::{panic_report, ShellInfo};
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
-use light_rp2::i2s::PioI2sOut;
+use light_rp2::i2s::I2sStream;
 use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::qspi::PioQspiDisplayBus;
 use light_rp2::{Breathe, Clocks, SysClock};
@@ -77,38 +78,9 @@ fn psram_test(size: u32) -> (u32, u32) {
 /// The TF slot as a shareable block device: the board's one card, borrowed per block operation.
 type SdRef = light_sd::SharedCard<'static, Spi1Bus, Output>;
 
-/// A single-slot .bss home for a card-borrowing state machine (a [`Recording`], a
-/// [`Playback`]) -- NOT core 0's 4 KB SCRATCH_Y stack, where a ~1.2 KB Recording inline
-/// was the overflow that spilled into core 1's stack. `StaticCell` wants `Send`, which
-/// the `&RefCell` inside cannot offer; this holder makes the single-core argument
-/// explicitly instead.
-///
-/// SAFETY: the runtime is single-core and each slot is taken as `&'static mut` exactly
-/// once, at construction.
-struct AppSlot<T>(core::cell::UnsafeCell<Option<T>>);
-unsafe impl<T> Sync for AppSlot<T> {}
-static REC_SLOT: AppSlot<Recording> = AppSlot(core::cell::UnsafeCell::new(None));
-static PLAY_SLOT: AppSlot<Playback> = AppSlot(core::cell::UnsafeCell::new(None));
-
-/// A canonical 44-byte PCM WAV header: mono, 16-bit, `sample_hz` -- what makes a
-/// recording a file any desktop player opens.
-fn wav_header(sample_hz: u32, data_len: u32) -> [u8; 44] {
-        let mut h = [0u8; 44];
-        h[..4].copy_from_slice(b"RIFF");
-        h[4..8].copy_from_slice(&(36 + data_len).to_le_bytes());
-        h[8..12].copy_from_slice(b"WAVE");
-        h[12..16].copy_from_slice(b"fmt ");
-        h[16..20].copy_from_slice(&16u32.to_le_bytes());
-        h[20..22].copy_from_slice(&1u16.to_le_bytes()); // PCM
-        h[22..24].copy_from_slice(&1u16.to_le_bytes()); // mono
-        h[24..28].copy_from_slice(&sample_hz.to_le_bytes());
-        h[28..32].copy_from_slice(&(sample_hz * 2).to_le_bytes());
-        h[32..34].copy_from_slice(&2u16.to_le_bytes()); // block align
-        h[34..36].copy_from_slice(&16u16.to_le_bytes());
-        h[36..40].copy_from_slice(b"data");
-        h[40..44].copy_from_slice(&data_len.to_le_bytes());
-        h
-}
+//   the recorder's card-borrowing state machines live in .bss, not on core 0's small stack
+static REC_SLOT: CoreSlot<Recording<SdRef>> = CoreSlot::new();
+static PLAY_SLOT: CoreSlot<Playback<SdRef>> = CoreSlot::new();
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
@@ -136,21 +108,13 @@ static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 enum Ext {
         RtcShow,
         RtcSet(Datetime),
-        Tone { hz: u16, ms: u16 },
-        ToneOff,
-        Volume(u8),
         Psram,
         Sd,
         Fs { op: FsOp, path: FsPath, arg: FsPath },
-        RecStart(FsPath),
-        RecStop,
-        RecStatus,
-        PlayStart(FsPath),
-        PlayStop,
-        PlayStatus,
-        MicMon(bool),
-        MicDbg,
-        Synth,
+        /// A command for the recorder (light-recorder): record, play, tone, volume, mic.
+        Audio(RecorderCommand),
+        /// The recorder's status, as it publishes it.
+        AudioStatus(AudioStatus),
 }
 
 type AppEvent = DemoEvent<Ext>;
@@ -167,6 +131,26 @@ fn power_backlight(e: &AppEvent) -> Option<u16> {
 }
 fn power_is_stats(e: &AppEvent) -> bool {
         matches!(e, DemoEvent::Command(Command::Stats))
+}
+//   audio in flight defers the on-battery power-off
+fn power_busy(e: &AppEvent) -> Option<bool> {
+        if let DemoEvent::Ext(Ext::AudioStatus(s)) = e {
+                Some(s.is_active())
+        } else {
+                None
+        }
+}
+
+//   how the framework recorder (light_recorder::Recorder) reaches this app's events: its commands
+// ride Ext::Audio, `stats` asks for its counters, and its status comes back as Ext::AudioStatus
+fn recorder_command(e: &AppEvent) -> Option<RecorderCommand> {
+        if let DemoEvent::Ext(Ext::Audio(c)) = e { Some(*c) } else { None }
+}
+fn recorder_status(s: AudioStatus) -> AppEvent {
+        DemoEvent::Ext(Ext::AudioStatus(s))
+}
+fn audio(c: RecorderCommand) -> AppEvent {
+        DemoEvent::Ext(Ext::Audio(c))
 }
 
 //   the recognizers the framework RTC module (light_rtc::RtcMod) reads this app's events through:
@@ -235,546 +219,6 @@ impl BoardHook<Axs15231b<PioQspiDisplayBus>, Ext> for Hook {}
 // light_board_touch349::input) and generic over the event bus through light_input::BoardEvent; only
 // the RTC and board modules below are the demo's own on this board
 
-/// The PCF85063A on the shared i2c1, beside the IMU. Battery-backed: it keeps time across
-/// power-off, and says so -- the oscillator-stop flag marks a time nobody set.
-
-/// One period of sine at 20000 amplitude, 32 steps -- plenty for a bring-up beeper.
-static SINE: [i16; 32] = [
-        0, 3902, 7654, 11111, 14142, 16629, 18478, 19616, 20000, 19616, 18478, 16629, 14142, 11111, 7654, 3902, 0, -3902, -7654, -11111, -14142, -16629, -18478, -19616, -20000, -19616, -18478, -16629,
-        -14142, -11111, -7654, -3902,
-];
-
-/// The ES8311 codec on the shared i2c1 plus the PIO I2S transport: a tone generator for
-/// bring-up, fed through the transport's ping-pong DMA stream (silence when nothing
-/// plays), so a long frame draw cannot starve the codec into audible chop.
-struct AudioMod {
-        codec: Es8311<&'static RefCell<I2c1>>,
-        i2s: PioI2sOut,
-        pa: Output,
-        events: Subscription,
-        /// Phase accumulator into [`SINE`]; the top 5 bits index the table.
-        phase: u32,
-        phase_inc: u32,
-        /// Sample frames left to play; 0 is silence.
-        remaining: u32,
-        /// The card, shared with the board module -- the dictaphone's storage.
-        sd: &'static RefCell<SpiSd<Spi1Bus, Output>>,
-        /// A recording in flight: the mounted volume and the growing WAV. A `&'static
-        /// mut` INTO .bss, never inline: the module lives on core 0's stack, which is
-        /// SCRATCH_Y's fixed 4 KB, and a ~1.2 KB Recording inline was the overflow that
-        /// spilled into SCRATCH_X -- core 1's stack -- and wedged both cores at once.
-        rec: &'static mut Option<Recording>,
-        /// A playback in flight; same .bss discipline.
-        play: &'static mut Option<Playback>,
-        /// One stream-buffer's worth of file bytes, bulk-read per refill so the DAC ring is
-        /// filled from RAM, not per-sample off the card (which starved it: 33 underruns in
-        /// a measured playback). Sized for a full mono buffer (STREAM_WORDS frames -- one
-        /// word each -- * 2 bytes). In .bss, like everything the card touches.
-        play_stage: &'static mut [u8; 4096],
-        /// Whether the capture buffers were already handed to the transport.
-        cap_handed: bool,
-        /// The `rec null` bisect: capture runs, everything drains to nowhere.
-        rec_null: bool,
-        null_bytes: u32,
-}
-
-/// One open recording: the volume stays mounted (over [`SdRef`] borrows) and every filled
-/// capture buffer appends to the file, write-through, until stop patches the WAV header.
-struct Recording {
-        fs: Fat<SdRef>,
-        file: FsFile,
-}
-
-/// One open playback: the file positioned at its PCM data, streamed into the DAC's
-/// ping-pong refill until the data chunk ends.
-struct Playback {
-        fs: Fat<SdRef>,
-        file: FsFile,
-        channels: u8,
-        /// Where the data chunk stops -- the file may carry trailing chunks.
-        data_end: u32,
-}
-
-impl AudioMod {
-        fn rec_start(&mut self, path: &str) {
-                if self.rec.is_some() || self.rec_null {
-                        info!("rec: already recording");
-                        return;
-                }
-                if path == "null" {
-                        //   the freeze bisect: the WHOLE capture pipeline -- mic, PIO, DMA,
-                        // buffer hand-off -- with the SD card and filesystem entirely out of
-                        // the path. Stable here + frozen with a file convicts the card leg
-                        for _ in 0..3 {
-                                if self.codec.mic_enable().is_ok() {
-                                        break;
-                                }
-                        }
-                        self.pa.set(false);
-                        self.start_capture();
-                        self.rec_null = true;
-                        self.null_bytes = 0;
-                        info!("rec: null sink -- capturing and discarding");
-                        return;
-                }
-                {
-                        let mut sd = self.sd.borrow_mut();
-                        if sd.card.is_none() {
-                                let mut clock = SysClock;
-                                if let Err(e) = sd.init(&mut clock) {
-                                        info!("rec: no card ({e:?})");
-                                        return;
-                                }
-                        }
-                }
-                info!("rec: card up");
-                let mut fs = match Fat::mount(light_sd::SharedCard(self.sd)) {
-                        Ok(fs) => fs,
-                        Err(e) => {
-                                info!("rec: mount failed: {e:?}");
-                                return;
-                        }
-                };
-                info!("rec: mounted");
-                let mut file = match fs.create(path) {
-                        Ok(f) => f,
-                        Err(e) => {
-                                info!("rec: create failed: {e:?}");
-                                return;
-                        }
-                };
-                info!("rec: created");
-                if let Err(e) = file.write(&mut fs, &wav_header(AUDIO_SAMPLE_HZ, 0)) {
-                        info!("rec: header write failed: {e:?}");
-                        return;
-                }
-                info!("rec: header written");
-                //   retried: the first attempt right after the SD burst has been seen to
-                // time out where a later one succeeds
-                let mut mic = Err(light_core::hal::I2cError::Timeout);
-                for attempt in 1..=3 {
-                        mic = self.codec.mic_enable();
-                        if mic.is_ok() {
-                                info!("rec: mic enabled (attempt {attempt})");
-                                break;
-                        }
-                }
-                if let Err(e) = mic {
-                        warn!("rec: mic enable failed after retries: {e:?}");
-                }
-                //   speaker amp OFF for the take: live, it clicks with every SD write
-                // burst and the microphone records its own speaker
-                self.pa.set(false);
-                self.start_capture();
-                info!("rec: capture started, speaker muted");
-                *self.rec = Some(Recording { fs, file });
-                info!("rec: recording {} -- mono 16-bit at {} Hz", path, AUDIO_SAMPLE_HZ);
-        }
-
-        fn start_capture(&mut self) {
-                static CAP_A: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
-                static CAP_B: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
-                let bufs = if self.cap_handed {
-                        None
-                } else {
-                        self.cap_handed = true;
-                        Some([CAP_A.take(), CAP_B.take()])
-                };
-                self.i2s.capture_start(bufs);
-        }
-
-        fn rec_stop(&mut self) {
-                self.i2s.capture_stop();
-                self.pa.set(true);
-                if self.rec_null {
-                        self.rec_null = false;
-                        info!("rec: null sink stopped -- {} B captured and discarded", self.null_bytes);
-                        return;
-                }
-                let Some(mut rec) = self.rec.take() else {
-                        info!("rec: not recording");
-                        return;
-                };
-                //   the header written blind at start now learns the real length
-                let data = rec.file.size().saturating_sub(44);
-                let patch = rec.file.seek(&mut rec.fs, 0).and_then(|()| rec.file.write(&mut rec.fs, &wav_header(AUDIO_SAMPLE_HZ, data)).map(|_| ()));
-                match patch {
-                        Ok(()) => info!("rec: stopped -- {} B of audio, ~{} ms", data, data / 2 * 1000 / AUDIO_SAMPLE_HZ),
-                        Err(e) => warn!("rec: header patch failed: {e:?}"),
-                }
-        }
-
-        fn play_start(&mut self, path: &str) {
-                if self.play.is_some() {
-                        info!("play: already playing");
-                        return;
-                }
-                {
-                        let mut sd = self.sd.borrow_mut();
-                        if sd.card.is_none() {
-                                let mut clock = SysClock;
-                                if let Err(e) = sd.init(&mut clock) {
-                                        info!("play: no card ({e:?})");
-                                        return;
-                                }
-                        }
-                }
-                let mut fs = match Fat::mount(light_sd::SharedCard(self.sd)) {
-                        Ok(fs) => fs,
-                        Err(e) => {
-                                info!("play: mount failed: {e:?}");
-                                return;
-                        }
-                };
-                let mut file = match fs.open(path) {
-                        Ok(f) => f,
-                        Err(e) => {
-                                info!("play: open failed: {e:?}");
-                                return;
-                        }
-                };
-                //   the RIFF walk: WAV headers are chunked, and while OUR files are the
-                // canonical 44 bytes, a desktop-authored one may carry LIST chunks first
-                let mut hdr = [0u8; 12];
-                if file.read(&mut fs, &mut hdr).unwrap_or(0) != 12 || &hdr[..4] != b"RIFF" || &hdr[8..12] != b"WAVE" {
-                        info!("play: not a WAV");
-                        return;
-                }
-                let (mut channels, mut rate, mut pcm16) = (0u16, 0u32, false);
-                for _ in 0..16 {
-                        let mut ch = [0u8; 8];
-                        if file.read(&mut fs, &mut ch).unwrap_or(0) != 8 {
-                                info!("play: no data chunk");
-                                return;
-                        }
-                        let len = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]);
-                        if &ch[..4] == b"fmt " && len >= 16 {
-                                let mut f = [0u8; 16];
-                                if file.read(&mut fs, &mut f).unwrap_or(0) != 16 {
-                                        info!("play: short fmt chunk");
-                                        return;
-                                }
-                                let format = u16::from_le_bytes([f[0], f[1]]);
-                                channels = u16::from_le_bytes([f[2], f[3]]);
-                                rate = u32::from_le_bytes([f[4], f[5], f[6], f[7]]);
-                                let bits = u16::from_le_bytes([f[14], f[15]]);
-                                pcm16 = format == 1 && bits == 16;
-                                let extra = file.pos() + (len - 16) + (len & 1);
-                                if file.seek(&mut fs, extra).is_err() {
-                                        return;
-                                }
-                        } else if &ch[..4] == b"data" {
-                                if !pcm16 || rate != AUDIO_SAMPLE_HZ || !(1..=2).contains(&channels) {
-                                        info!("play: unsupported format ({channels} ch, {rate} Hz) -- this codec run takes 16-bit PCM at {} Hz", AUDIO_SAMPLE_HZ);
-                                        return;
-                                }
-                                let data_end = file.pos().saturating_add(len).min(file.size());
-                                //   u64: frames * 1000 overflows u32 past ~4.5 min of audio
-                                let ms = ((u64::from(data_end - file.pos()) / (u64::from(channels) * 2)) * 1000 / u64::from(AUDIO_SAMPLE_HZ)) as u32;
-                                info!("play: {} -- {} ch, ~{} ms", path, channels, ms);
-                                *self.play = Some(Playback { fs, file, channels: channels as u8, data_end });
-                                return;
-                        } else {
-                                let next = file.pos().saturating_add(len + (len & 1));
-                                if file.seek(&mut fs, next).is_err() {
-                                        return;
-                                }
-                        }
-                }
-                info!("play: gave up looking for the data chunk");
-        }
-
-        fn play_stop(&mut self) {
-                if self.play.take().is_some() {
-                        info!("play: stopped");
-                } else {
-                        info!("play: idle");
-                }
-        }
-}
-
-impl Module for AudioMod {
-        fn name(&self) -> &'static str {
-                "audio"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.codec.probe() {
-                        Ok(Some(id)) => info!("es8311 chip id confirmed: 0x{id:04x}"),
-                        Ok(None) => warn!("es8311 answered with an unexpected chip id"),
-                        Err(e) => warn!("es8311 did not answer the chip id read: {e:?}"),
-                }
-                let mut clock = SysClock;
-                if let Err(e) = self.codec.init(AUDIO_SAMPLE_HZ, &mut clock) {
-                        warn!("es8311 init failed: {e:?}");
-                        return Ok(());
-                }
-                let _ = self.codec.set_volume(73);
-                //   belt and suspenders against the ADC->DAC monitor's feedback loop: the
-                // codec reset in init() already clears REG44, but assert it off explicitly
-                // so no prior micmon state can ever survive into a running speaker
-                let _ = self.codec.set_adc_to_dac(false);
-                static STREAM_A: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
-                static STREAM_B: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
-                //   the IRQ-drained prefetch ring, as the dictaphone runs: the DMA-completion
-                // interrupt refills the DAC buffers from it at hardware speed, so a slow poll (a card
-                // read on the play path) spends the ring's lead, not the codec's deadline -- and an
-                // idle stream drains to silence without the polled path's periodic restart churn. Its
-                // ~16 KB is freed by dropping the micdbg path's dead capture buffers (see below).
-                static RING: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS * 2]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS * 2]);
-                self.i2s.start_stream_irq([STREAM_A.take(), STREAM_B.take()], RING.take());
-                self.pa.set(true);
-                info!("audio up: es8311 master at {} Hz, PIO1 mclk+dout; the UART console pins now carry audio", AUDIO_SAMPLE_HZ);
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        match ev {
-                                AppEvent::Ext(Ext::Tone { hz, ms }) => {
-                                        self.phase_inc = ((u64::from(hz) << 32) / u64::from(AUDIO_SAMPLE_HZ)) as u32;
-                                        self.remaining = u32::from(ms) * AUDIO_SAMPLE_HZ / 1000;
-                                        info!("tone {hz} Hz for {ms} ms");
-                                }
-                                AppEvent::Ext(Ext::ToneOff) => {
-                                        self.remaining = 0;
-                                        info!("tone off");
-                                }
-                                AppEvent::Ext(Ext::Volume(v)) => match self.codec.set_volume(v) {
-                                        Ok(()) => info!("volume {v}"),
-                                        Err(e) => warn!("volume set failed: {e:?}"),
-                                },
-                                AppEvent::Ext(Ext::RecStart(path)) => {
-                                        let path = path;
-                                        self.rec_start(path.as_str());
-                                }
-                                AppEvent::Ext(Ext::RecStop) => self.rec_stop(),
-                                AppEvent::Ext(Ext::RecStatus) => {
-                                        match self.rec.as_ref() {
-                                                Some(r) => info!("rec: recording, {} B so far, {} overruns", r.file.size(), self.i2s.cap_overruns),
-                                                None => info!("rec: idle"),
-                                        };
-                                }
-                                AppEvent::Ext(Ext::PlayStart(path)) => {
-                                        let path = path;
-                                        self.play_start(path.as_str());
-                                }
-                                AppEvent::Ext(Ext::Synth) => {
-                                        //   write a clean 2 s 440 Hz sine to SINE.WAV via the
-                                        // ordinary fs path, so `play SINE.WAV` exercises the
-                                        // file-playback chain with a KNOWN-good signal --
-                                        // splitting "playback broken" from "recording bad"
-                                        if self.sd.borrow().card.is_none() {
-                                                let mut clock = SysClock;
-                                                let _ = self.sd.borrow_mut().init(&mut clock);
-                                        }
-                                        match Fat::mount(light_sd::SharedCard(self.sd)) {
-                                                Ok(mut fs) => {
-                                                        let _ = fs.remove("SINE.WAV");
-                                                        match fs.create("SINE.WAV") {
-                                                                Ok(mut f) => {
-                                                                        let samples = AUDIO_SAMPLE_HZ * 2; // 2 s
-                                                                        let _ = f.write(&mut fs, &wav_header(AUDIO_SAMPLE_HZ, samples * 2));
-                                                                        let inc = ((440u64 << 32) / u64::from(AUDIO_SAMPLE_HZ)) as u32;
-                                                                        let mut phase = 0u32;
-                                                                        //   960-byte chunks (480 samples) off the stack -- well under 4 KB
-                                                                        let mut chunk = [0u8; 960];
-                                                                        let mut written = 0u32;
-                                                                        let mut ok = true;
-                                                                        while written < samples && ok {
-                                                                                let n = ((samples - written) as usize).min(480);
-                                                                                for s in 0..n {
-                                                                                        let v = SINE[(phase >> 27) as usize];
-                                                                                        chunk[s * 2..s * 2 + 2].copy_from_slice(&v.to_le_bytes());
-                                                                                        phase = phase.wrapping_add(inc);
-                                                                                }
-                                                                                ok = f.write(&mut fs, &chunk[..n * 2]).is_ok();
-                                                                                written += n as u32;
-                                                                        }
-                                                                        info!("synth: SINE.WAV written ({} samples) -- play it", written);
-                                                                }
-                                                                Err(e) => info!("synth: create failed: {e:?}"),
-                                                        }
-                                                }
-                                                Err(e) => info!("synth: mount failed: {e:?}"),
-                                        }
-                                }
-                                AppEvent::Ext(Ext::MicMon(on)) => {
-                                        //   enable the mic, route ADC->DAC, unmute and drive
-                                        // the speaker: the analog front end, alone
-                                        let r = if on {
-                                                self.codec.mic_enable().and_then(|()| self.codec.set_adc_to_dac(true)).and_then(|()| self.codec.mute(false))
-                                        } else {
-                                                self.codec.set_adc_to_dac(false)
-                                        };
-                                        self.pa.set(on);
-                                        match r {
-                                                Ok(()) => info!("micmon {}: talk near the board", if on { "on -- speaker carries the mic" } else { "off" }),
-                                                Err(e) => warn!("micmon failed: {e:?}"),
-                                        }
-                                }
-                                AppEvent::Ext(Ext::MicDbg) => {
-                                        //   enable the mic, start capture (speaker muted, NO
-                                        // loopback -- cannot feed back), sample the raw DIN
-                                        // pad, then stop. Splits "SDOUT dead" from "PIO
-                                        // misreads a toggling line"
-                                        self.pa.set(false);
-                                        let _ = self.codec.set_adc_to_dac(false);
-                                        for _ in 0..3 {
-                                                if self.codec.mic_enable().is_ok() {
-                                                        break;
-                                                }
-                                        }
-                                        //   the probe reads the PIO state machine and FIFO directly -- no DMA capture ring,
-                                        // so it needs no buffers (an earlier pair here was allocated and discarded, wasting
-                                        // ~19 KB, and its stray cap_handed flag would have starved a later real recording)
-                                        let (highs, pc) = self.i2s.din_probe(4000);
-                                        self.i2s.capture_sm_only();
-                                        let fifo = self.i2s.din_fifo_probe();
-                                        info!("micdbg: DIN GPIO high {}/4000, sm pc {}", highs, pc);
-                                        info!("micdbg: raw FIFO words {:#010x} {:#010x} {:#010x} {:#010x}", fifo[0], fifo[1], fifo[2], fifo[3]);
-                                }
-                                AppEvent::Ext(Ext::PlayStop) => self.play_stop(),
-                                AppEvent::Ext(Ext::PlayStatus) => {
-                                        match self.play.as_ref() {
-                                                Some(p) => info!("play: at {} of {} B", p.file.pos(), p.data_end),
-                                                None => info!("play: idle"),
-                                        };
-                                }
-                                AppEvent::Command(Command::Stats) => {
-                                        info!("audio: {} stream underruns, {} capture overruns", self.i2s.stream_underruns(), self.i2s.cap_overruns);
-                                }
-                                _ => {}
-                        }
-                }
-                //   drain the capture ring into the file; an I/O failure ends the take
-                let mut failed = false;
-                if let Some(rec) = self.rec.as_mut() {
-                        let file = &mut rec.file;
-                        let fs = &mut rec.fs;
-                        let mut err: Option<FsError> = None;
-                        self.i2s.capture_take(|buf| {
-                                if err.is_some() {
-                                        return;
-                                }
-                                // SAFETY: a u16 slice viewed as its little-endian bytes --
-                                // exactly WAV's PCM order
-                                let bytes = unsafe { core::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 2) };
-                                if let Err(e) = file.write(fs, bytes) {
-                                        err = Some(e);
-                                }
-                        });
-                        if let Some(e) = err {
-                                warn!("rec: write failed ({e:?}); stopping");
-                                failed = true;
-                        }
-                } else if self.rec_null {
-                        //   the bisect sink: drain and discard, no card in the path
-                        let n = &mut self.null_bytes;
-                        self.i2s.capture_take(|buf| *n += (buf.len() * 2) as u32);
-                }
-                if failed {
-                        self.rec_stop();
-                }
-                let playing = self.remaining > 0 || self.rec.is_some() || self.rec_null || self.play.is_some();
-                if self.play.is_some() {
-                        //   a file plays: frame-aligned bulk reads into the .bss staging buffer, then
-                        // the ring is topped up from RAM. The IRQ copies the ring into the DAC buffers
-                        // on its own, so a slow card read here spends the ring's lead, not the codec's
-                        // deadline (per-sample card reads once starved it: 33 underruns / distortion).
-                        // One output WORD per frame, the 16-bit sample in both slots; `channels * 2`
-                        // bytes advance a frame (stereo's left channel is what plays).
-                        self.i2s.set_active(true);
-                        let i2s = &mut self.i2s;
-                        let play = self.play.as_mut().expect("play present");
-                        let stage = &mut *self.play_stage;
-                        let fs = &mut play.fs;
-                        let file = &mut play.file;
-                        let data_end = play.data_end;
-                        let stride = usize::from(play.channels) * 2;
-                        let mut failed = false;
-                        while i2s.stream_free() > 0 {
-                                let mut produced = 0usize;
-                                i2s.stream_push(&mut |dst| {
-                                        let want_words = dst.len().min(stage.len() / stride);
-                                        let remaining = data_end.saturating_sub(file.pos()) as usize;
-                                        let want_bytes = (want_words * stride).min(remaining - remaining % stride);
-                                        if want_bytes == 0 {
-                                                return 0;
-                                        }
-                                        let mut got = 0;
-                                        while got < want_bytes {
-                                                match file.read(fs, &mut stage[got..want_bytes]) {
-                                                        Ok(0) => break,
-                                                        Ok(n) => got += n,
-                                                        Err(_) => {
-                                                                failed = true;
-                                                                break;
-                                                        }
-                                                }
-                                        }
-                                        let frames = got / stride;
-                                        for f in 0..frames {
-                                                let b = f * stride;
-                                                let sample = i16::from_le_bytes([stage[b], stage[b + 1]]);
-                                                let s = u32::from(sample as u16);
-                                                dst[f] = s << 16 | s;
-                                        }
-                                        produced = frames;
-                                        frames
-                                });
-                                if failed || produced == 0 {
-                                        break;
-                                }
-                        }
-                        //   finish only once the data chunk is spent AND the ring has drained, so the
-                        // tail is not cut; a card error ends it at once, clearing any queued tail
-                        let exhausted = self.play.as_ref().map(|p| p.file.pos() >= p.data_end).unwrap_or(true);
-                        if failed {
-                                warn!("play: read failed; stopping");
-                                self.i2s.stream_clear();
-                                self.i2s.set_active(false);
-                                *self.play = None;
-                        } else if exhausted && self.i2s.stream_pending() == 0 {
-                                info!("play: finished");
-                                self.i2s.set_active(false);
-                                *self.play = None;
-                        }
-                } else if self.remaining > 0 {
-                        //   the test tone: synthesise sine straight into the ring, one word per frame,
-                        // capped at the frames left so the tone runs its exact length
-                        self.i2s.set_active(true);
-                        let i2s = &mut self.i2s;
-                        let phase = &mut self.phase;
-                        let inc = self.phase_inc;
-                        let remaining = &mut self.remaining;
-                        while i2s.stream_free() > 0 && *remaining > 0 {
-                                let mut produced = 0usize;
-                                i2s.stream_push(&mut |dst| {
-                                        let n = dst.len().min(*remaining as usize);
-                                        for slot in dst[..n].iter_mut() {
-                                                let s = u32::from(SINE[(*phase >> 27) as usize] as u16);
-                                                *slot = s << 16 | s;
-                                                *phase = phase.wrapping_add(inc);
-                                        }
-                                        *remaining -= n as u32;
-                                        produced = n;
-                                        n
-                                });
-                                if produced == 0 {
-                                        break;
-                                }
-                        }
-                } else {
-                        //   idle (or recording): nothing to play. The IRQ drains the ring to silence
-                        // and underrun accounting is gated off, so that is not counted as starvation
-                        self.i2s.set_active(false);
-                }
-                if playing { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                self.pa.set(false);
-        }
-}
-
 //   the storage-and-diagnostics module: the SD slot and the on-demand SD / filesystem / PSRAM
 // console commands. The power behaviour is the framework PowerMod now (proposal B unfused the two);
 // this module holds only what is board-specific and app-coupled.
@@ -819,28 +263,6 @@ impl Module for BoardMod {
         }
 }
 
-fn parse_play(w: &mut Words) -> Parsed<AppEvent> {
-        match w.next() {
-                None => Parsed::Event(DemoEvent::Ext(Ext::PlayStatus)),
-                Some("stop") => Parsed::Event(DemoEvent::Ext(Ext::PlayStop)),
-                Some(name) => match FsPath::new(name) {
-                        Some(p) => Parsed::Event(DemoEvent::Ext(Ext::PlayStart(p))),
-                        None => Parsed::Usage,
-                },
-        }
-}
-
-fn parse_rec(w: &mut Words) -> Parsed<AppEvent> {
-        match w.next() {
-                None => Parsed::Event(DemoEvent::Ext(Ext::RecStatus)),
-                Some("stop") => Parsed::Event(DemoEvent::Ext(Ext::RecStop)),
-                Some(name) => match FsPath::new(name) {
-                        Some(p) => Parsed::Event(DemoEvent::Ext(Ext::RecStart(p))),
-                        None => Parsed::Usage,
-                },
-        }
-}
-
 fn parse_fs(w: &mut Words) -> Parsed<AppEvent> {
         light_fs::console::parse_command(w, |op, path, arg| DemoEvent::Ext(Ext::Fs { op, path, arg }))
 }
@@ -849,46 +271,20 @@ fn parse_rtc(w: &mut Words) -> Parsed<AppEvent> {
         light_rtc::command::parse_command(w, DemoEvent::Ext(Ext::RtcShow), |t| DemoEvent::Ext(Ext::RtcSet(t)))
 }
 
-fn parse_tone(w: &mut Words) -> Parsed<AppEvent> {
-        match w.next() {
-                Some("off") => Parsed::Event(DemoEvent::Ext(Ext::ToneOff)),
-                Some(hz) => {
-                        let Ok(hz) = hz.parse::<u16>() else { return Parsed::Usage };
-                        if !(20..=10_000).contains(&hz) {
-                                return Parsed::Usage;
-                        }
-                        let ms = match w.next() {
-                                None => 500,
-                                Some(ms) => match ms.parse::<u16>() {
-                                        Ok(ms) if ms > 0 => ms,
-                                        _ => return Parsed::Usage,
-                                },
-                        };
-                        Parsed::Event(DemoEvent::Ext(Ext::Tone { hz, ms }))
-                }
-                None => Parsed::Usage,
-        }
-}
-
-fn parse_volume(w: &mut Words) -> Parsed<AppEvent> {
-        match w.next().and_then(|s| s.parse::<u8>().ok()) {
-                Some(v) if v <= 100 => Parsed::Event(DemoEvent::Ext(Ext::Volume(v))),
-                _ => Parsed::Usage,
-        }
-}
-
 static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "rtc", usage: light_rtc::command::USAGE, parse: parse_rtc },
-        CliCommand { name: "tone", usage: "tone HZ [MS] | tone off", parse: parse_tone },
-        CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
         CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Psram)) },
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Sd)) },
         CliCommand { name: "fs", usage: light_fs::console::USAGE, parse: parse_fs },
-        CliCommand { name: "rec", usage: "rec NAME.WAV | rec stop | rec", parse: parse_rec },
-        CliCommand { name: "play", usage: "play NAME.WAV | play stop | play", parse: parse_play },
-        CliCommand { name: "micmon", usage: "micmon on|off", parse: |w| match w.next() { Some("on") => Parsed::Event(DemoEvent::Ext(Ext::MicMon(true))), Some("off") => Parsed::Event(DemoEvent::Ext(Ext::MicMon(false))), _ => Parsed::Usage } },
-        CliCommand { name: "micdbg", usage: "micdbg", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::MicDbg)) },
-        CliCommand { name: "synth", usage: "synth", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Synth)) },
+        //   the recorder's commands, parsed by light-recorder and carried in Ext::Audio
+        CliCommand { name: "tone", usage: recorder_console::TONE_USAGE, parse: |w| recorder_console::wrap(recorder_console::tone(w), audio) },
+        CliCommand { name: "volume", usage: recorder_console::VOLUME_USAGE, parse: |w| recorder_console::wrap(recorder_console::volume(w), audio) },
+        CliCommand { name: "rec", usage: recorder_console::REC_USAGE, parse: |w| recorder_console::wrap(recorder_console::rec(w), audio) },
+        CliCommand { name: "play", usage: recorder_console::PLAY_USAGE, parse: |w| recorder_console::wrap(recorder_console::play(w), audio) },
+        CliCommand { name: "micmon", usage: recorder_console::MICMON_USAGE, parse: |w| recorder_console::wrap(recorder_console::micmon(w), audio) },
+        CliCommand { name: "micgain", usage: recorder_console::MICGAIN_USAGE, parse: |w| recorder_console::wrap(recorder_console::micgain(w), audio) },
+        CliCommand { name: "micdbg", usage: "micdbg", parse: |w| recorder_console::wrap(recorder_console::micdbg(w), audio) },
+        CliCommand { name: "synth", usage: "synth", parse: |w| recorder_console::wrap(recorder_console::synth(w), audio) },
 ];
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
@@ -927,36 +323,30 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 &EVENTS,
                 power_backlight,
                 power_is_stats,
-                |_| None,
+                power_busy,
         );
         let mut board_mod = BoardMod { sd, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut rtc_mod = RtcMod::new(Pcf85063a::new(imu_i2c), &EVENTS, rtc_is_report, rtc_get_set);
-        let mut audio_mod = AudioMod {
-                codec: Es8311::new(imu_i2c),
-                i2s: p.i2s,
-                pa: p.audio_pa,
-                events: EVENTS.subscribe().expect("subscriber slot"),
-                phase: 0,
-                phase_inc: 0,
-                remaining: 0,
-                sd,
-                // SAFETY: the one take of each slot (see AppSlot)
-                rec: unsafe { &mut *REC_SLOT.0.get() },
-                play: unsafe { &mut *PLAY_SLOT.0.get() },
-                play_stage: {
-                        //   STREAM_WORDS * 2: one full mono refill. 2560 was the size for
-                        // the ORIGINAL ring; when the underrun fix grew STREAM_WORDS to
-                        // 2048 the dictaphone's copy was resized and this one was not, and
-                        // a stage smaller than one refill reads short and declares the
-                        // playback finished on its first buffer
-                        static STAGE: ConstStaticCell<[u8; 4096]> = ConstStaticCell::new([0; 4096]);
-                        STAGE.take()
+        //   a small frame-aligned read scratch for the playback path; the stall-riding depth is the
+        // transport's IRQ-drained prefetch ring
+        static STAGE: ConstStaticCell<[u8; 2048]> = ConstStaticCell::new([0; 2048]);
+        let mut recorder = Recorder::new(
+                Es8311::new(imu_i2c),
+                I2sStream::new(p.i2s),
+                p.audio_pa,
+                SysClock,
+                CardStore { card: sd, clock: SysClock },
+                RecorderConfig { sample_hz: AUDIO_SAMPLE_HZ, mic_gain: (0x17, 0xE3), volume: 73 },
+                RecorderSlots {
+                        // SAFETY: the one take of each slot, on the application core
+                        rec: unsafe { REC_SLOT.take() },
+                        play: unsafe { PLAY_SLOT.take() },
+                        play_stage: STAGE.take(),
                 },
-                cap_handed: false,
-                rec_null: false,
-                null_bytes: 0,
-        };
+                &EVENTS,
+                RecorderEvents { command_of: recorder_command, is_stats: power_is_stats, status_event: recorder_status },
+        );
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
@@ -1008,7 +398,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");
         rt.add(&mut rtc_mod).expect("capacity");
-        rt.add(&mut audio_mod).expect("capacity");
+        rt.add(&mut recorder).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; type 'help' on the console");
