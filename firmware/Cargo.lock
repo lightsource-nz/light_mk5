@@ -636,6 +636,7 @@ version = "0.1.0"
 dependencies = [
  "light-core",
  "light-input",
+ "light-power",
  "light-power-manager",
  "light-rp2",
 ]
@@ -723,6 +724,13 @@ dependencies = [
 [[package]]
 name = "light-net"
 version = "0.1.0"
+
+[[package]]
+name = "light-power"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+]
 
 [[package]]
 name = "light-power-manager"
@@ -959,6 +967,7 @@ dependencies = [
  "light-draw",
  "light-font",
  "light-input",
+ "light-power",
  "light-power-manager",
  "light-rp2",
  "light-ui",

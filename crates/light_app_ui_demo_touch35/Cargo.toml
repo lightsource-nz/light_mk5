@@ -18,5 +18,6 @@ light-display = { path = "../light-display" }
 light-input = { path = "../light-input" }
 light-ui = { path = "../light-ui" }
 light-rp2 = { path = "../light-rp2", features = ["rp2350", "usb-console"] }
+light-power = { path = "../light-power" }
 light-power-manager = { path = "../light-power-manager" }
 light-font = { path = "../light-font" }

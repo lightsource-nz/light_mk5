@@ -10,4 +10,5 @@ description = "board-support crate for the Waveshare RP2350-Touch-LCD-3.5: the p
 light-core = { path = "../light-core" }
 light-input = { path = "../light-input" }
 light-rp2 = { path = "../light-rp2", features = ["rp2350"] }
+light-power = { path = "../light-power" }
 light-power-manager = { path = "../light-power-manager" }

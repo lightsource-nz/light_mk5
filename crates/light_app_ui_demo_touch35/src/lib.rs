@@ -15,7 +15,7 @@
 use core::cell::RefCell;
 use light_app_ui_demo as demo;
 use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod};
-use light_board_touch35::{board, Touch35Power};
+use light_board_touch35::{board, Pmic, Touch35Power};
 use board::*;
 use light_input::drivers::ft6336::Ft6336;
 use light_input::drivers::qmi8658::Qmi8658;
@@ -26,7 +26,7 @@ use light_display::st7796::St7796;
 use light_display::{Display, FrameLayer};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{info, log, warn, ConstStaticCell, EventBus, Runtime, StaticCell};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::PowerMod;
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
@@ -61,6 +61,8 @@ enum Ext {
         /// Re-clock the display bus live: the SPI-headroom probe. Too fast shows up as
         /// corrupt pixels rather than a clean failure, so the eye is the instrument.
         SpiHz(u32),
+        /// The PMIC readout: presence, charge state, rails, gauge, and the power key.
+        Pmic,
 }
 
 type AppEvent = DemoEvent<Ext>;
@@ -77,7 +79,7 @@ fn power_is_stats(e: &AppEvent) -> bool {
         matches!(e, DemoEvent::Command(Command::Stats))
 }
 
-static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -128,7 +130,71 @@ impl BoardHook<St7796<Spi0Display>, Ext> for Hook {
                                 // shows immediately rather than on the next interaction
                                 view.ui.invalidate_all();
                         }
+                        Ext::Pmic => {}
                 }
+        }
+}
+
+// --- the board's own modules ---------------------------------------------------------------
+
+/// How often the PMIC's latched power-key events are collected: a person's press, not a signal.
+const KEY_POLL_MS: u64 = 100;
+
+//   the PMIC diagnostics: the `pmic` readout, and a log line per power-key event the PMIC latched
+// (the key itself is the power module's button, read from its GPIO)
+struct PmicMod {
+        pmic: Pmic,
+        events: Subscription,
+        next_key_poll_us: u64,
+}
+
+impl PmicMod {
+        fn report(&mut self) {
+                match self.pmic.status() {
+                        Ok(s) => info!("pmic: vbus {}, battery {}, charge {:?}", if s.vbus_good { "good" } else { "absent" }, if s.battery_present { "present" } else { "absent" }, s.charge),
+                        Err(e) => {
+                                warn!("pmic: not answering ({e:?})");
+                                return;
+                        }
+                }
+                let vbat = self.pmic.battery_mv().ok().flatten();
+                let pct = self.pmic.battery_percent().ok().flatten();
+                let vbus = self.pmic.vbus_mv().unwrap_or(0);
+                let vsys = self.pmic.vsys_mv().unwrap_or(0);
+                let t = self.pmic.die_decidegrees().unwrap_or(0);
+                info!("pmic: vbat {:?} mV ({:?}%), vbus {} mV, vsys {} mV, die {}.{} C", vbat, pct, vbus, vsys, t / 10, (t % 10).abs());
+        }
+}
+
+impl Module for PmicMod {
+        fn name(&self) -> &'static str {
+                "pmic"
+        }
+        fn poll(&mut self) -> Poll {
+                let mut busy = false;
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        if let AppEvent::Ext(Ext::Pmic) = ev {
+                                busy = true;
+                                self.report();
+                        }
+                }
+                let now = light_rp2::now_us();
+                if now >= self.next_key_poll_us {
+                        self.next_key_poll_us = now + KEY_POLL_MS * 1000;
+                        if let Ok(k) = self.pmic.take_key_events() {
+                                if k.any() {
+                                        busy = true;
+                                        info!(
+                                                "pmic: power key{}{}{}{}",
+                                                if k.pressed() { " pressed" } else { "" },
+                                                if k.released() { " released" } else { "" },
+                                                if k.short() { " short" } else { "" },
+                                                if k.long() { " long" } else { "" }
+                                        );
+                                }
+                        }
+                }
+                if busy { Poll::Busy } else { Poll::Idle }
         }
 }
 
@@ -145,6 +211,7 @@ fn parse_spi(w: &mut Words) -> Parsed<AppEvent> {
 
 static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "spi", usage: "spi HZ (1000000..100000000; the headroom probe)", parse: parse_spi },
+        CliCommand { name: "pmic", usage: "pmic", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Pmic)) },
 ];
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
@@ -172,8 +239,15 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let imu = Imu::new(Qmi8658::new(i2c));
         //   the amplifier stays off: nothing here drives audio
         let _amp_en = p.amp_en;
+        let mut pmic = Pmic::new(i2c);
+        match pmic.probe().and_then(|found| if found { pmic.init().map(|()| true) } else { Ok(false) }) {
+                Ok(true) => info!("pmic: AXP2101 up"),
+                Ok(false) => warn!("pmic: chip id does not match an AXP2101"),
+                Err(e) => warn!("pmic: not answering ({e:?})"),
+        }
 
-        let mut power_mod = PowerMod::new(Touch35Power { backlight: p.backlight }, SysClock, &EVENTS, power_backlight, power_is_stats, |_| None);
+        let mut power_mod = PowerMod::new(Touch35Power { backlight: p.backlight, pmic, power_key: p.power_key }, SysClock, &EVENTS, power_backlight, power_is_stats, |_| None);
+        let mut pmic_mod = PmicMod { pmic, events: EVENTS.subscribe().expect("subscriber slot"), next_key_poll_us: 0 };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
@@ -217,8 +291,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
-        let mut rt: Runtime<5> = Runtime::new();
+        let mut rt: Runtime<6> = Runtime::new();
         rt.add(&mut power_mod).expect("capacity");
+        rt.add(&mut pmic_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");

@@ -61,7 +61,7 @@ pub const BACKLIGHT_CARRIER_HZ: u32 = 30_000;
 pub const PIN_RTC_INT: usize = 37;
 pub const PIN_IMU_INT1: usize = 38;
 pub const PIN_PMIC_IRQ: usize = 39;
-/// The AXP2101's power key, level-shifted onto a GPIO.
+/// The AXP2101's power key, level-shifted onto a GPIO (the board carries its own pull-up).
 pub const PIN_POWER_KEY: usize = 40;
 // the ES8311 codec's I2S, and the NS4150B speaker amplifier's enable (high = on)
 pub const PIN_I2S_DOUT: usize = 12;
@@ -93,6 +93,8 @@ pub struct Peripherals {
         pub touch_reset: Output,
         /// The speaker amplifier, held off until something drives audio.
         pub amp_en: Output,
+        /// The power key's level, through the PMIC's level shifter: high while held.
+        pub power_key: Input,
 }
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -107,6 +109,7 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
         unsafe {
                 Some(Peripherals {
                         amp_en: Output::new(PIN_AMP_EN, false),
+                        power_key: Input::new_pull_up(PIN_POWER_KEY),
                         display_bus: Spi0Display::new(
                                 clocks.peri_hz,
                                 PIN_DISPLAY_SCK,
