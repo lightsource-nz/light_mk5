@@ -39,6 +39,7 @@ pub mod hal;
 pub mod log;
 pub mod mailbox;
 pub mod module;
+pub mod slot;
 pub mod usb;
 
 pub use activity::note_activity;
@@ -53,6 +54,9 @@ pub use module::{Error, Module, Poll, Runtime};
 // application's frame buffers, frame layer and widget arena use; `static mut` is not used
 // anywhere in this workspace, and the aliasing argument that came with each one is gone
 pub use static_cell::{ConstStaticCell, StaticCell};
+//   and, for state that cannot be `Send` (it borrows through a `&RefCell`) but must not sit on a
+// small core stack either, a slot taken once under an explicit single-core argument
+pub use slot::CoreSlot;
 //   and the one blessed source of atomics: `core::sync::atomic` has no swap or fetch_add on
 // the Cortex-M0+, portable-atomic has them everywhere, natively where the core can
 pub use portable_atomic as atomic;

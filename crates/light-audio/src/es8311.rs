@@ -30,7 +30,6 @@ const REG_SYS0E: u8 = 0x0E;
 const REG_SYS12: u8 = 0x12;
 const REG_SYS13: u8 = 0x13;
 const REG_SYS14: u8 = 0x14;
-const REG_ADC16: u8 = 0x16;
 const REG_ADC17: u8 = 0x17;
 const REG_ADC1C: u8 = 0x1C;
 const REG_DAC_MUTE: u8 = 0x31;

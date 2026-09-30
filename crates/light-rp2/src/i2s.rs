@@ -45,6 +45,7 @@
 use crate::gpio::{self, Input};
 use crate::pac;
 use light_core::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use light_core::ConstStaticCell;
 
 //   THE OUTPUT PREFETCH RING, drained from the DMA-completion INTERRUPT. The two ping-pong
 // DMA buffers still carry the audio to the codec, but they are refilled by the IRQ from this
@@ -633,5 +634,93 @@ impl PioI2sOut {
         /// Zero the underrun counter.
         pub fn reset_underruns(&mut self) {
                 STREAM.underruns.store(0, Ordering::Relaxed);
+        }
+}
+
+/// The PIO I2S transport wearing the portable [`light_core::AudioStream`] contract. The DMA
+/// ping-pong buffers, the prefetch ring and the capture buffers are statics here, handed to the
+/// transport on first use: there is one PIO1 I2S per chip, so there is one set.
+pub struct I2sStream {
+        i2s: PioI2sOut,
+        cap_handed: bool,
+}
+
+impl I2sStream {
+        pub fn new(i2s: PioI2sOut) -> Self {
+                Self { i2s, cap_handed: false }
+        }
+}
+
+impl light_core::AudioStream for I2sStream {
+        fn start(&mut self) {
+                static STREAM_A: ConstStaticCell<[u32; STREAM_WORDS]> = ConstStaticCell::new([0; STREAM_WORDS]);
+                static STREAM_B: ConstStaticCell<[u32; STREAM_WORDS]> = ConstStaticCell::new([0; STREAM_WORDS]);
+                //   the IRQ-drained prefetch ring: two DMA buffers deep (~340 ms), the lead that
+                // rides out a card stall while the poll loop is blocked filling it
+                static RING: ConstStaticCell<[u32; STREAM_WORDS * 2]> = ConstStaticCell::new([0; STREAM_WORDS * 2]);
+                self.i2s.start_stream_irq([STREAM_A.take(), STREAM_B.take()], RING.take());
+        }
+
+        fn capture_start(&mut self) {
+                static CAP_A: ConstStaticCell<[u16; CAP_WORDS]> = ConstStaticCell::new([0; CAP_WORDS]);
+                static CAP_B: ConstStaticCell<[u16; CAP_WORDS]> = ConstStaticCell::new([0; CAP_WORDS]);
+                let bufs = if self.cap_handed {
+                        None
+                } else {
+                        self.cap_handed = true;
+                        Some([CAP_A.take(), CAP_B.take()])
+                };
+                self.i2s.capture_start(bufs);
+        }
+
+        fn capture_stop(&mut self) {
+                self.i2s.capture_stop();
+        }
+
+        fn capture_take(&mut self, sink: &mut dyn FnMut(&[u16])) {
+                self.i2s.capture_take(|buf| sink(buf));
+        }
+
+        fn stream_free(&self) -> usize {
+                self.i2s.stream_free()
+        }
+
+        fn stream_push(&mut self, fill: &mut dyn FnMut(&mut [u32]) -> usize) {
+                self.i2s.stream_push(fill);
+        }
+
+        fn set_active(&mut self, active: bool) {
+                self.i2s.set_active(active);
+        }
+
+        fn stream_pending(&self) -> usize {
+                self.i2s.stream_pending()
+        }
+
+        fn stream_clear(&mut self) {
+                self.i2s.stream_clear();
+        }
+
+        fn underruns(&self) -> u32 {
+                self.i2s.stream_underruns()
+        }
+
+        fn cap_overruns(&self) -> u32 {
+                self.i2s.cap_overruns
+        }
+
+        fn reset_stats(&mut self) {
+                self.i2s.reset_underruns();
+                self.i2s.cap_overruns = 0;
+        }
+
+        fn debug_probe(&mut self) {
+                //   sample the raw DIN pad, then read the PIO FIFO directly. Splits "the codec's data
+                // line is dead" from "the state machine misreads a toggling line"
+                let (highs, pc) = self.i2s.din_probe(4000);
+                self.i2s.capture_sm_only();
+                let fifo = self.i2s.din_fifo_probe();
+                light_core::info!("micdbg: DIN GPIO high {}/4000, sm pc {}", highs, pc);
+                light_core::info!("micdbg: raw FIFO words {:#010x} {:#010x} {:#010x} {:#010x}", fifo[0], fifo[1], fifo[2], fifo[3]);
         }
 }

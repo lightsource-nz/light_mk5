@@ -19,7 +19,7 @@ use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{info, log, warn, AudioStream, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, CoreSlot, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
@@ -44,7 +44,7 @@ pub fn core1_console(_info: &ShellInfo) -> ! {
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
-use light_rp2::i2s::PioI2sOut;
+use light_rp2::i2s::I2sStream;
 use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::qspi::PioQspiDisplayBus;
 use light_rp2::{Breathe, Clocks, SysClock};
@@ -138,104 +138,12 @@ const FPS: u32 = 30;
 /// The TF slot as a shareable block device: the board's one card, borrowed per block operation.
 type SdRef = light_sd::SharedCard<'static, Spi1Bus, Output>;
 
-/// A single-slot .bss home for a card-borrowing state machine (a [`dict::Recording`], a
-/// [`dict::Playback`]) -- NOT core 0's 4 KB stack. `StaticCell` wants `Send`, which the
-/// `&RefCell` inside cannot offer; this holder makes the single-core argument explicitly
-/// instead.
-///
-/// SAFETY: the runtime is single-core and each slot is taken as `&'static mut` exactly
-/// once, at construction.
-struct AppSlot<T>(core::cell::UnsafeCell<Option<T>>);
-unsafe impl<T> Sync for AppSlot<T> {}
-static REC_SLOT: AppSlot<dict::Recording<SdRef>> = AppSlot(core::cell::UnsafeCell::new(None));
-static PLAY_SLOT: AppSlot<dict::Playback<SdRef>> = AppSlot(core::cell::UnsafeCell::new(None));
+//   the recorder's card-borrowing state machines live in .bss, not on core 0's 4 KB stack
+static REC_SLOT: CoreSlot<dict::Recording<SdRef>> = CoreSlot::new();
+static PLAY_SLOT: CoreSlot<dict::Playback<SdRef>> = CoreSlot::new();
 
 /// The app's [`dict::Store`]: the shared card, brought up on first touch since insertion.
 type SdStore = light_sd::CardStore<Spi1Bus, Output, SysClock>;
-
-// --- the sample transport: PIO I2S as the app's AudioStream --------------------------------
-
-/// The PIO I2S transport wearing the portable [`AudioStream`] contract. The DMA ping-pong
-/// buffers are THIS crate's statics, handed to the transport on first use.
-struct I2sStream {
-        i2s: PioI2sOut,
-        cap_handed: bool,
-}
-
-impl AudioStream for I2sStream {
-        fn start(&mut self) {
-                static STREAM_A: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
-                static STREAM_B: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
-                //   the IRQ-drained prefetch ring: two DMA buffers deep (~340 ms), the lead
-                // that rides out a card stall while the poll loop is blocked filling it
-                static RING: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS * 2]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS * 2]);
-                self.i2s.start_stream_irq([STREAM_A.take(), STREAM_B.take()], RING.take());
-        }
-
-        fn capture_start(&mut self) {
-                static CAP_A: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
-                static CAP_B: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
-                let bufs = if self.cap_handed {
-                        None
-                } else {
-                        self.cap_handed = true;
-                        Some([CAP_A.take(), CAP_B.take()])
-                };
-                self.i2s.capture_start(bufs);
-        }
-
-        fn capture_stop(&mut self) {
-                self.i2s.capture_stop();
-        }
-
-        fn capture_take(&mut self, sink: &mut dyn FnMut(&[u16])) {
-                self.i2s.capture_take(|buf| sink(buf));
-        }
-
-        fn stream_free(&self) -> usize {
-                self.i2s.stream_free()
-        }
-
-        fn stream_push(&mut self, fill: &mut dyn FnMut(&mut [u32]) -> usize) {
-                self.i2s.stream_push(fill);
-        }
-
-        fn set_active(&mut self, active: bool) {
-                self.i2s.set_active(active);
-        }
-
-        fn stream_pending(&self) -> usize {
-                self.i2s.stream_pending()
-        }
-
-        fn stream_clear(&mut self) {
-                self.i2s.stream_clear();
-        }
-
-        fn underruns(&self) -> u32 {
-                self.i2s.stream_underruns()
-        }
-
-        fn cap_overruns(&self) -> u32 {
-                self.i2s.cap_overruns
-        }
-
-        fn reset_stats(&mut self) {
-                self.i2s.reset_underruns();
-                self.i2s.cap_overruns = 0;
-        }
-
-        fn debug_probe(&mut self) {
-                //   sample the raw DIN pad, then read the PIO FIFO directly. Splits "the
-                // codec's data line is dead" from "the state machine misreads a toggling
-                // line"
-                let (highs, pc) = self.i2s.din_probe(4000);
-                self.i2s.capture_sm_only();
-                let fifo = self.i2s.din_fifo_probe();
-                info!("micdbg: DIN GPIO high {}/4000, sm pc {}", highs, pc);
-                info!("micdbg: raw FIFO words {:#010x} {:#010x} {:#010x} {:#010x}", fifo[0], fifo[1], fifo[2], fifo[3]);
-        }
-}
 
 // --- the board's own modules ---------------------------------------------------------------
 
@@ -344,7 +252,7 @@ pub fn run(info: &ShellInfo, cfg: RunConfig) -> ! {
         static PICKER: ConstStaticCell<FilePicker<{ dict::LIST_ROWS }>> = ConstStaticCell::new(FilePicker::new(Order::NameDescending, keep_recording));
         let mut audio_mod = dict::AudioMod::new(
                 Es8311::new(imu_i2c),
-                I2sStream { i2s: p.i2s, cap_handed: false },
+                I2sStream::new(p.i2s),
                 p.audio_pa,
                 SysClock,
                 SdStore { card: sd, clock: SysClock },
@@ -357,9 +265,9 @@ pub fn run(info: &ShellInfo, cfg: RunConfig) -> ! {
                 // retune digitally, in REG17, only
                 (0x17, 0xE3),
                 AudioSlots {
-                        // SAFETY: the one take of each slot (see AppSlot)
-                        rec: unsafe { &mut *REC_SLOT.0.get() },
-                        play: unsafe { &mut *PLAY_SLOT.0.get() },
+                        // SAFETY: the one take of each slot, on the application core
+                        rec: unsafe { REC_SLOT.take() },
+                        play: unsafe { PLAY_SLOT.take() },
                         play_stage: STAGE.take(),
                         picker: PICKER.take(),
                 },
