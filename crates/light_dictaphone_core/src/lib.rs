@@ -1,12 +1,12 @@
-//! The dictaphone's ENGINE: a voice recorder with no hardware and no page layout in it.
-//! Recordings are auto-named `REC_NNNN.WAV` (8.3: the filesystem writes short names only)
-//! and land as ordinary mono 16-bit WAV any desktop player opens. The full diagnostic
-//! console (`rec`/`play`/`fs`/`tone`/`micdbg`/...) lives here: it is the same machinery
-//! any interface's buttons drive.
+//! The dictaphone: a voice recorder application with no hardware and no page layout in it.
+//! Recording and playback are the framework's [`light_recorder`]; this crate is what makes that
+//! engine a dictaphone -- takes auto-named `REC_NNNN.WAV` (8.3: the filesystem writes short names
+//! only), a record/play pair of buttons, a browsable recordings list -- plus the full diagnostic
+//! console (`rec`/`play`/`fs`/`tone`/`micdbg`/...), the same commands the buttons drive.
 //!
 //! A UI crate (`light_app_dictaphone`, `light_app_dictaphone_wide`) supplies the page
 //! TREE -- what the interface looks like -- while this crate supplies everything the tree
-//! emits into: the event vocabulary, the audio and storage state machines, and the
+//! emits into: the event vocabulary, the recordings list ([`FilesMod`]), and the
 //! display-driving [`DisplayMod`] (render loop, touch routing, command plumbing -- the
 //! machinery every layout shares). A hardware-bound module then constructs the concrete
 //! parts and owns everything neither crate may: pins, the display driver, the touch
@@ -16,8 +16,8 @@
 //!   stays a board static and reaches the app as `&'static dyn `[`Bus`].
 //! - [`Store`] is the card as the app sees it: bring it up per insertion, hand a
 //!   [`BlockDevice`](light_core::hal::BlockDevice) per mounted operation.
-//! - The codec is a [`light_audio::Es8311`] over any [`light_core::I2cBus`]; the sample
-//!   transport is any [`light_core::AudioStream`] -- the port owns buffers and DMA.
+//! - The board constructs the [`Recorder`] with [`recorder_events`], which is how the recorder
+//!   reads this app's commands and publishes its [`AudioStatus`] into it.
 //! - The UI crate's pages macro expands the tree in the board crate, where the event type
 //!   is concrete; [`dictaphone_commands!`] splices the app's console rows ahead of the
 //!   board's own.
@@ -25,20 +25,19 @@
 #![no_std]
 
 use core::fmt::Write;
-use light_audio::Es8311;
 use light_core::cli::{Cli, Outcome, Parsed, Words};
-use light_core::hal::BlockDevice;
-use light_core::{debug, info, log, warn, AudioStream, Bus, Clock, I2cBus, LineReader, Mailbox, Module, OutputPin, Poll, Subscription};
+use light_core::{debug, info, log, warn, Bus, Clock, LineReader, Mailbox, Module, Poll, Subscription};
 use light_display::{Display, DisplayDriver, FrameLayer, Region, UpdateError};
 use light_draw::Rotation;
 use light_font::Font;
-use light_fs::{Fat, File as FsFile, FsError};
+use light_fs::Fat;
 use light_input::imu::Orientation;
 use light_input::touch::Gesture;
 use light_ui::{Fonts, IndicatorShape, Lui, LuiChild, Style, SwipeDir, TextSlot, Touch, Ui};
 
 //   what the board crates build against, from one place
 pub use light_input::drivers::cst816t::Event as TouchSample;
+pub use light_recorder::console as recorder_console;
 pub use light_ui::{Axis, Descent};
 pub use light_ui_components::{DirEntry, FilePicker, Order};
 
@@ -51,10 +50,6 @@ pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
 /// How many recordings the list page shows: the newest N, one fixed row each -- the page
 /// tree is static, its TEXT is not.
 pub const LIST_ROWS: usize = 8;
-
-/// The cap on a single take: recording stops itself at this many seconds (five minutes),
-/// so a forgotten take cannot fill the card or overflow the WAV's 32-bit sizes.
-pub const MAX_REC_SECS: u32 = 5 * 60;
 
 /// Widget tags: how a module finds a widget again to rewrite its text at runtime.
 /// The status -- elapsed time, playing/ready -- rides the title bar now, and the
@@ -112,16 +107,6 @@ impl<X: Copy> light_input::BoardEvent for Event<X> {
         }
 }
 
-/// What the audio module is doing, in the terms the interface shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AudioStatus {
-        Idle,
-        /// A recording in flight, with its elapsed seconds.
-        Recording { secs: u16 },
-        /// A playback in flight: elapsed and total seconds.
-        Playing { secs: u16, total: u16 },
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum Command {
         Stats,
@@ -131,21 +116,9 @@ pub enum Command {
         UiPress { x: u16, y: u16 },
         UiBack,
         RenderMode(RenderMode),
-        Tone { hz: u16, ms: u16 },
-        ToneOff,
-        Volume(u8),
         Fs { op: FsOp, path: FsPath, arg: FsPath },
-        RecStart(FsPath),
-        RecStop,
-        RecStatus,
-        PlayStart(FsPath),
-        PlayStop,
-        PlayStatus,
-        MicMon(bool),
-        MicDbg,
-        Synth,
-        /// The mic path's two gain registers, raw -- live tuning without a reflash.
-        MicGain { r14: u8, r17: u8 },
+        /// A command for the recorder (light-recorder): record, play, tone, volume, mic.
+        Audio(RecorderCommand),
 }
 
 /// The `fs` command's operation and path argument are the framework's: see [`light_fs::console`].
@@ -245,26 +218,6 @@ pub fn touch_reads_held() -> bool {
 
 /// The card as the app sees it -- the framework's removable-storage seam.
 pub use light_core::hal::Store;
-
-/// A canonical 44-byte PCM WAV header: mono, 16-bit, `sample_hz` -- what makes a
-/// recording a file any desktop player opens.
-pub fn wav_header(sample_hz: u32, data_len: u32) -> [u8; 44] {
-        let mut h = [0u8; 44];
-        h[..4].copy_from_slice(b"RIFF");
-        h[4..8].copy_from_slice(&(36 + data_len).to_le_bytes());
-        h[8..12].copy_from_slice(b"WAVE");
-        h[12..16].copy_from_slice(b"fmt ");
-        h[16..20].copy_from_slice(&16u32.to_le_bytes());
-        h[20..22].copy_from_slice(&1u16.to_le_bytes()); // PCM
-        h[22..24].copy_from_slice(&1u16.to_le_bytes()); // mono
-        h[24..28].copy_from_slice(&sample_hz.to_le_bytes());
-        h[28..32].copy_from_slice(&(sample_hz * 2).to_le_bytes());
-        h[32..34].copy_from_slice(&2u16.to_le_bytes()); // block align
-        h[34..36].copy_from_slice(&16u16.to_le_bytes());
-        h[36..40].copy_from_slice(b"data");
-        h[40..44].copy_from_slice(&data_len.to_le_bytes());
-        h
-}
 
 // --- the display module --------------------------------------------------------------------
 
@@ -569,7 +522,7 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 let mut detail = StackString::<{ TextSlot::CAP }>::new();
                 let indicator = match self.status {
                         AudioStatus::Idle => None,
-                        AudioStatus::Recording { secs } => {
+                        AudioStatus::Recording { secs, .. } => {
                                 let _ = write!(detail, "{}:{:02}", secs / 60, secs % 60);
                                 Some((IndicatorShape::Dot, self.blink_on, col))
                         }
@@ -722,13 +675,25 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> Module fo
         }
 }
 
-// --- the audio module ----------------------------------------------------------------------
+// --- the recorder, and the dictaphone's own side of it ---------------------------------------
 
-/// One period of sine at 20000 amplitude, 32 steps -- plenty for a test tone.
-static SINE: [i16; 32] = [
-        0, 3902, 7654, 11111, 14142, 16629, 18478, 19616, 20000, 19616, 18478, 16629, 14142, 11111, 7654, 3902, 0, -3902, -7654, -11111, -14142, -16629, -18478, -19616, -20000, -19616, -18478, -16629,
-        -14142, -11111, -7654, -3902,
-];
+//   the recording/playback engine is the framework's light-recorder; the dictaphone reaches it the
+// way any application does -- by the three functions below -- and re-exports what a board wires
+pub use light_recorder::{wav_header, AudioStatus, Playback, Recorder, RecorderCommand, RecorderConfig, RecorderEvents, RecorderSlots, Recording, MAX_REC_SECS};
+
+fn recorder_command<X: Copy>(e: &Event<X>) -> Option<RecorderCommand> {
+        if let Event::Command(Command::Audio(c)) = e { Some(*c) } else { None }
+}
+
+fn is_stats<X: Copy>(e: &Event<X>) -> bool {
+        matches!(e, Event::Command(Command::Stats))
+}
+
+/// How the recorder reaches this application's events: its commands ride
+/// `Command::Audio`, and its status arrives as [`Event::Status`].
+pub fn recorder_events<X: Copy + 'static>() -> RecorderEvents<Event<X>> {
+        RecorderEvents { command_of: recorder_command::<X>, is_stats: is_stats::<X>, status_event: Event::<X>::Status }
+}
 
 /// `REC_NNNN.WAV` -> `NNNN`; anything else is not one of ours.
 fn rec_number(name: &str) -> Option<u32> {
@@ -747,129 +712,31 @@ pub fn keep_recording(entry: &DirEntry) -> bool {
         !entry.is_dir && entry.size > 44 && rec_number(entry.name()).is_some()
 }
 
-/// One open recording: the volume stays mounted and every filled capture buffer appends
-/// to the file, write-through, until stop patches the WAV header.
-pub struct Recording<Dev: BlockDevice> {
-        fs: Fat<Dev>,
-        file: FsFile,
-}
-
-/// One open playback: the file positioned at its PCM data, streamed into the DAC's
-/// refill until the data chunk ends.
-pub struct Playback<Dev: BlockDevice> {
-        fs: Fat<Dev>,
-        file: FsFile,
-        channels: u8,
-        /// Where the data chunk stops -- the file may carry trailing chunks.
-        data_end: u32,
-        /// Where the PCM begins -- with `data_end`, what elapsed/total time is read from.
-        data_start: u32,
-}
-
-/// The codec plus the sample transport plus the card: recording, playback, the test tone,
-/// and every audio diagnostic. The transport streams continuously (silence when nothing
-/// plays), so a long frame draw cannot starve the codec into audible chop.
-pub struct AudioMod<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + 'static> {
-        codec: Es8311<B>,
-        stream: A,
-        pa: P,
-        clock: C,
-        sample_hz: u32,
+/// The dictaphone's side of the recorder: what its buttons mean, what a take is called, and the
+/// recordings list. It drives the [`Recorder`] only by [`RecorderCommand`]s on the bus and learns
+/// what the recorder is doing only from [`Event::Status`], so neither module holds the other's
+/// state. It also serves the `fs` console command over the same card.
+pub struct FilesMod<S: Store, X: Copy + 'static> {
+        store: S,
+        /// The recordings list, newest first: the system file-picker component, scanning the card
+        /// and driving the list rows. In .bss like everything sizeable here.
+        picker: &'static mut FilePicker<LIST_ROWS>,
+        /// The most recent take -- what "Play last" plays.
+        last_name: Option<FsPath>,
+        /// The recorder's state, as last published.
+        status: AudioStatus,
         bus: &'static dyn Bus<Event<X>>,
         sub: Subscription,
-        /// Phase accumulator into [`SINE`]; the top 5 bits index the table.
-        phase: u32,
-        phase_inc: u32,
-        /// Sample frames left to play; 0 is silence.
-        remaining: u32,
-        /// The card, shared with whatever board module also serves it.
-        store: S,
-        /// A recording in flight. A `&'static mut` INTO .bss, never inline: the module
-        /// lives on core 0's small stack, and a ~1.2 KB Recording inline once overflowed
-        /// it straight into core 1's.
-        rec: &'static mut Option<Recording<S::Dev>>,
-        /// A playback in flight; same .bss discipline.
-        play: &'static mut Option<Playback<S::Dev>>,
-        /// A small scratch for frame-aligned card reads on the playback path: one push reads
-        /// up to this many bytes, converts them to output words, and the loop repeats to top
-        /// the transport's prefetch ring up. The DEPTH that rides out card stalls lives in
-        /// that ring (in the port, drained by the DMA IRQ); this is just the read buffer.
-        play_stage: &'static mut [u8],
-        /// The `rec null` bisect: capture runs, everything drains to nowhere.
-        rec_null: bool,
-        null_bytes: u32,
-        /// The most recent recording -- what "Play last" plays.
-        last_name: Option<FsPath>,
-        /// The recordings list, newest first: the system file-picker component, scanning the
-        /// card and driving the list rows. In .bss like everything sizeable here.
-        picker: &'static mut FilePicker<LIST_ROWS>,
-        /// Publish-on-change: the last [`AudioStatus`] the interface was told about. The
-        /// elapsed second is part of the value, so a live take updates itself.
-        last_status: AudioStatus,
-        /// The mic path's gain pair (SYSTEM14: mic select + analog PGA; ADC17: digital
-        /// volume), applied at every record start -- `micgain` retunes it live.
-        mic14: u8,
-        mic17: u8,
-        /// The worst gap between this module's polls while audio was in flight -- the
-        /// number the stream buffer's duration has to beat. `stats` prints and resets it.
-        poll_us_last: u64,
-        poll_gap_max_us: u32,
 }
 
-/// What a board hands [`AudioMod::new`] besides the hardware: the .bss slots for the big
-/// state, allocated where the board's memory map wants them.
-pub struct AudioSlots<Dev: BlockDevice + 'static> {
-        pub rec: &'static mut Option<Recording<Dev>>,
-        pub play: &'static mut Option<Playback<Dev>>,
-        pub play_stage: &'static mut [u8],
-        pub picker: &'static mut FilePicker<LIST_ROWS>,
-}
-
-impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core::fmt::Debug + 'static> AudioMod<S, B, A, P, C, X> {
-        /// `mic_gain` is the board's tuned (SYSTEM14, ADC17) register pair.
-        pub fn new(codec: Es8311<B>, stream: A, pa: P, clock: C, store: S, sample_hz: u32, mic_gain: (u8, u8), slots: AudioSlots<S::Dev>, bus: &'static dyn Bus<Event<X>>) -> Self {
+impl<S: Store, X: Copy + 'static> FilesMod<S, X> {
+        pub fn new(store: S, picker: &'static mut FilePicker<LIST_ROWS>, bus: &'static dyn Bus<Event<X>>) -> Self {
                 let sub = bus.subscribe().expect("subscriber slot");
-                Self {
-                        codec,
-                        stream,
-                        pa,
-                        clock,
-                        sample_hz,
-                        bus,
-                        sub,
-                        phase: 0,
-                        phase_inc: 0,
-                        remaining: 0,
-                        store,
-                        rec: slots.rec,
-                        play: slots.play,
-                        play_stage: slots.play_stage,
-                        rec_null: false,
-                        null_bytes: 0,
-                        last_name: None,
-                        picker: slots.picker,
-                        last_status: AudioStatus::Idle,
-                        mic14: mic_gain.0,
-                        mic17: mic_gain.1,
-                        poll_us_last: 0,
-                        poll_gap_max_us: 0,
-                }
+                Self { store, picker, last_name: None, status: AudioStatus::Idle, bus, sub }
         }
 
-        /// What the interface should say right now, read straight from the state.
-        fn status(&self) -> AudioStatus {
-                let rate = self.sample_hz * 2;
-                if let Some(r) = self.rec.as_ref() {
-                        AudioStatus::Recording { secs: (r.file.size().saturating_sub(44) / rate) as u16 }
-                } else if let Some(p) = self.play.as_ref() {
-                        let rate = rate * u32::from(p.channels);
-                        AudioStatus::Playing {
-                                secs: (p.file.pos().saturating_sub(p.data_start) / rate) as u16,
-                                total: (p.data_end.saturating_sub(p.data_start) / rate) as u16,
-                        }
-                } else {
-                        AudioStatus::Idle
-                }
+        fn command(&self, c: RecorderCommand) {
+                let _ = self.bus.publish(Event::Command(Command::Audio(c)));
         }
 
         /// Mount the card for a UI operation, or say why not.
@@ -914,9 +781,7 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                 }
         }
 
-        /// Page the list one step forward (`forward`) or back, then publish the new page. The
-        /// [`FilePicker`] re-lists the card and keeps only the page's window, so every recording
-        /// is reachable however many there are.
+        /// Page the list one step forward (`forward`) or back, then publish the new page.
         fn page_files(&mut self, forward: bool) {
                 if let Some(mut fs) = self.mount() {
                         let _ = if forward { self.picker.next_page(&mut fs, "/") } else { self.picker.prev_page(&mut fs, "/") };
@@ -935,593 +800,102 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                 let _ = self.bus.publish(Event::ListNav { prev: self.picker.has_prev(), next: self.picker.has_next() });
         }
 
-        /// Put the speaker amplifier back in its resting state: on (`load` enables it, and
-        /// playback and tones rely on it), except while a take is capturing, when it is held off
-        /// so the speaker cannot feed the microphone. Every path that switches it off for its own
-        /// purposes hands it back through here -- a diagnostic that left it off once silenced
-        /// every later tone and playback with nothing to say why.
-        fn amp_rest(&mut self) {
-                self.pa.set(!(self.rec.is_some() || self.rec_null));
-        }
-
-        fn rec_start(&mut self, path: &str) {
-                if self.rec.is_some() || self.rec_null {
-                        info!("rec: already recording");
-                        return;
-                }
-                if path == "null" {
-                        //   the freeze bisect: the WHOLE capture pipeline -- mic, transport,
-                        // buffer hand-off -- with the card and filesystem entirely out of
-                        // the path. Stable here + frozen with a file convicts the card leg
-                        for _ in 0..3 {
-                                if self.codec.mic_enable().is_ok() {
-                                        break;
-                                }
-                        }
-                        self.pa.set(false);
-                        self.stream.capture_start();
-                        self.rec_null = true;
-                        self.null_bytes = 0;
-                        info!("rec: null sink -- capturing and discarding");
-                        return;
-                }
-                //   speaker amp OFF *before* the card setup, not after: opening, mounting
-                // and writing the header block core 0 for the best part of a second, and the
-                // idle DAC ring underruns and restarts through those stalls -- a click each
-                // time, audible through a live speaker in the gap before capture begins. Any
-                // failure path below turns it back on, since no take will follow to do so.
-                self.pa.set(false);
-                let Some(dev) = self.store.open() else {
-                        info!("rec: no card");
-                        self.pa.set(true);
-                        return;
-                };
-                info!("rec: card up");
-                let mut fs = match Fat::mount(dev) {
-                        Ok(fs) => fs,
-                        Err(e) => {
-                                info!("rec: mount failed: {e:?}");
-                                self.pa.set(true);
-                                return;
-                        }
-                };
-                info!("rec: mounted");
-                let mut file = match fs.create(path) {
-                        Ok(f) => f,
-                        Err(e) => {
-                                info!("rec: create failed: {e:?}");
-                                self.pa.set(true);
-                                return;
-                        }
-                };
-                info!("rec: created");
-                if let Err(e) = file.write(&mut fs, &wav_header(self.sample_hz, 0)) {
-                        info!("rec: header write failed: {e:?}");
-                        self.pa.set(true);
-                        return;
-                }
-                info!("rec: header written");
-                //   retried: the first attempt right after the SD burst has been seen to
-                // time out where a later one succeeds
-                let mut mic = Err(light_core::hal::I2cError::Timeout);
-                for attempt in 1..=3 {
-                        mic = self.codec.mic_config(self.mic14, self.mic17);
-                        if mic.is_ok() {
-                                info!("rec: mic enabled (attempt {attempt})");
-                                break;
+        /// "Play last" must name a take that is still there: the recorder discards an empty take
+        /// by itself, so the name it last announced may be gone. A missing one falls back to the
+        /// newest take on the card.
+        fn resolve_last(&mut self) {
+                if let Some(p) = self.last_name {
+                        let present = self.mount().map(|mut fs| fs.stat(p.as_str()).is_ok()).unwrap_or(false);
+                        if !present {
+                                self.last_name = None;
                         }
                 }
-                if let Err(e) = mic {
-                        warn!("rec: mic enable failed after retries: {e:?}");
-                }
-                //   the amp is already off (muted before the card setup above); it stays off
-                // for the take, since live it clicks with every SD write burst and the
-                // microphone records its own speaker
-                self.stream.capture_start();
-                info!("rec: capture started, speaker muted");
-                *self.rec = Some(Recording { fs, file });
-                self.last_name = FsPath::new(path);
-                info!("rec: recording {} -- mono 16-bit at {} Hz", path, self.sample_hz);
-        }
-
-        fn rec_stop(&mut self) {
-                self.stream.capture_stop();
-                self.pa.set(true);
-                if self.rec_null {
-                        self.rec_null = false;
-                        info!("rec: null sink stopped -- {} B captured and discarded", self.null_bytes);
-                        return;
-                }
-                let Some(mut rec) = self.rec.take() else {
-                        info!("rec: not recording");
-                        return;
-                };
-                let data = rec.file.size().saturating_sub(44);
-                if data == 0 {
-                        //   nothing captured -- a record/stop faster than one buffer fills.
-                        // Discard the take rather than leave a header-only WAV that would list
-                        // as an unplayable row (the file handle is a plain index, nothing to
-                        // close). Clearing last_name lets the next "play last"/files scan
-                        // repopulate it from the real recordings.
-                        match self.last_name {
-                                Some(p) => match rec.fs.remove(p.as_str()) {
-                                        Ok(()) => info!("rec: discarded empty take {}", p.as_str()),
-                                        Err(e) => warn!("rec: could not remove empty take {}: {e:?}", p.as_str()),
-                                },
-                                None => warn!("rec: empty take with no name to remove"),
-                        }
-                        self.last_name = None;
-                        return;
-                }
-                //   the header written blind at start now learns the real length
-                let patch = rec.file.seek(&mut rec.fs, 0).and_then(|()| rec.file.write(&mut rec.fs, &wav_header(self.sample_hz, data)).map(|_| ()));
-                match patch {
-                        Ok(()) => info!("rec: stopped -- {} B of audio, ~{} ms", data, (u64::from(data) / 2 * 1000 / u64::from(self.sample_hz)) as u32),
-                        Err(e) => warn!("rec: header patch failed: {e:?}"),
-                }
-        }
-
-        fn play_start(&mut self, path: &str) {
-                if self.play.is_some() {
-                        info!("play: already playing");
-                        return;
-                }
-                //   step logs like rec's: twice a wedge struck between the command echo and
-                // the first outcome line, and nothing said which step held the core
-                info!("play: starting {path}");
-                let Some(dev) = self.store.open() else {
-                        info!("play: no card");
-                        return;
-                };
-                let mut fs = match Fat::mount(dev) {
-                        Ok(fs) => fs,
-                        Err(e) => {
-                                info!("play: mount failed: {e:?}");
-                                return;
-                        }
-                };
-                info!("play: mounted");
-                let mut file = match fs.open(path) {
-                        Ok(f) => f,
-                        Err(e) => {
-                                info!("play: open failed: {e:?}");
-                                return;
-                        }
-                };
-                info!("play: open, {} B", file.size());
-                //   the RIFF walk: WAV headers are chunked, and while OUR files are the
-                // canonical 44 bytes, a desktop-authored one may carry LIST chunks first
-                let mut hdr = [0u8; 12];
-                if file.read(&mut fs, &mut hdr).unwrap_or(0) != 12 || &hdr[..4] != b"RIFF" || &hdr[8..12] != b"WAVE" {
-                        info!("play: not a WAV");
-                        return;
-                }
-                let (mut channels, mut rate, mut pcm16) = (0u16, 0u32, false);
-                for _ in 0..16 {
-                        let mut ch = [0u8; 8];
-                        if file.read(&mut fs, &mut ch).unwrap_or(0) != 8 {
-                                info!("play: no data chunk");
-                                return;
-                        }
-                        let len = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]);
-                        if &ch[..4] == b"fmt " && len >= 16 {
-                                let mut f = [0u8; 16];
-                                if file.read(&mut fs, &mut f).unwrap_or(0) != 16 {
-                                        info!("play: short fmt chunk");
-                                        return;
-                                }
-                                let format = u16::from_le_bytes([f[0], f[1]]);
-                                channels = u16::from_le_bytes([f[2], f[3]]);
-                                rate = u32::from_le_bytes([f[4], f[5], f[6], f[7]]);
-                                let bits = u16::from_le_bytes([f[14], f[15]]);
-                                pcm16 = format == 1 && bits == 16;
-                                let extra = file.pos() + (len - 16) + (len & 1);
-                                if file.seek(&mut fs, extra).is_err() {
-                                        return;
-                                }
-                        } else if &ch[..4] == b"data" {
-                                if !pcm16 || rate != self.sample_hz || !(1..=2).contains(&channels) {
-                                        info!("play: unsupported format ({channels} ch, {rate} Hz) -- this codec run takes 16-bit PCM at {} Hz", self.sample_hz);
-                                        return;
-                                }
-                                let data_start = file.pos();
-                                let data_end = data_start.saturating_add(len).min(file.size());
-                                //   u64: the frame count times 1000 overflows u32 past ~4.5
-                                // minutes of audio, and a long take (or a stray big WAV on
-                                // the card) is a duration to print, not a panic
-                                let ms = ((u64::from(data_end - data_start) / (u64::from(channels) * 2)) * 1000 / u64::from(self.sample_hz)) as u32;
-                                info!("play: {} -- {} ch, ~{} ms", path, channels, ms);
-                                //   drop any tail a previous play or stop left queued, so this
-                                // file starts clean rather than after stale audio
-                                self.stream.stream_clear();
-                                *self.play = Some(Playback { fs, file, channels: channels as u8, data_end, data_start });
-                                return;
-                        } else {
-                                let next = file.pos().saturating_add(len + (len & 1));
-                                if file.seek(&mut fs, next).is_err() {
-                                        return;
-                                }
-                        }
-                }
-                info!("play: gave up looking for the data chunk");
-        }
-
-        fn play_stop(&mut self) {
-                if self.play.take().is_some() {
-                        //   drop the buffered lead so the codec falls silent now, not after the
-                        // ring plays out what was queued ahead
-                        self.stream.stream_clear();
-                        self.stream.set_active(false);
-                        info!("play: stopped");
-                } else {
-                        info!("play: idle");
+                if self.last_name.is_none() {
+                        //   fresh boot, or the last take was discarded: the newest on the card is "last"
+                        self.scan_files();
                 }
         }
 }
 
-impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core::fmt::Debug + 'static> Module for AudioMod<S, B, A, P, C, X> {
+impl<S: Store, X: Copy + 'static> Module for FilesMod<S, X> {
         fn name(&self) -> &'static str {
-                "audio"
+                "files"
         }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.codec.probe() {
-                        Ok(Some(id)) => info!("es8311 chip id confirmed: 0x{id:04x}"),
-                        Ok(None) => warn!("es8311 answered with an unexpected chip id"),
-                        Err(e) => warn!("es8311 did not answer the chip id read: {e:?}"),
-                }
-                if let Err(e) = self.codec.init(self.sample_hz, &mut self.clock) {
-                        warn!("es8311 init failed: {e:?}");
-                        return Ok(());
-                }
-                //   tuned with the mic gain: 85 audibly overdrove the little speaker on
-                // healthy-level takes, 70 was near-inaudible (the register is ~0.5 dB per
-                // step of this 0..100 scale -- the knob is steep)
-                let _ = self.codec.set_volume(78);
-                //   belt and suspenders against the ADC->DAC monitor's feedback loop: the
-                // codec reset in init() already clears REG44, but assert it off explicitly
-                // so no prior micmon state can ever survive into a running speaker
-                let _ = self.codec.set_adc_to_dac(false);
-                self.stream.start();
-                self.pa.set(true);
-                info!("audio up: es8311 master at {} Hz", self.sample_hz);
-                Ok(())
-        }
+
         fn poll(&mut self) -> Poll {
-                //   the worst poll-to-poll gap while audio is in flight: measured, not
-                // guessed, because the stream buffer's duration is a budget this gap spends
-                let now = log::now_us();
-                if self.rec.is_some() || self.play.is_some() || self.rec_null || self.remaining > 0 {
-                        if self.poll_us_last != 0 {
-                                self.poll_gap_max_us = self.poll_gap_max_us.max((now - self.poll_us_last) as u32);
-                        }
-                        self.poll_us_last = now;
-                } else {
-                        self.poll_us_last = 0;
-                }
+                let mut busy = false;
                 while let Some(ev) = self.bus.poll(&self.sub) {
                         match ev {
-                                Event::Command(Command::Tone { hz, ms }) => {
-                                        self.phase_inc = ((u64::from(hz) << 32) / u64::from(self.sample_hz)) as u32;
-                                        self.remaining = u32::from(ms) * self.sample_hz / 1000;
-                                        info!("tone {hz} Hz for {ms} ms");
-                                }
-                                Event::Command(Command::ToneOff) => {
-                                        self.remaining = 0;
-                                        info!("tone off");
-                                }
-                                Event::Command(Command::Volume(v)) => match self.codec.set_volume(v) {
-                                        Ok(()) => info!("volume {v}"),
-                                        Err(e) => warn!("volume set failed: {e:?}"),
-                                },
-                                Event::Command(Command::RecStart(path)) => {
-                                        let path = path;
-                                        self.rec_start(path.as_str());
-                                }
-                                Event::Command(Command::RecStop) => self.rec_stop(),
-                                Event::Command(Command::MicGain { r14, r17 }) => {
-                                        self.mic14 = r14;
-                                        self.mic17 = r17;
-                                        //   applied immediately too, so a live take retunes
-                                        // mid-recording and the next one starts here
-                                        match self.codec.mic_config(r14, r17) {
-                                                Ok(()) => info!("micgain: REG14 0x{r14:02x}, REG17 0x{r17:02x}"),
-                                                Err(e) => warn!("micgain: applied at next rec ({e:?})"),
+                                Event::Status(s) => {
+                                        if let AudioStatus::Recording { take, .. } = s {
+                                                if !take.is_empty() {
+                                                        self.last_name = Some(take);
+                                                }
                                         }
+                                        self.status = s;
                                 }
                                 Event::Ui(UiAction::RecToggle) => {
-                                        if self.rec.is_some() || self.rec_null {
-                                                self.rec_stop();
-                                        } else {
-                                                if self.play.is_some() {
-                                                        self.play_stop();
-                                                }
-                                                if let Some(name) = self.next_name() {
-                                                        self.rec_start(name.as_str());
+                                        busy = true;
+                                        match self.status {
+                                                AudioStatus::Recording { .. } => self.command(RecorderCommand::RecStop),
+                                                status => {
+                                                        if let AudioStatus::Playing { .. } = status {
+                                                                self.command(RecorderCommand::PlayStop);
+                                                        }
+                                                        if let Some(name) = self.next_name() {
+                                                                self.command(RecorderCommand::RecStart(name));
+                                                        }
                                                 }
                                         }
                                 }
                                 Event::Ui(UiAction::PlayToggle) => {
-                                        if self.play.is_some() {
-                                                self.play_stop();
-                                        } else if self.rec.is_some() {
-                                                info!("play: stop the recording first");
-                                        } else {
-                                                if self.last_name.is_none() {
-                                                        //   fresh boot: the newest take on the card is "last"
-                                                        self.scan_files();
-                                                }
-                                                match self.last_name {
-                                                        Some(p) => self.play_start(p.as_str()),
-                                                        None => info!("play: nothing recorded yet"),
+                                        busy = true;
+                                        match self.status {
+                                                AudioStatus::Playing { .. } => self.command(RecorderCommand::PlayStop),
+                                                AudioStatus::Recording { .. } => info!("play: stop the recording first"),
+                                                AudioStatus::Idle => {
+                                                        self.resolve_last();
+                                                        match self.last_name {
+                                                                Some(p) => self.command(RecorderCommand::PlayStart(p)),
+                                                                None => info!("play: nothing recorded yet"),
+                                                        }
                                                 }
                                         }
                                 }
-                                Event::Ui(UiAction::FilesOpen) => self.scan_files(),
-                                Event::Ui(UiAction::FilesNext) => self.page_files(true),
-                                Event::Ui(UiAction::FilesPrev) => self.page_files(false),
+                                Event::Ui(UiAction::FilesOpen) => {
+                                        busy = true;
+                                        self.scan_files();
+                                }
+                                Event::Ui(UiAction::FilesNext) => {
+                                        busy = true;
+                                        self.page_files(true);
+                                }
+                                Event::Ui(UiAction::FilesPrev) => {
+                                        busy = true;
+                                        self.page_files(false);
+                                }
                                 Event::Ui(UiAction::PlayRow(i)) => {
                                         if let Some(p) = self.picker.name(usize::from(i)).and_then(FsPath::new) {
-                                                if self.rec.is_some() {
-                                                        info!("play: stop the recording first");
-                                                } else {
-                                                        if self.play.is_some() {
-                                                                self.play_stop();
+                                                match self.status {
+                                                        AudioStatus::Recording { .. } => info!("play: stop the recording first"),
+                                                        status => {
+                                                                if let AudioStatus::Playing { .. } = status {
+                                                                        self.command(RecorderCommand::PlayStop);
+                                                                }
+                                                                self.command(RecorderCommand::PlayStart(p));
+                                                                self.last_name = Some(p);
                                                         }
-                                                        self.play_start(p.as_str());
-                                                        self.last_name = Some(p);
                                                 }
                                         }
                                 }
                                 Event::Command(Command::Fs { op, path, arg }) => {
+                                        busy = true;
                                         light_fs::console::run(&mut self.store, op, path.as_str(), arg.as_str());
-                                }
-                                Event::Command(Command::RecStatus) => {
-                                        match self.rec.as_ref() {
-                                                Some(r) => info!("rec: recording, {} B so far, {} overruns", r.file.size(), self.stream.cap_overruns()),
-                                                None => info!("rec: idle"),
-                                        };
-                                }
-                                Event::Command(Command::PlayStart(path)) => {
-                                        let path = path;
-                                        self.play_start(path.as_str());
-                                }
-                                Event::Command(Command::Synth) => {
-                                        //   write a clean 2 s 440 Hz sine to SINE.WAV via the
-                                        // ordinary fs path, so `play SINE.WAV` exercises the
-                                        // file-playback chain with a KNOWN-good signal --
-                                        // splitting "playback broken" from "recording bad"
-                                        match self.mount() {
-                                                Some(mut fs) => {
-                                                        let _ = fs.remove("SINE.WAV");
-                                                        match fs.create("SINE.WAV") {
-                                                                Ok(mut f) => {
-                                                                        let samples = self.sample_hz * 2; // 2 s
-                                                                        let _ = f.write(&mut fs, &wav_header(self.sample_hz, samples * 2));
-                                                                        let inc = ((440u64 << 32) / u64::from(self.sample_hz)) as u32;
-                                                                        let mut phase = 0u32;
-                                                                        //   960-byte chunks (480 samples) off the stack -- small
-                                                                        let mut chunk = [0u8; 960];
-                                                                        let mut written = 0u32;
-                                                                        let mut ok = true;
-                                                                        while written < samples && ok {
-                                                                                let n = ((samples - written) as usize).min(480);
-                                                                                for s in 0..n {
-                                                                                        let v = SINE[(phase >> 27) as usize];
-                                                                                        chunk[s * 2..s * 2 + 2].copy_from_slice(&v.to_le_bytes());
-                                                                                        phase = phase.wrapping_add(inc);
-                                                                                }
-                                                                                ok = f.write(&mut fs, &chunk[..n * 2]).is_ok();
-                                                                                written += n as u32;
-                                                                        }
-                                                                        info!("synth: SINE.WAV written ({} samples) -- play it", written);
-                                                                }
-                                                                Err(e) => info!("synth: create failed: {e:?}"),
-                                                        }
-                                                }
-                                                None => info!("synth: no card"),
-                                        }
-                                }
-                                Event::Command(Command::MicMon(on)) => {
-                                        //   enable the mic, route ADC->DAC, unmute and drive
-                                        // the speaker: the analog front end, alone
-                                        let r = if on {
-                                                self.codec.mic_enable().and_then(|()| self.codec.set_adc_to_dac(true)).and_then(|()| self.codec.mute(false))
-                                        } else {
-                                                self.codec.set_adc_to_dac(false)
-                                        };
-                                        //   on drives the speaker regardless; off ends only the
-                                        // loopback, and the amplifier returns to rest (on)
-                                        if on {
-                                                self.pa.set(true);
-                                        } else {
-                                                self.amp_rest();
-                                        }
-                                        match r {
-                                                Ok(()) => info!("micmon {}: talk near the board", if on { "on -- speaker carries the mic" } else { "off" }),
-                                                Err(e) => warn!("micmon failed: {e:?}"),
-                                        }
-                                }
-                                Event::Command(Command::MicDbg) => {
-                                        //   enable the mic, then let the port probe its own
-                                        // capture path (speaker muted, NO loopback -- cannot
-                                        // feed back). Splits "mic line dead" from "transport
-                                        // misreads a toggling line"
-                                        self.pa.set(false);
-                                        let _ = self.codec.set_adc_to_dac(false);
-                                        for _ in 0..3 {
-                                                if self.codec.mic_enable().is_ok() {
-                                                        break;
-                                                }
-                                        }
-                                        self.stream.debug_probe();
-                                        self.amp_rest();
-                                }
-                                Event::Command(Command::PlayStop) => self.play_stop(),
-                                Event::Command(Command::PlayStatus) => {
-                                        match self.play.as_ref() {
-                                                Some(p) => info!("play: at {} of {} B", p.file.pos(), p.data_end),
-                                                None => info!("play: idle"),
-                                        };
-                                }
-                                Event::Command(Command::Stats) => {
-                                        //   reset on read, so each reading covers the interval
-                                        // since the last -- a cumulative count here spent a
-                                        // debugging session being misread as per-playback
-                                        info!("audio: {} stream underruns, {} capture overruns; max poll gap {} us", self.stream.underruns(), self.stream.cap_overruns(), self.poll_gap_max_us);
-                                        self.stream.reset_stats();
-                                        self.poll_gap_max_us = 0;
                                 }
                                 _ => {}
                         }
                 }
-                //   drain the capture ring into the file; an I/O failure ends the take
-                let mut failed = false;
-                if let Some(rec) = self.rec.as_mut() {
-                        let file = &mut rec.file;
-                        let fs = &mut rec.fs;
-                        let mut err: Option<FsError> = None;
-                        self.stream.capture_take(&mut |buf| {
-                                if err.is_some() {
-                                        return;
-                                }
-                                // SAFETY: a u16 slice viewed as its little-endian bytes --
-                                // exactly WAV's PCM order
-                                let bytes = unsafe { core::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 2) };
-                                if let Err(e) = file.write(fs, bytes) {
-                                        err = Some(e);
-                                }
-                        });
-                        if let Some(e) = err {
-                                warn!("rec: write failed ({e:?}); stopping");
-                                failed = true;
-                        }
-                } else if self.rec_null {
-                        //   the bisect sink: drain and discard, no card in the path
-                        let n = &mut self.null_bytes;
-                        self.stream.capture_take(&mut |buf| *n += (buf.len() * 2) as u32);
-                }
-                if failed {
-                        self.rec_stop();
-                }
-                //   the length cap: a take stops itself at MAX_REC_SECS. Checked here, right
-                // after the drain, so the file size the elapsed seconds are read from already
-                // includes this poll's captured bytes. rec_stop patches the header and clears
-                // the take, and the publish-on-change at the end of poll flips the UI to idle
-                if let Some(rec) = self.rec.as_ref() {
-                        let secs = rec.file.size().saturating_sub(44) / (self.sample_hz * 2);
-                        if secs >= MAX_REC_SECS {
-                                info!("rec: reached the {}s cap -- stopping", MAX_REC_SECS);
-                                self.rec_stop();
-                        }
-                }
-                let playing = self.remaining > 0 || self.rec.is_some() || self.rec_null || self.play.is_some();
-                if self.play.is_some() {
-                        //   a file plays: top the IRQ-drained prefetch ring up toward full off
-                        // the card. The IRQ copies the ring into the DMA buffers on its own, so
-                        // a blocked poll (a slow card read right here) spends the ring's lead,
-                        // not the codec's deadline. Card bytes convert to one output WORD per
-                        // frame, the 16-bit sample in both slots; `channels * 2` bytes advance a
-                        // frame (stereo's left channel is what plays).
-                        self.stream.set_active(true);
-                        let stream = &mut self.stream;
-                        let play = self.play.as_mut().expect("play present");
-                        let scratch = &mut *self.play_stage;
-                        let fs = &mut play.fs;
-                        let file = &mut play.file;
-                        let data_end = play.data_end;
-                        let stride = usize::from(play.channels) * 2;
-                        let mut failed = false;
-                        while stream.stream_free() > 0 {
-                                let mut produced = 0usize;
-                                stream.stream_push(&mut |dst| {
-                                        //   frame-aligned card read into the scratch, then convert;
-                                        // the scratch bounds one push, the outer loop tops up the rest
-                                        let want_words = dst.len().min(scratch.len() / stride);
-                                        let remaining = data_end.saturating_sub(file.pos()) as usize;
-                                        let want_bytes = (want_words * stride).min(remaining - remaining % stride);
-                                        if want_bytes == 0 {
-                                                return 0;
-                                        }
-                                        let mut got = 0;
-                                        while got < want_bytes {
-                                                match file.read(fs, &mut scratch[got..want_bytes]) {
-                                                        Ok(0) => break,
-                                                        Ok(n) => got += n,
-                                                        Err(_) => {
-                                                                failed = true;
-                                                                break;
-                                                        }
-                                                }
-                                        }
-                                        let frames = got / stride;
-                                        for f in 0..frames {
-                                                let b = f * stride;
-                                                let sample = i16::from_le_bytes([scratch[b], scratch[b + 1]]);
-                                                let s = u32::from(sample as u16);
-                                                dst[f] = s << 16 | s;
-                                        }
-                                        produced = frames;
-                                        frames
-                                });
-                                if failed || produced == 0 {
-                                        break;
-                                }
-                        }
-                        //   done producing when the data chunk is spent; finish only once the
-                        // ring has also drained, so the tail is not cut off. A card error ends
-                        // it at once. Clearing the ring drops any queued tail to silence.
-                        let exhausted = self.play.as_ref().map(|p| p.file.pos() >= p.data_end).unwrap_or(true);
-                        if failed {
-                                warn!("play: read failed; stopping");
-                                self.stream.stream_clear();
-                                self.stream.set_active(false);
-                                *self.play = None;
-                        } else if exhausted && self.stream.stream_pending() == 0 {
-                                info!("play: finished");
-                                self.stream.set_active(false);
-                                *self.play = None;
-                        }
-                } else if self.remaining > 0 {
-                        //   the test tone: synthesise sine straight into the ring, one word per
-                        // frame, capped at the frames left so the tone runs its exact length
-                        self.stream.set_active(true);
-                        let stream = &mut self.stream;
-                        let phase = &mut self.phase;
-                        let inc = self.phase_inc;
-                        let remaining = &mut self.remaining;
-                        while stream.stream_free() > 0 && *remaining > 0 {
-                                let mut produced = 0usize;
-                                stream.stream_push(&mut |dst| {
-                                        let n = dst.len().min(*remaining as usize);
-                                        for slot in dst[..n].iter_mut() {
-                                                let s = u32::from(SINE[(*phase >> 27) as usize] as u16);
-                                                *slot = s << 16 | s;
-                                                *phase = phase.wrapping_add(inc);
-                                        }
-                                        *remaining -= n as u32;
-                                        produced = n;
-                                        n
-                                });
-                                if produced == 0 {
-                                        break;
-                                }
-                        }
-                } else {
-                        //   idle (or recording): nothing to play. The ring drains to silence and
-                        // underrun accounting is gated off, so that is not counted as starvation.
-                        self.stream.set_active(false);
-                }
-                //   publish-on-change: the elapsed second is part of the status value, so a
-                // live take announces itself once a second and transitions announce at once
-                let s = self.status();
-                if s != self.last_status {
-                        self.last_status = s;
-                        let _ = self.bus.publish(Event::Status(s));
-                }
-                if playing { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                self.pa.set(false);
+                if busy { Poll::Busy } else { Poll::Idle }
         }
 }
 
@@ -1583,26 +957,17 @@ pub fn parse_stats<X: Copy>(_w: &mut Words) -> Parsed<Event<X>> {
         Parsed::Event(Event::Command(Command::Stats))
 }
 
+/// A recorder command as this application's event.
+fn audio<X: Copy>(c: RecorderCommand) -> Event<X> {
+        Event::Command(Command::Audio(c))
+}
+
 pub fn parse_play<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
-        match w.next() {
-                None => Parsed::Event(Event::Command(Command::PlayStatus)),
-                Some("stop") => Parsed::Event(Event::Command(Command::PlayStop)),
-                Some(name) => match FsPath::new(name) {
-                        Some(p) => Parsed::Event(Event::Command(Command::PlayStart(p))),
-                        None => Parsed::Usage,
-                },
-        }
+        recorder_console::wrap(recorder_console::play(w), audio)
 }
 
 pub fn parse_rec<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
-        match w.next() {
-                None => Parsed::Event(Event::Command(Command::RecStatus)),
-                Some("stop") => Parsed::Event(Event::Command(Command::RecStop)),
-                Some(name) => match FsPath::new(name) {
-                        Some(p) => Parsed::Event(Event::Command(Command::RecStart(p))),
-                        None => Parsed::Usage,
-                },
-        }
+        recorder_console::wrap(recorder_console::rec(w), audio)
 }
 
 pub fn parse_fs<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
@@ -1656,54 +1021,27 @@ pub fn parse_render<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
 }
 
 pub fn parse_tone<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
-        match w.next() {
-                Some("off") => Parsed::Event(Event::Command(Command::ToneOff)),
-                Some(hz) => {
-                        let Ok(hz) = hz.parse::<u16>() else { return Parsed::Usage };
-                        if !(20..=10_000).contains(&hz) {
-                                return Parsed::Usage;
-                        }
-                        let ms = match w.next() {
-                                None => 500,
-                                Some(ms) => match ms.parse::<u16>() {
-                                        Ok(ms) if ms > 0 => ms,
-                                        _ => return Parsed::Usage,
-                                },
-                        };
-                        Parsed::Event(Event::Command(Command::Tone { hz, ms }))
-                }
-                None => Parsed::Usage,
-        }
+        recorder_console::wrap(recorder_console::tone(w), audio)
 }
 
 pub fn parse_volume<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
-        match w.next().and_then(|s| s.parse::<u8>().ok()) {
-                Some(v) if v <= 100 => Parsed::Event(Event::Command(Command::Volume(v))),
-                _ => Parsed::Usage,
-        }
+        recorder_console::wrap(recorder_console::volume(w), audio)
 }
 
 pub fn parse_micmon<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
-        match w.next() {
-                Some("on") => Parsed::Event(Event::Command(Command::MicMon(true))),
-                Some("off") => Parsed::Event(Event::Command(Command::MicMon(false))),
-                _ => Parsed::Usage,
-        }
+        recorder_console::wrap(recorder_console::micmon(w), audio)
 }
 
 pub fn parse_micgain<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
-        match (w.next().and_then(|s| u8::from_str_radix(s, 16).ok()), w.next().and_then(|s| u8::from_str_radix(s, 16).ok())) {
-                (Some(r14), Some(r17)) => Parsed::Event(Event::Command(Command::MicGain { r14, r17 })),
-                _ => Parsed::Usage,
-        }
+        recorder_console::wrap(recorder_console::micgain(w), audio)
 }
 
-pub fn parse_micdbg<X: Copy>(_w: &mut Words) -> Parsed<Event<X>> {
-        Parsed::Event(Event::Command(Command::MicDbg))
+pub fn parse_micdbg<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
+        recorder_console::wrap(recorder_console::micdbg(w), audio)
 }
 
-pub fn parse_synth<X: Copy>(_w: &mut Words) -> Parsed<Event<X>> {
-        Parsed::Event(Event::Command(Command::Synth))
+pub fn parse_synth<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
+        recorder_console::wrap(recorder_console::synth(w), audio)
 }
 
 //   the command-row type, for the dictaphone_commands! expansion
@@ -1717,15 +1055,15 @@ macro_rules! dictaphone_commands {
         ($ext:ty $(; $($extra:expr),* $(,)?)?) => {
                 [
                         $crate::DictCliRow { name: "stats", usage: "stats", parse: $crate::parse_stats::<$ext> },
-                        $crate::DictCliRow { name: "tone", usage: "tone HZ [MS] | tone off", parse: $crate::parse_tone::<$ext> },
-                        $crate::DictCliRow { name: "volume", usage: "volume 0..100", parse: $crate::parse_volume::<$ext> },
+                        $crate::DictCliRow { name: "tone", usage: $crate::recorder_console::TONE_USAGE, parse: $crate::parse_tone::<$ext> },
+                        $crate::DictCliRow { name: "volume", usage: $crate::recorder_console::VOLUME_USAGE, parse: $crate::parse_volume::<$ext> },
                         $crate::DictCliRow { name: "fs", usage: $crate::FS_USAGE, parse: $crate::parse_fs::<$ext> },
-                        $crate::DictCliRow { name: "rec", usage: "rec NAME.WAV | rec stop | rec", parse: $crate::parse_rec::<$ext> },
-                        $crate::DictCliRow { name: "play", usage: "play NAME.WAV | play stop | play", parse: $crate::parse_play::<$ext> },
-                        $crate::DictCliRow { name: "micmon", usage: "micmon on|off", parse: $crate::parse_micmon::<$ext> },
+                        $crate::DictCliRow { name: "rec", usage: $crate::recorder_console::REC_USAGE, parse: $crate::parse_rec::<$ext> },
+                        $crate::DictCliRow { name: "play", usage: $crate::recorder_console::PLAY_USAGE, parse: $crate::parse_play::<$ext> },
+                        $crate::DictCliRow { name: "micmon", usage: $crate::recorder_console::MICMON_USAGE, parse: $crate::parse_micmon::<$ext> },
                         $crate::DictCliRow { name: "micdbg", usage: "micdbg", parse: $crate::parse_micdbg::<$ext> },
                         $crate::DictCliRow { name: "synth", usage: "synth", parse: $crate::parse_synth::<$ext> },
-                        $crate::DictCliRow { name: "micgain", usage: "micgain R14HEX R17HEX (e.g. micgain 17 DF)", parse: $crate::parse_micgain::<$ext> },
+                        $crate::DictCliRow { name: "micgain", usage: $crate::recorder_console::MICGAIN_USAGE, parse: $crate::parse_micgain::<$ext> },
                         $crate::DictCliRow { name: "backlight", usage: "backlight 0..1000", parse: $crate::parse_backlight::<$ext> },
                         $crate::DictCliRow { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: $crate::parse_ui::<$ext> },
                         $crate::DictCliRow { name: "touch", usage: "touch hold|free", parse: $crate::parse_touch::<$ext> },

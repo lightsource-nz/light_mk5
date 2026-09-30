@@ -24,6 +24,7 @@ members = [
         "crates/light-power-manager",
         "crates/light-wireless",
         "crates/light-net",
+        "crates/light-recorder",
         "crates/light-rtc",
         "crates/light-sd",
         "crates/light-fs",

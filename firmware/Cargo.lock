@@ -740,6 +740,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-recorder"
+version = "0.1.0"
+dependencies = [
+ "light-audio",
+ "light-core",
+ "light-fs",
+]
+
+[[package]]
 name = "light-rp2"
 version = "0.1.0"
 dependencies = [
@@ -1026,13 +1035,13 @@ dependencies = [
 name = "light_dictaphone_core"
 version = "0.1.0"
 dependencies = [
- "light-audio",
  "light-core",
  "light-display",
  "light-draw",
  "light-font",
  "light-fs",
  "light-input",
+ "light-recorder",
  "light-ui",
  "light_ui_components",
 ]

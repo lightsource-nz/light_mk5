@@ -8,7 +8,7 @@
 
 use core::cell::RefCell;
 use light_dictaphone_core as dict;
-use dict::{dictaphone_commands, keep_recording, AudioSlots, AudioStatus, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order};
+use dict::{dictaphone_commands, keep_recording, AudioStatus, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, RecorderConfig, RecorderSlots};
 use light_audio::Es8311;
 use light_board_touch35::{board, Pmic, Touch35Power};
 use board::*;
@@ -91,7 +91,7 @@ fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
         }
 }
 
-static EVENTS: EventBus<AppEvent, 16, 8> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 16, 9> = EventBus::new();
 
 const FPS: u32 = 30;
 
@@ -207,27 +207,32 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         // transport's IRQ-drained prefetch ring
         static STAGE: ConstStaticCell<[u8; 2048]> = ConstStaticCell::new([0; 2048]);
         static PICKER: ConstStaticCell<FilePicker<{ dict::LIST_ROWS }>> = ConstStaticCell::new(FilePicker::new(Order::NameDescending, keep_recording));
-        let mut audio_mod = dict::AudioMod::new(
+        let mut recorder = dict::Recorder::new(
                 Es8311::new(i2c),
                 I2sStream::new(p.i2s),
                 p.amp_en,
                 SysClock,
                 SdStore { card, clock: SysClock },
-                AUDIO_SAMPLE_HZ,
-                //   the codec's mic gain, MEASURED on this board: the 3.49's tuning (PGA 0x17, digital
-                // 0xE3) put normal speech peaks at ~19% of full scale here, and +6 dB digital (0xEF)
-                // brings them to ~44% -- the same target the 3.49 was tuned to. Retune digitally, in
-                // REG17 only: the analog field's encoding is not linear
-                (0x17, 0xEF),
-                AudioSlots {
+                RecorderConfig {
+                        sample_hz: AUDIO_SAMPLE_HZ,
+                        //   the codec's mic gain, MEASURED on this board: the 3.49's tuning (PGA 0x17,
+                        // digital 0xE3) put normal speech peaks at ~19% of full scale here, and +6 dB
+                        // digital (0xEF) brings them to ~44% -- the same target the 3.49 was tuned
+                        // to. Retune digitally, in REG17 only: the analog field's encoding is not
+                        // linear
+                        mic_gain: (0x17, 0xEF),
+                        volume: 78,
+                },
+                RecorderSlots {
                         // SAFETY: the one take of each slot, on the application core
                         rec: unsafe { REC_SLOT.take() },
                         play: unsafe { PLAY_SLOT.take() },
                         play_stage: STAGE.take(),
-                        picker: PICKER.take(),
                 },
                 &EVENTS,
+                dict::recorder_events::<Ext>(),
         );
+        let mut files_mod = dict::FilesMod::new(SdStore { card, clock: SysClock }, PICKER.take(), &EVENTS);
 
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, { dict::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
@@ -267,14 +272,15 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, dict::touch_reads_held));
         let mut console_mod = dict::ConsoleMod::new(&CLI, &EVENTS);
 
-        let mut rt: Runtime<8> = Runtime::new();
+        let mut rt: Runtime<9> = Runtime::new();
         rt.add(&mut power_mod).expect("capacity");
         rt.add(&mut board_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");
         rt.add(&mut rtc_mod).expect("capacity");
-        rt.add(&mut audio_mod).expect("capacity");
+        rt.add(&mut recorder).expect("capacity");
+        rt.add(&mut files_mod).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; type 'help' on the console");

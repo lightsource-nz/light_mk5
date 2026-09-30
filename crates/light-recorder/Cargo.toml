@@ -1,0 +1,11 @@
+[package]
+name = "light-recorder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A card recorder and player for the light framework: WAV capture and playback over a codec, a sample transport and a Store, as a runtime module any application wires to its own events"
+
+[dependencies]
+light-core = { path = "../light-core" }
+light-audio = { path = "../light-audio" }
+light-fs = { path = "../light-fs" }

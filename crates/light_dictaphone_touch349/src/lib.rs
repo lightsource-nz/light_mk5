@@ -11,7 +11,7 @@
 
 use core::cell::RefCell;
 use light_dictaphone_core as dict;
-use dict::{dictaphone_commands, keep_recording, AudioSlots, AudioStatus, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order};
+use dict::{dictaphone_commands, keep_recording, AudioStatus, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, RecorderConfig, RecorderSlots};
 use light_input::drivers::axs15231b::Axs15231bTouch;
 use light_input::imu::{Imu, Orientation};
 use light_input::drivers::qmi8658::Qmi8658;
@@ -127,7 +127,7 @@ fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
         }
 }
 
-static EVENTS: EventBus<AppEvent, 16, 8> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 16, 9> = EventBus::new();
 
 //   Bar glass, corners unmeasured: the theme's screen_radius keeps its default of 0
 // until the glass says otherwise.
@@ -250,29 +250,35 @@ pub fn run(info: &ShellInfo, cfg: RunConfig) -> ! {
         // is the transport's IRQ-drained prefetch ring (see I2sStream::start), not this
         static STAGE: ConstStaticCell<[u8; 2048]> = ConstStaticCell::new([0; 2048]);
         static PICKER: ConstStaticCell<FilePicker<{ dict::LIST_ROWS }>> = ConstStaticCell::new(FilePicker::new(Order::NameDescending, keep_recording));
-        let mut audio_mod = dict::AudioMod::new(
+        let mut recorder = dict::Recorder::new(
                 Es8311::new(imu_i2c),
                 I2sStream::new(p.i2s),
                 p.audio_pa,
                 SysClock,
                 SdStore { card: sd, clock: SysClock },
-                AUDIO_SAMPLE_HZ,
-                //   tuned on the glass: PGA code 7 with +18 dB digital puts normal speech
-                // peaks ~45% of full scale -- and a DELIBERATELY loud take measured at
-                // +2 dB more gain pinned full scale, so this is as hot as a recorder
-                // without a limiter should default. The analog field is treacherous --
-                // 0x17 -> 0x18 COLLAPSED the gain ~20 dB (the encoding is not linear);
-                // retune digitally, in REG17, only
-                (0x17, 0xE3),
-                AudioSlots {
+                RecorderConfig {
+                        sample_hz: AUDIO_SAMPLE_HZ,
+                        //   tuned on the glass: PGA code 7 with +18 dB digital puts normal speech
+                        // peaks ~45% of full scale -- and a DELIBERATELY loud take measured at
+                        // +2 dB more gain pinned full scale, so this is as hot as a recorder
+                        // without a limiter should default. The analog field is treacherous --
+                        // 0x17 -> 0x18 COLLAPSED the gain ~20 dB (the encoding is not linear);
+                        // retune digitally, in REG17, only
+                        mic_gain: (0x17, 0xE3),
+                        //   85 audibly overdrove the little speaker on healthy-level takes, 70 was
+                        // near-inaudible (the register is ~0.5 dB per step of the 0..100 scale)
+                        volume: 78,
+                },
+                RecorderSlots {
                         // SAFETY: the one take of each slot, on the application core
                         rec: unsafe { REC_SLOT.take() },
                         play: unsafe { PLAY_SLOT.take() },
                         play_stage: STAGE.take(),
-                        picker: PICKER.take(),
                 },
                 &EVENTS,
+                dict::recorder_events::<Ext>(),
         );
+        let mut files_mod = dict::FilesMod::new(SdStore { card: sd, clock: SysClock }, PICKER.take(), &EVENTS);
 
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, { dict::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
@@ -318,14 +324,15 @@ pub fn run(info: &ShellInfo, cfg: RunConfig) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, dict::touch_reads_held));
         let mut console_mod = dict::ConsoleMod::new(&CLI, &EVENTS);
 
-        let mut rt: Runtime<8> = Runtime::new();
+        let mut rt: Runtime<9> = Runtime::new();
         rt.add(&mut power_mod).expect("capacity");
         rt.add(&mut board_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");
         rt.add(&mut rtc_mod).expect("capacity");
-        rt.add(&mut audio_mod).expect("capacity");
+        rt.add(&mut recorder).expect("capacity");
+        rt.add(&mut files_mod).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; type 'help' on the console");

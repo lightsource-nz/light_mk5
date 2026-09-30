@@ -3,7 +3,7 @@ name = "light_dictaphone_core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "the dictaphone's engine: WAV capture and playback over a FAT card, the event vocabulary, the console, and the display-driving machinery -- everything but the page layout, which a UI crate supplies"
+description = "the dictaphone application over light-recorder: the event vocabulary, the recordings list and naming, the console, and the display-driving machinery -- everything but the page layout, which a UI crate supplies"
 
 [dependencies]
 light-core = { path = "../light-core" }
@@ -14,4 +14,4 @@ light-input = { path = "../light-input" }
 light-ui = { path = "../light-ui" }
 light_ui_components = { path = "../light_ui_components" }
 light-fs = { path = "../light-fs" }
-light-audio = { path = "../light-audio" }
+light-recorder = { path = "../light-recorder" }
