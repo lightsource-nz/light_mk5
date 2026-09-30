@@ -28,8 +28,9 @@ use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a, RtcMod};
+use light_fs::console::{FsOp, FsPath};
 use light_fs::{Fat, File as FsFile, FsError};
-use light_sd::{SdError, SpiSd};
+use light_sd::SpiSd;
 use light_board_touch349::{board, Touch349Power};
 use light_power_manager::PowerMod;
 use light_input::{ImuMod, TouchMod};
@@ -73,29 +74,8 @@ fn psram_test(size: u32) -> (u32, u32) {
         (checked, bad)
 }
 
-/// The TF slot as a SHAREABLE block device: a borrow of the board's one card, taken per
-/// block operation -- which is what lets the `fs` console commands and a live recording's
-/// mounted volume coexist on one `SpiSd`.
-struct SdRef(&'static RefCell<SpiSd<Spi1Bus, Output>>);
-
-fn sd_block_error(e: SdError) -> light_core::hal::BlockError {
-        match e {
-                SdError::Timeout => light_core::hal::BlockError::Timeout,
-                _ => light_core::hal::BlockError::Io,
-        }
-}
-
-impl light_core::hal::BlockDevice for SdRef {
-        fn block_count(&self) -> u32 {
-                self.0.borrow().card.map(|c| c.blocks).unwrap_or(0)
-        }
-        fn read_block(&mut self, lba: u32, out: &mut [u8; 512]) -> Result<(), light_core::hal::BlockError> {
-                self.0.borrow_mut().read_block(lba, out).map_err(sd_block_error)
-        }
-        fn write_block(&mut self, lba: u32, data: &[u8; 512]) -> Result<(), light_core::hal::BlockError> {
-                self.0.borrow_mut().write_block(lba, data).map_err(sd_block_error)
-        }
-}
+/// The TF slot as a shareable block device: the board's one card, borrowed per block operation.
+type SdRef = light_sd::SharedCard<'static, Spi1Bus, Output>;
 
 /// A single-slot .bss home for a card-borrowing state machine (a [`Recording`], a
 /// [`Playback`]) -- NOT core 0's 4 KB SCRATCH_Y stack, where a ~1.2 KB Recording inline
@@ -128,143 +108,6 @@ fn wav_header(sample_hz: u32, data_len: u32) -> [u8; 44] {
         h[36..40].copy_from_slice(b"data");
         h[40..44].copy_from_slice(&data_len.to_le_bytes());
         h
-}
-
-/// One `fs` console command against the TF slot: init the card if this is the first
-/// touch since insertion, mount the volume OVER a borrow of the device (the blanket
-/// `BlockDevice for &mut T` -- the board keeps the card), act, unmount by drop.
-fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str, arg: &str) {
-        if sd.card.is_none() {
-                let mut clock = SysClock;
-                if let Err(e) = sd.init(&mut clock) {
-                        info!("fs: no card ({e:?})");
-                        return;
-                }
-        }
-        let mut fs = match Fat::mount(&mut *sd) {
-                Ok(fs) => fs,
-                Err(e) => {
-                        info!("fs: mount failed: {e:?}");
-                        //   an I/O failure may be a pulled or swapped card: forget the
-                        // init so the next command starts from CMD0
-                        if matches!(e, FsError::Io(_)) {
-                                sd.card = None;
-                        }
-                        return;
-                }
-        };
-        match op {
-                FsOp::Info => {
-                        let v = fs.volume_info();
-                        info!("fs: {}, {} clusters of {} bytes", if v.fat32 { "FAT32" } else { "FAT16" }, v.cluster_count, v.bytes_per_cluster);
-                }
-                FsOp::Ls => {
-                        let mut count = 0u32;
-                        let r = fs.list_dir(path, |e| {
-                                count += 1;
-                                match (e.is_dir, e.long_name()) {
-                                        (true, Some(l)) => info!("  {}/  <{}>", e.name(), l),
-                                        (true, None) => info!("  {}/", e.name()),
-                                        (false, Some(l)) => info!("  {}  {} B  <{}>", e.name(), e.size, l),
-                                        (false, None) => info!("  {}  {} B", e.name(), e.size),
-                                }
-                        });
-                        match r {
-                                Ok(()) => info!("fs: {count} entries"),
-                                Err(e) => info!("fs: ls failed: {e:?}"),
-                        }
-                }
-                FsOp::Write => {
-                        //   create, or append when it already exists: `fs write LOG.TXT hello`
-                        // twice is a two-line file
-                        let mut f = match fs.create(path) {
-                                Ok(f) => f,
-                                Err(FsError::Exists) => match fs.append(path) {
-                                        Ok(f) => f,
-                                        Err(e) => {
-                                                info!("fs: append failed: {e:?}");
-                                                return;
-                                        }
-                                },
-                                Err(e) => {
-                                        info!("fs: create failed: {e:?}");
-                                        return;
-                                }
-                        };
-                        let mut data = [0u8; 49];
-                        let n = arg.len().min(48);
-                        data[..n].copy_from_slice(&arg.as_bytes()[..n]);
-                        data[n] = b'\n';
-                        match f.write(&mut fs, &data[..n + 1]) {
-                                Ok(w) => info!("fs: wrote {} B; {} is now {} B", w, path, f.size()),
-                                Err(e) => info!("fs: write failed: {e:?}"),
-                        }
-                }
-                FsOp::Rm => {
-                        //   files and (empty) directories both; the entry decides
-                        let r = match fs.stat(path) {
-                                Ok(e) if e.is_dir => fs.rmdir(path),
-                                Ok(_) => fs.remove(path),
-                                Err(e) => Err(e),
-                        };
-                        match r {
-                                Ok(()) => info!("fs: removed {}", path),
-                                Err(e) => info!("fs: rm failed: {e:?}"),
-                        }
-                }
-                FsOp::Mv => match fs.rename(path, arg) {
-                        Ok(()) => info!("fs: {} -> {}", path, arg),
-                        Err(e) => info!("fs: mv failed: {e:?}"),
-                },
-                FsOp::Mkdir => match fs.mkdir(path) {
-                        Ok(()) => info!("fs: created {}/", path),
-                        Err(e) => info!("fs: mkdir failed: {e:?}"),
-                },
-                FsOp::Hex => match (arg.parse::<u32>(), fs.open(path)) {
-                        (Ok(off), Ok(mut f)) => {
-                                //   16 samples as signed decimals: the shape of captured
-                                // audio at a glance -- small around zero, rail-to-rail, or
-                                // stuck
-                                let mut b = [0u8; 32];
-                                let r = f.seek(&mut fs, off).and_then(|()| f.read(&mut fs, &mut b));
-                                match r {
-                                        Ok(n) => {
-                                                let mut line = [0i16; 16];
-                                                for i in 0..n / 2 {
-                                                        line[i] = i16::from_le_bytes([b[i * 2], b[i * 2 + 1]]);
-                                                }
-                                                info!("fs: {}@{}: {:?}", path, off, &line[..n / 2]);
-                                        }
-                                        Err(e) => info!("fs: hex failed: {e:?}"),
-                                }
-                        }
-                        _ => info!("fs: hex needs PATH and a byte offset"),
-                },
-                FsOp::Trunc => match arg.parse::<u32>() {
-                        Ok(len) => match fs.open(path) {
-                                Ok(mut f) => match f.truncate(&mut fs, len) {
-                                        Ok(()) => info!("fs: {} is now {} B", path, f.size()),
-                                        Err(e) => info!("fs: trunc failed: {e:?}"),
-                                },
-                                Err(e) => info!("fs: open failed: {e:?}"),
-                        },
-                        Err(_) => info!("fs: trunc needs a byte count"),
-                },
-                FsOp::Cat => match fs.open(path) {
-                        Ok(mut f) => {
-                                //   a peek, not a pager: the first 120 bytes, as text
-                                let mut buf = [0u8; 120];
-                                match f.read(&mut fs, &mut buf) {
-                                        Ok(n) => {
-                                                let text = core::str::from_utf8(&buf[..n]).unwrap_or("<binary>");
-                                                info!("fs: {} ({} B): {}", path, f.size(), text);
-                                        }
-                                        Err(e) => info!("fs: read failed: {e:?}"),
-                                }
-                        }
-                        Err(e) => info!("fs: open failed: {e:?}"),
-                },
-        }
 }
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -336,41 +179,6 @@ fn rtc_get_set(e: &AppEvent) -> Option<Datetime> {
                 Some(*t)
         } else {
                 None
-        }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FsOp {
-        Info,
-        Ls,
-        Cat,
-        Write,
-        Rm,
-        Mv,
-        Mkdir,
-        Trunc,
-        Hex,
-}
-
-/// A path argument small enough to ride the event bus by value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FsPath {
-        buf: [u8; 48],
-        len: u8,
-}
-
-impl FsPath {
-        fn new(s: &str) -> Option<Self> {
-                if s.len() > 48 {
-                        return None;
-                }
-                let mut buf = [0u8; 48];
-                buf[..s.len()].copy_from_slice(s.as_bytes());
-                Some(Self { buf, len: s.len() as u8 })
-        }
-
-        fn as_str(&self) -> &str {
-                core::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or("")
         }
 }
 
@@ -520,7 +328,7 @@ impl AudioMod {
                         }
                 }
                 info!("rec: card up");
-                let mut fs = match Fat::mount(SdRef(self.sd)) {
+                let mut fs = match Fat::mount(light_sd::SharedCard(self.sd)) {
                         Ok(fs) => fs,
                         Err(e) => {
                                 info!("rec: mount failed: {e:?}");
@@ -611,7 +419,7 @@ impl AudioMod {
                                 }
                         }
                 }
-                let mut fs = match Fat::mount(SdRef(self.sd)) {
+                let mut fs = match Fat::mount(light_sd::SharedCard(self.sd)) {
                         Ok(fs) => fs,
                         Err(e) => {
                                 info!("play: mount failed: {e:?}");
@@ -758,7 +566,7 @@ impl Module for AudioMod {
                                                 let mut clock = SysClock;
                                                 let _ = self.sd.borrow_mut().init(&mut clock);
                                         }
-                                        match Fat::mount(SdRef(self.sd)) {
+                                        match Fat::mount(light_sd::SharedCard(self.sd)) {
                                                 Ok(mut fs) => {
                                                         let _ = fs.remove("SINE.WAV");
                                                         match fs.create("SINE.WAV") {
@@ -997,27 +805,12 @@ impl Module for BoardMod {
                                 }
                                 AppEvent::Ext(Ext::Sd) => {
                                         busy = true;
-                                        let mut clock = SysClock;
-                                        let mut sd = self.sd.borrow_mut();
-                                        match sd.init(&mut clock) {
-                                                Ok(card) => {
-                                                        let mb = card.blocks / 2048;
-                                                        let kind = if card.high_capacity { "SDHC/XC" } else { "SDSC" };
-                                                        let mut block = [0u8; 512];
-                                                        match sd.read_block(0, &mut block) {
-                                                                Ok(()) => {
-                                                                        let sig = block[510] == 0x55 && block[511] == 0xAA;
-                                                                        info!("sd: {mb} MB {kind} ({} blocks); block 0 read, boot signature {}", card.blocks, if sig { "present" } else { "absent" });
-                                                                }
-                                                                Err(e) => warn!("sd: {mb} MB {kind} identified but block 0 read failed: {e:?}"),
-                                                        }
-                                                }
-                                                Err(e) => info!("sd: {e:?}"),
-                                        }
+                                        light_sd::shared::report(&mut self.sd.borrow_mut(), &mut SysClock);
                                 }
                                 AppEvent::Ext(Ext::Fs { op, path, arg }) => {
                                         busy = true;
-                                        fs_command(&mut self.sd.borrow_mut(), op, path.as_str(), arg.as_str());
+                                        let mut store = light_sd::CardStore { card: self.sd, clock: SysClock };
+                                        light_fs::console::run(&mut store, op, path.as_str(), arg.as_str());
                                 }
                                 _ => {}
                         }
@@ -1049,30 +842,7 @@ fn parse_rec(w: &mut Words) -> Parsed<AppEvent> {
 }
 
 fn parse_fs(w: &mut Words) -> Parsed<AppEvent> {
-        let op = match w.next() {
-                Some("info") | None => FsOp::Info,
-                Some("ls") => FsOp::Ls,
-                Some("cat") => FsOp::Cat,
-                Some("write") => FsOp::Write,
-                Some("rm") => FsOp::Rm,
-                Some("mv") => FsOp::Mv,
-                Some("mkdir") => FsOp::Mkdir,
-                Some("trunc") => FsOp::Trunc,
-                Some("hex") => FsOp::Hex,
-                _ => return Parsed::Usage,
-        };
-        let path = w.next().unwrap_or("");
-        let arg = w.next().unwrap_or("");
-        if !matches!(op, FsOp::Info | FsOp::Ls) && path.is_empty() {
-                return Parsed::Usage;
-        }
-        if matches!(op, FsOp::Write | FsOp::Mv | FsOp::Trunc | FsOp::Hex) && arg.is_empty() {
-                return Parsed::Usage;
-        }
-        match (FsPath::new(path), FsPath::new(arg)) {
-                (Some(path), Some(arg)) => Parsed::Event(DemoEvent::Ext(Ext::Fs { op, path, arg })),
-                _ => Parsed::Usage,
-        }
+        light_fs::console::parse_command(w, |op, path, arg| DemoEvent::Ext(Ext::Fs { op, path, arg }))
 }
 
 fn parse_rtc(w: &mut Words) -> Parsed<AppEvent> {
@@ -1113,7 +883,7 @@ static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
         CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Psram)) },
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Sd)) },
-        CliCommand { name: "fs", usage: "fs info|ls [P]|cat P|write P TEXT|rm P|mv A B|mkdir P|trunc P N", parse: parse_fs },
+        CliCommand { name: "fs", usage: light_fs::console::USAGE, parse: parse_fs },
         CliCommand { name: "rec", usage: "rec NAME.WAV | rec stop | rec", parse: parse_rec },
         CliCommand { name: "play", usage: "play NAME.WAV | play stop | play", parse: parse_play },
         CliCommand { name: "micmon", usage: "micmon on|off", parse: |w| match w.next() { Some("on") => Parsed::Event(DemoEvent::Ext(Ext::MicMon(true))), Some("off") => Parsed::Event(DemoEvent::Ext(Ext::MicMon(false))), _ => Parsed::Usage } },

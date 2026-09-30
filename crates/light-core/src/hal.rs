@@ -309,6 +309,25 @@ impl<T: BlockDevice + ?Sized> BlockDevice for &mut T {
         }
 }
 
+/// Removable storage as its users see it: a medium that may need bringing up per insertion, and
+/// that hands a [`BlockDevice`] per mounted operation. The board owns the physical card and its
+/// bus; whoever mounts a volume owns only the volume. The medium's layer implements this and a
+/// filesystem's users consume it, so neither depends on the other.
+pub trait Store {
+        //   'static: a long-lived mounted volume (an open recording, say) sits in .bss, so the
+        // device it mounts over cannot borrow from the store's stack frame
+        type Dev: BlockDevice + 'static;
+
+        /// Ready the medium (bringing it up on first touch since insertion) and hand a device for
+        /// one mounted operation. `None` = no usable medium; the implementation logs the reason,
+        /// the caller logs the context.
+        fn open(&mut self) -> Option<Self::Dev>;
+
+        /// Forget a medium that failed mid-operation -- pulled or swapped, typically -- so the
+        /// next [`open`](Self::open) starts from power-up.
+        fn reset(&mut self);
+}
+
 /// Why an update could not be staged or started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpdateError {

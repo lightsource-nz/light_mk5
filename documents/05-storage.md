@@ -31,7 +31,20 @@ pub trait BlockDevice {
 }
 
 impl<T: BlockDevice + ?Sized> BlockDevice for &mut T { /* forwards */ }
+
+pub trait Store {
+    type Dev: BlockDevice + 'static;
+    fn open(&mut self) -> Option<Self::Dev>;
+    fn reset(&mut self);
+}
 ```
+
+`Store` is removable storage as its users see it: a medium that may need bringing up per insertion
+(`open` readies it on first touch and hands a device for one mounted operation, `None` for no usable
+medium) and that is forgotten when it fails mid-operation (`reset`, so the next `open` starts from
+power-up). The medium's layer implements it and a filesystem's users consume it, so it sits beside
+`BlockDevice` for the same reason. `Dev` is `'static` because a long-lived mounted volume lives in
+`.bss` and cannot borrow from the store's frame.
 
 ### Behaviour and invariants
 
@@ -57,8 +70,9 @@ impl<T: BlockDevice + ?Sized> BlockDevice for &mut T { /* forwards */ }
 
 ## `light-sd` — the SPI-mode block layer
 
-`light-sd` is a single module, `spi_card`, re-exporting `SpiSd`, `CardInfo` and `SdError`. It
-depends only on `light-core`.
+`light-sd` is two modules: `spi_card` (re-exporting `SpiSd`, `CardInfo` and `SdError`) and `shared`
+(re-exporting `SharedCard` and `CardStore`, plus the `report` probe). It depends only on
+`light-core`.
 
 ### Responsibility
 
@@ -85,6 +99,11 @@ impl<B: SpiBus, O: OutputPin> SpiSd<B, O> {
 }
 
 impl<B: SpiBus, O: OutputPin> BlockDevice for SpiSd<B, O> { /* ... */ }
+
+// shared: one card, several users (see "Sharing one block device", below)
+pub struct SharedCard<'a, B: SpiBus, O: OutputPin>(pub &'a RefCell<SpiSd<B, O>>);   // BlockDevice, Copy
+pub struct CardStore<B, O, C: Clock> { pub card: &'static RefCell<SpiSd<B, O>>, pub clock: C }   // Store
+pub fn report<B: SpiBus, O: OutputPin>(sd: &mut SpiSd<B, O>, clock: &mut dyn Clock);
 ```
 
 `SpiSd` is generic over the `SpiBus` and `OutputPin` traits of `light_core::hal`, so it holds its
@@ -186,7 +205,23 @@ impl File {
     pub fn truncate<D: BlockDevice>(&mut self, fs: &mut Fat<D>, len: u32) -> Result<(), FsError>;
     pub fn seek<D: BlockDevice>(&mut self, fs: &mut Fat<D>, pos: u32) -> Result<(), FsError>;
 }
+
+// console: the `fs` console command every board with a card shares
+pub enum FsOp { Info, Ls, Cat, Write, Rm, Mv, Mkdir, Trunc, Hex, Peak }
+pub struct FsPath { /* up to FsPath::MAX = 48 bytes, by value */ }
+pub const USAGE: &str;
+pub fn parse_command<E>(w: &mut Words, make: impl FnOnce(FsOp, FsPath, FsPath) -> E) -> Parsed<E>;
+pub fn run<S: Store>(store: &mut S, op: FsOp, path: &str, arg: &str);
+pub fn exec<D: BlockDevice>(fs: &mut Fat<D>, op: FsOp, path: &str, arg: &str);
 ```
+
+The `console` module is an inspection instrument: every operation reports on the log and returns
+nothing. The parse hands its operation and two by-value path arguments to a caller-supplied
+constructor, because the event they travel in lives in the application's own vocabulary. `run`
+readies the store, mounts, and calls `exec`; an I/O failure while mounting resets the store, since it
+may be a pulled or swapped card. `Hex` shows sixteen little-endian 16-bit samples and `Peak` the peak
+and RMS of a 16-bit PCM WAV's samples past its 44-byte header — the audio-capture diagnostics a card
+of recordings is inspected with.
 
 ### Behaviour and invariants
 
@@ -244,25 +279,15 @@ The two crates plus the `&mut T` blanket impl let an application keep **one** bl
 it, per operation, to whatever needs blocks — a mounted `Fat` volume for console `fs` commands and a
 concurrent writer streaming to a file at the same time — without either owning the device.
 
-An application that shares one device between a mounted volume and a concurrent writer is the worked
-example. It holds the single block device — here an `SpiSd` — in a `&'static RefCell`, and wraps that
-borrow in a small `BlockDevice` type whose every method takes the device by `borrow_mut()` for the
-length of one block transfer and releases it:
+The board holds the single card — an `SpiSd` — in a `&'static RefCell`, and `light_sd::SharedCard`
+wraps that borrow as a `BlockDevice` whose every method takes the card by `borrow_mut()` for the
+length of one block transfer and releases it. Because the borrow is taken and dropped inside each
+block operation, and no long-lived `&mut` to the card is ever held, a mounted `Fat<SharedCard>` and a
+separate writer state machine over another `SharedCard` coexist on the one physical card.
 
-```rust
-struct SdRef(&'static RefCell<SpiSd<Spi1Bus, Output>>);
-
-impl BlockDevice for SdRef {
-    fn block_count(&self) -> u32 { self.0.borrow().card.map(|c| c.blocks).unwrap_or(0) }
-    fn read_block(&mut self, lba, out)  -> Result<(), BlockError> { self.0.borrow_mut().read_block(lba, out).map_err(..) }
-    fn write_block(&mut self, lba, data) -> Result<(), BlockError> { self.0.borrow_mut().write_block(lba, data).map_err(..) }
-}
-```
-
-Because the borrow is taken and dropped inside each block operation, and no long-lived `&mut` to the
-device is ever held, a mounted `Fat<SdRef>` and a separate writer state machine over the same
-`SdRef` coexist on the one physical device. The application's storage abstraction readies the device
-on first use, hands out a fresh borrowing device per mounted operation, and forgets it (clearing
-`card` to force a re-init) if an operation fails mid-way. This is the block layer's single-owner
-model and the filesystem's borrow-friendly mount meeting in an application: the device is owned once,
-shared everywhere, one 512-byte operation at a time.
+`light_sd::CardStore` is the `Store` over it: `open` initialises the card on first touch since
+insertion and hands a fresh `SharedCard`; `reset` clears `card` to force a re-init after a
+mid-operation failure. An application consumes only `Store`, so its storage logic (the `fs` console,
+a recorder) is portable and host-testable, and the board supplies the `CardStore`. This is the block
+layer's single-owner model and the filesystem's borrow-friendly mount meeting: the card is owned
+once, shared everywhere, one 512-byte operation at a time.

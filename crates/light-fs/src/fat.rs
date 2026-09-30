@@ -1137,13 +1137,13 @@ impl File {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
         use super::*;
         extern crate std;
         use std::format;
         use std::vec::Vec;
 
-        struct MemDev(Vec<u8>);
+        pub(crate) struct MemDev(pub(crate) Vec<u8>);
         impl BlockDevice for MemDev {
                 fn block_count(&self) -> u32 {
                         (self.0.len() / 512) as u32
@@ -1268,7 +1268,7 @@ mod tests {
                 d[c(5)..c(5) + 5].copy_from_slice(b"deep!");
         }
 
-        fn fat16_superfloppy() -> MemDev {
+        pub(crate) fn fat16_superfloppy() -> MemDev {
                 let mut d = std::vec![0u8; 4200 * 512];
                 build_fat16(&mut d, 0);
                 MemDev(d)

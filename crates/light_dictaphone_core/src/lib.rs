@@ -148,45 +148,8 @@ pub enum Command {
         MicGain { r14: u8, r17: u8 },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FsOp {
-        Info,
-        Ls,
-        Cat,
-        Write,
-        Rm,
-        Mv,
-        Mkdir,
-        Trunc,
-        Hex,
-        Peak,
-}
-
-/// A path argument small enough to ride the event bus by value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FsPath {
-        buf: [u8; 48],
-        len: u8,
-}
-
-impl FsPath {
-        pub fn new(s: &str) -> Option<Self> {
-                if s.len() > 48 {
-                        return None;
-                }
-                let mut buf = [0u8; 48];
-                buf[..s.len()].copy_from_slice(s.as_bytes());
-                Some(Self { buf, len: s.len() as u8 })
-        }
-
-        pub fn as_str(&self) -> &str {
-                core::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or("")
-        }
-
-        pub fn is_empty(&self) -> bool {
-                self.len == 0
-        }
-}
+/// The `fs` command's operation and path argument are the framework's: see [`light_fs::console`].
+pub use light_fs::console::{FsOp, FsPath, USAGE as FS_USAGE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderMode {
@@ -280,23 +243,8 @@ pub fn touch_reads_held() -> bool {
 
 // --- storage -------------------------------------------------------------------------------
 
-/// The card as the app sees it: something that may need bringing up per insertion, and
-/// that hands a [`BlockDevice`] per mounted operation. The board owns the physical card
-/// and its bus; the app owns the volumes it mounts over it.
-pub trait Store {
-        //   'static: an open Recording or Playback lives in a .bss slot, so the device
-        // it mounts over cannot borrow from the store's stack frame
-        type Dev: BlockDevice + 'static;
-
-        /// Ready the card (initialising it on first touch since insertion) and hand a
-        /// device for one mounted operation. `None` = no usable card; the implementation
-        /// logs the reason, the caller logs the context.
-        fn open(&mut self) -> Option<Self::Dev>;
-
-        /// Forget a card that failed mid-operation -- pulled or swapped, typically -- so
-        /// the next [`open`](Self::open) starts from power-up.
-        fn reset(&mut self);
-}
+/// The card as the app sees it -- the framework's removable-storage seam.
+pub use light_core::hal::Store;
 
 /// A canonical 44-byte PCM WAV header: mono, 16-bit, `sample_hz` -- what makes a
 /// recording a file any desktop player opens.
@@ -316,175 +264,6 @@ pub fn wav_header(sample_hz: u32, data_len: u32) -> [u8; 44] {
         h[36..40].copy_from_slice(b"data");
         h[40..44].copy_from_slice(&data_len.to_le_bytes());
         h
-}
-
-/// One `fs` console command against the card: ready it, mount the volume, act, unmount by
-/// drop.
-fn fs_command<S: Store>(store: &mut S, op: FsOp, path: &str, arg: &str) {
-        let Some(dev) = store.open() else {
-                info!("fs: no card");
-                return;
-        };
-        let mut fs = match Fat::mount(dev) {
-                Ok(fs) => fs,
-                Err(e) => {
-                        info!("fs: mount failed: {e:?}");
-                        //   an I/O failure may be a pulled or swapped card: forget the
-                        // init so the next command starts from CMD0
-                        if matches!(e, FsError::Io(_)) {
-                                store.reset();
-                        }
-                        return;
-                }
-        };
-        match op {
-                FsOp::Info => {
-                        let v = fs.volume_info();
-                        info!("fs: {}, {} clusters of {} bytes", if v.fat32 { "FAT32" } else { "FAT16" }, v.cluster_count, v.bytes_per_cluster);
-                }
-                FsOp::Ls => {
-                        let mut count = 0u32;
-                        let r = fs.list_dir(path, |e| {
-                                count += 1;
-                                match (e.is_dir, e.long_name()) {
-                                        (true, Some(l)) => info!("  {}/  <{}>", e.name(), l),
-                                        (true, None) => info!("  {}/", e.name()),
-                                        (false, Some(l)) => info!("  {}  {} B  <{}>", e.name(), e.size, l),
-                                        (false, None) => info!("  {}  {} B", e.name(), e.size),
-                                }
-                        });
-                        match r {
-                                Ok(()) => info!("fs: {count} entries"),
-                                Err(e) => info!("fs: ls failed: {e:?}"),
-                        }
-                }
-                FsOp::Write => {
-                        //   create, or append when it already exists: `fs write LOG.TXT hello`
-                        // twice is a two-line file
-                        let mut f = match fs.create(path) {
-                                Ok(f) => f,
-                                Err(FsError::Exists) => match fs.append(path) {
-                                        Ok(f) => f,
-                                        Err(e) => {
-                                                info!("fs: append failed: {e:?}");
-                                                return;
-                                        }
-                                },
-                                Err(e) => {
-                                        info!("fs: create failed: {e:?}");
-                                        return;
-                                }
-                        };
-                        let mut data = [0u8; 49];
-                        let n = arg.len().min(48);
-                        data[..n].copy_from_slice(&arg.as_bytes()[..n]);
-                        data[n] = b'\n';
-                        match f.write(&mut fs, &data[..n + 1]) {
-                                Ok(w) => info!("fs: wrote {} B; {} is now {} B", w, path, f.size()),
-                                Err(e) => info!("fs: write failed: {e:?}"),
-                        }
-                }
-                FsOp::Rm => {
-                        //   files and (empty) directories both; the entry decides
-                        let r = match fs.stat(path) {
-                                Ok(e) if e.is_dir => fs.rmdir(path),
-                                Ok(_) => fs.remove(path),
-                                Err(e) => Err(e),
-                        };
-                        match r {
-                                Ok(()) => info!("fs: removed {}", path),
-                                Err(e) => info!("fs: rm failed: {e:?}"),
-                        }
-                }
-                FsOp::Mv => match fs.rename(path, arg) {
-                        Ok(()) => info!("fs: {} -> {}", path, arg),
-                        Err(e) => info!("fs: mv failed: {e:?}"),
-                },
-                FsOp::Mkdir => match fs.mkdir(path) {
-                        Ok(()) => info!("fs: created {}/", path),
-                        Err(e) => info!("fs: mkdir failed: {e:?}"),
-                },
-                FsOp::Hex => match (arg.parse::<u32>(), fs.open(path)) {
-                        (Ok(off), Ok(mut f)) => {
-                                //   16 samples as signed decimals: the shape of captured
-                                // audio at a glance -- small around zero, rail-to-rail, or
-                                // stuck
-                                let mut b = [0u8; 32];
-                                let r = f.seek(&mut fs, off).and_then(|()| f.read(&mut fs, &mut b));
-                                match r {
-                                        Ok(n) => {
-                                                let mut line = [0i16; 16];
-                                                for i in 0..n / 2 {
-                                                        line[i] = i16::from_le_bytes([b[i * 2], b[i * 2 + 1]]);
-                                                }
-                                                info!("fs: {}@{}: {:?}", path, off, &line[..n / 2]);
-                                        }
-                                        Err(e) => info!("fs: hex failed: {e:?}"),
-                                }
-                        }
-                        _ => info!("fs: hex needs PATH and a byte offset"),
-                },
-                FsOp::Trunc => match arg.parse::<u32>() {
-                        Ok(len) => match fs.open(path) {
-                                Ok(mut f) => match f.truncate(&mut fs, len) {
-                                        Ok(()) => info!("fs: {} is now {} B", path, f.size()),
-                                        Err(e) => info!("fs: trunc failed: {e:?}"),
-                                },
-                                Err(e) => info!("fs: open failed: {e:?}"),
-                        },
-                        Err(_) => info!("fs: trunc needs a byte count"),
-                },
-                FsOp::Peak => match fs.open(path) {
-                        //   the whole take's level in one line: peak and RMS of the PCM,
-                        // what gain tuning actually needs (16-sample hex windows sample
-                        // 0.1% of a take and miss every real peak)
-                        Ok(mut f) => {
-                                let r = f.seek(&mut fs, 44);
-                                let mut buf = [0u8; 512];
-                                let (mut peak, mut sum, mut n) = (0i32, 0u64, 0u64);
-                                let mut err = r.err();
-                                while err.is_none() {
-                                        match f.read(&mut fs, &mut buf) {
-                                                Ok(0) => break,
-                                                Ok(got) => {
-                                                        for i in 0..got / 2 {
-                                                                let s = i32::from(i16::from_le_bytes([buf[i * 2], buf[i * 2 + 1]]));
-                                                                peak = peak.max(s.abs());
-                                                                sum += (s * s) as u64;
-                                                                n += 1;
-                                                        }
-                                                }
-                                                Err(e) => err = Some(e),
-                                        }
-                                }
-                                if let Some(e) = err {
-                                        info!("fs: peak failed: {e:?}");
-                                } else {
-                                        let mean = if n > 0 { sum / n } else { 0 };
-                                        let mut rms = 0u64;
-                                        while (rms + 1) * (rms + 1) <= mean {
-                                                rms += 1;
-                                        }
-                                        info!("fs: {} peak {} rms {} over {} samples", path, peak, rms, n);
-                                }
-                        }
-                        Err(e) => info!("fs: open failed: {e:?}"),
-                },
-                FsOp::Cat => match fs.open(path) {
-                        Ok(mut f) => {
-                                //   a peek, not a pager: the first 120 bytes, as text
-                                let mut buf = [0u8; 120];
-                                match f.read(&mut fs, &mut buf) {
-                                        Ok(n) => {
-                                                let text = core::str::from_utf8(&buf[..n]).unwrap_or("<binary>");
-                                                info!("fs: {} ({} B): {}", path, f.size(), text);
-                                        }
-                                        Err(e) => info!("fs: read failed: {e:?}"),
-                                }
-                        }
-                        Err(e) => info!("fs: open failed: {e:?}"),
-                },
-        }
 }
 
 // --- the display module --------------------------------------------------------------------
@@ -1148,7 +927,7 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
         /// Publish the current page: a RowText per row (an empty name is an unused row), and the
         /// ListNav telling the display which paging buttons to show.
         fn publish_list(&mut self) {
-                let empty = FsPath::new("").unwrap_or(FsPath { buf: [0; 48], len: 0 });
+                let empty = FsPath::EMPTY;
                 for i in 0..LIST_ROWS {
                         let name = self.picker.name(i).and_then(FsPath::new).unwrap_or(empty);
                         let _ = self.bus.publish(Event::RowText { row: i as u8, name });
@@ -1485,7 +1264,7 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                                         }
                                 }
                                 Event::Command(Command::Fs { op, path, arg }) => {
-                                        fs_command(&mut self.store, op, path.as_str(), arg.as_str());
+                                        light_fs::console::run(&mut self.store, op, path.as_str(), arg.as_str());
                                 }
                                 Event::Command(Command::RecStatus) => {
                                         match self.rec.as_ref() {
@@ -1811,31 +1590,7 @@ pub fn parse_rec<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
 }
 
 pub fn parse_fs<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
-        let op = match w.next() {
-                Some("info") | None => FsOp::Info,
-                Some("ls") => FsOp::Ls,
-                Some("cat") => FsOp::Cat,
-                Some("write") => FsOp::Write,
-                Some("rm") => FsOp::Rm,
-                Some("mv") => FsOp::Mv,
-                Some("mkdir") => FsOp::Mkdir,
-                Some("trunc") => FsOp::Trunc,
-                Some("hex") => FsOp::Hex,
-                Some("peak") => FsOp::Peak,
-                _ => return Parsed::Usage,
-        };
-        let path = w.next().unwrap_or("");
-        let arg = w.next().unwrap_or("");
-        if !matches!(op, FsOp::Info | FsOp::Ls) && path.is_empty() {
-                return Parsed::Usage;
-        }
-        if matches!(op, FsOp::Write | FsOp::Mv | FsOp::Trunc | FsOp::Hex) && arg.is_empty() {
-                return Parsed::Usage;
-        }
-        match (FsPath::new(path), FsPath::new(arg)) {
-                (Some(path), Some(arg)) => Parsed::Event(Event::Command(Command::Fs { op, path, arg })),
-                _ => Parsed::Usage,
-        }
+        light_fs::console::parse_command(w, |op, path, arg| Event::Command(Command::Fs { op, path, arg }))
 }
 
 pub fn parse_backlight<X: Copy>(w: &mut Words) -> Parsed<Event<X>> {
@@ -1948,7 +1703,7 @@ macro_rules! dictaphone_commands {
                         $crate::DictCliRow { name: "stats", usage: "stats", parse: $crate::parse_stats::<$ext> },
                         $crate::DictCliRow { name: "tone", usage: "tone HZ [MS] | tone off", parse: $crate::parse_tone::<$ext> },
                         $crate::DictCliRow { name: "volume", usage: "volume 0..100", parse: $crate::parse_volume::<$ext> },
-                        $crate::DictCliRow { name: "fs", usage: "fs info|ls [P]|cat P|write P TEXT|rm P|mv A B|mkdir P|trunc P N|hex P OFF|peak P", parse: $crate::parse_fs::<$ext> },
+                        $crate::DictCliRow { name: "fs", usage: $crate::FS_USAGE, parse: $crate::parse_fs::<$ext> },
                         $crate::DictCliRow { name: "rec", usage: "rec NAME.WAV | rec stop | rec", parse: $crate::parse_rec::<$ext> },
                         $crate::DictCliRow { name: "play", usage: "play NAME.WAV | play stop | play", parse: $crate::parse_play::<$ext> },
                         $crate::DictCliRow { name: "micmon", usage: "micmon on|off", parse: $crate::parse_micmon::<$ext> },

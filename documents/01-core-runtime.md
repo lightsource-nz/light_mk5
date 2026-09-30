@@ -33,6 +33,9 @@ is written against these, never against a concrete peripheral. The core ones:
 - **`BlockDevice`** — a 512-byte block device (`block_count`, `read_block`, `write_block`,
   `BlockError`), with a blanket impl for `&mut T` so a filesystem can mount over a borrowed card.
   This is the seam between `light-sd` and `light-fs` (see [05-storage.md](05-storage.md)).
+- **`Store`** — removable storage that is brought up per insertion (`open`, handing a
+  `BlockDevice` per mounted operation) and forgotten after a mid-operation failure (`reset`); the
+  medium's layer implements it and a filesystem's users consume it.
 - **`AudioStream`** — the transport contract an audio module drives (stream push/free, capture,
   active gating), so an app's audio logic is independent of the concrete I2S port (see
   [04-audio-and-midi.md](04-audio-and-midi.md)).

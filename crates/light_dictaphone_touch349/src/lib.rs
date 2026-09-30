@@ -25,7 +25,7 @@ use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a, RtcMod};
-use light_sd::{SdError, SpiSd};
+use light_sd::SpiSd;
 use light_board_touch349::{board, Touch349Power};
 use light_power_manager::PowerMod;
 use light_input::{ImuMod, TouchMod};
@@ -135,29 +135,8 @@ const FPS: u32 = 30;
 
 // --- storage: the TF slot as the app's Store -----------------------------------------------
 
-/// The TF slot as a SHAREABLE block device: a borrow of the board's one card, taken per
-/// block operation -- which is what lets the `fs` console commands and a live recording's
-/// mounted volume coexist on one `SpiSd`.
-struct SdRef(&'static RefCell<SpiSd<Spi1Bus, Output>>);
-
-fn sd_block_error(e: SdError) -> light_core::hal::BlockError {
-        match e {
-                SdError::Timeout => light_core::hal::BlockError::Timeout,
-                _ => light_core::hal::BlockError::Io,
-        }
-}
-
-impl light_core::hal::BlockDevice for SdRef {
-        fn block_count(&self) -> u32 {
-                self.0.borrow().card.map(|c| c.blocks).unwrap_or(0)
-        }
-        fn read_block(&mut self, lba: u32, out: &mut [u8; 512]) -> Result<(), light_core::hal::BlockError> {
-                self.0.borrow_mut().read_block(lba, out).map_err(sd_block_error)
-        }
-        fn write_block(&mut self, lba: u32, data: &[u8; 512]) -> Result<(), light_core::hal::BlockError> {
-                self.0.borrow_mut().write_block(lba, data).map_err(sd_block_error)
-        }
-}
+/// The TF slot as a shareable block device: the board's one card, borrowed per block operation.
+type SdRef = light_sd::SharedCard<'static, Spi1Bus, Output>;
 
 /// A single-slot .bss home for a card-borrowing state machine (a [`dict::Recording`], a
 /// [`dict::Playback`]) -- NOT core 0's 4 KB stack. `StaticCell` wants `Send`, which the
@@ -171,28 +150,8 @@ unsafe impl<T> Sync for AppSlot<T> {}
 static REC_SLOT: AppSlot<dict::Recording<SdRef>> = AppSlot(core::cell::UnsafeCell::new(None));
 static PLAY_SLOT: AppSlot<dict::Playback<SdRef>> = AppSlot(core::cell::UnsafeCell::new(None));
 
-/// The app's [`dict::Store`]: ready the card on first touch since insertion, hand a
-/// borrowing device per mounted operation, forget a card that failed mid-operation.
-struct SdStore(&'static RefCell<SpiSd<Spi1Bus, Output>>);
-
-impl dict::Store for SdStore {
-        type Dev = SdRef;
-
-        fn open(&mut self) -> Option<SdRef> {
-                if self.0.borrow().card.is_none() {
-                        let mut clock = SysClock;
-                        if let Err(e) = self.0.borrow_mut().init(&mut clock) {
-                                info!("card: init failed ({e:?})");
-                                return None;
-                        }
-                }
-                Some(SdRef(self.0))
-        }
-
-        fn reset(&mut self) {
-                self.0.borrow_mut().card = None;
-        }
-}
+/// The app's [`dict::Store`]: the shared card, brought up on first touch since insertion.
+type SdStore = light_sd::CardStore<Spi1Bus, Output, SysClock>;
 
 // --- the sample transport: PIO I2S as the app's AudioStream --------------------------------
 
@@ -312,23 +271,7 @@ impl Module for BoardMod {
                                 }
                                 AppEvent::Ext(Ext::Sd) => {
                                         busy = true;
-                                        let mut clock = SysClock;
-                                        let mut sd = self.sd.borrow_mut();
-                                        match sd.init(&mut clock) {
-                                                Ok(card) => {
-                                                        let mb = card.blocks / 2048;
-                                                        let kind = if card.high_capacity { "SDHC/XC" } else { "SDSC" };
-                                                        let mut block = [0u8; 512];
-                                                        match sd.read_block(0, &mut block) {
-                                                                Ok(()) => {
-                                                                        let sig = block[510] == 0x55 && block[511] == 0xAA;
-                                                                        info!("sd: {mb} MB {kind} ({} blocks); block 0 read, boot signature {}", card.blocks, if sig { "present" } else { "absent" });
-                                                                }
-                                                                Err(e) => warn!("sd: {mb} MB {kind} identified but block 0 read failed: {e:?}"),
-                                                        }
-                                                }
-                                                Err(e) => info!("sd: {e:?}"),
-                                        }
+                                        light_sd::shared::report(&mut self.sd.borrow_mut(), &mut SysClock);
                                 }
                                 _ => {}
                         }
@@ -404,7 +347,7 @@ pub fn run(info: &ShellInfo, cfg: RunConfig) -> ! {
                 I2sStream { i2s: p.i2s, cap_handed: false },
                 p.audio_pa,
                 SysClock,
-                SdStore(sd),
+                SdStore { card: sd, clock: SysClock },
                 AUDIO_SAMPLE_HZ,
                 //   tuned on the glass: PGA code 7 with +18 dB digital puts normal speech
                 // peaks ~45% of full scale -- and a DELIBERATELY loud take measured at

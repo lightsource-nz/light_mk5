@@ -10,5 +10,6 @@
 
 #![no_std]
 
+pub mod console;
 pub mod fat;
 pub use fat::{DirEntry, Fat, File, FsError, VolumeInfo};

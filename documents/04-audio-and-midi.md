@@ -86,12 +86,12 @@ codec-plus-`AudioStream` **player primitive** into `light-audio` would dedup not
   `AudioMod` is a player *and* recorder — the demo records too. A board with only a piezo drives the
   PWM tone path instead, a different path.
 - The recorder is a reusable generic crate: `light_dictaphone_core::AudioMod<S, B, A, P, C, X>` is
-  generic over the card (`Store`), codec bus (`I2cBus`), transport (`AudioStream`), amp pin, clock,
-  and board event. Any app can depend on it.
+  generic over the card (the `light_core::hal::Store` seam, see [05-storage.md](05-storage.md)), codec
+  bus (`I2cBus`), transport (`AudioStream`), amp pin, clock, and board event. Any app can depend on it.
 - That module is not decomposable into a framework primitive: it is coupled to a recorder's whole
   command vocabulary (~twenty `Command`/`UiAction` handlers — record/play/tone/mic/files), and the
-  record/play machinery is methods *on* it. `Store`, `Recording<Dev>` and `Playback<Dev>` are
-  command-free but are trivial data holders with no logic to extract; the logic is the app's.
+  record/play machinery is methods *on* it. `Recording<Dev>` and `Playback<Dev>` are command-free but
+  are trivial data holders with no logic to extract; the logic is the app's.
 
 **The rule:** the audio subsystem's reusable unit is the whole `light_dictaphone_core` crate — a
 recorder is an application, not a framework primitive — and it is reused by being a standalone
