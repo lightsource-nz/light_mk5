@@ -111,7 +111,9 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
   - `gpio` — `set_function`/`set_pull_up`, `Output` (`OutputPin`), `Input` (`InputPin`), covering
     both pin banks including the RP2350B's upper sixteen behind the SIO `GPIO_HI_*` registers;
   - `i2c` — `I2c0`/`I2c1` (`I2cBus`), one macro-stamped source for the two identical blocks;
-  - `spi` — `Spi1Display` (`SpiDisplayBus`), the 4-wire display bus with DMA-backed bursts;
+  - `spi` — `Spi0Display`/`Spi1Display` (`SpiDisplayBus`), the 4-wire display bus with DMA-backed
+    bursts, one macro-stamped source for the two identical blocks (which one a panel is on is board
+    wiring);
   - `spi_bus` — `Spi1Bus` (`SpiBus`), SPI1 as a plain full-duplex master (the TF slot's transport);
   - `qspi` — `PioQspiDisplayBus` (`QspiDisplayBus`), a QSPI panel bus on one PIO state machine;
   - `i2s` — I2S audio through PIO with ping-pong DMA, the codec as I2S master;
