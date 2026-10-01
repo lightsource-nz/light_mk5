@@ -12,7 +12,12 @@
 
 use core::cell::RefCell;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod};
+use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode};
+use light_camera::Ov5640;
+use light_core::hal::CameraBus;
+use light_core::Clock;
+use light_rp2::camera::PioCamera;
+use light_rp2::pwm::PwmOutput;
 use light_board_touch35::{board, Pmic, Touch35Power};
 use board::*;
 use light_input::drivers::ft6336::Ft6336;
@@ -73,6 +78,22 @@ enum Ext {
         Sd,
         /// One filesystem command against the TF card.
         Fs { op: FsOp, path: FsPath, arg: FsPath },
+        /// The camera preview.
+        Cam(CamOp),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CamOp {
+        /// Power the sensor up and read its chip id.
+        Id,
+        /// The live preview, with the sensor's colour bars in place of the image or not.
+        Live { bars: bool },
+        /// Stop the preview, power the sensor down, and give the panel back to the interface.
+        Off,
+        /// Sample the sync lines and report where the capture is parked.
+        Probe,
+        /// Read a frame's first words straight from the capture FIFO, bypassing the DMA.
+        Raw,
 }
 
 type AppEvent = DemoEvent<Ext>;
@@ -129,9 +150,191 @@ fn rotation_map(o: Orientation) -> Option<Rotation> {
         }
 }
 
+// --- the camera preview ---------------------------------------------------------------------
+
+const CAMERA_FRAME_BYTES: usize = CAMERA_WIDTH as usize * CAMERA_HEIGHT as usize * 2;
+/// The panel row the preview's top lands on: centred.
+const CAMERA_Y0: u16 = (DISPLAY_HEIGHT - CAMERA_HEIGHT) / 2;
+/// A frame that has not landed in this long is reported once: the sensor is not streaming, or
+/// the capture is not seeing it.
+const CAMERA_STALL_US: u64 = 500_000;
+
+/// The one camera frame. Captured into, then pushed to the panel from, in turn -- never both at
+/// once, so one buffer serves. Word-aligned: the capture lands it in word writes.
+#[repr(C, align(4))]
+struct CameraFrame([u8; CAMERA_FRAME_BYTES]);
+static CAMERA_FRAME: ConstStaticCell<CameraFrame> = ConstStaticCell::new(CameraFrame([0; CAMERA_FRAME_BYTES]));
+
+/// The OV5640 on its pixel bus, previewed straight to the panel: capture a frame, push it, arm
+/// the next. The interface's rendering is paused for the duration, and repaints in full after.
+struct Camera {
+        sensor: Ov5640<&'static RefCell<I2c1>>,
+        bus: PioCamera,
+        xclk: PwmOutput,
+        pwdn: Output,
+        frame: &'static mut [u8; CAMERA_FRAME_BYTES],
+        powered: bool,
+        configured: bool,
+        live: bool,
+        armed_us: u64,
+        stall_reported: bool,
+        /// Frames shown since the last `stats`, and when that count started.
+        shown: u32,
+        shown_since_us: u64,
+}
+
+impl Camera {
+        fn power_up(&mut self) {
+                if self.powered {
+                        return;
+                }
+                //   the clock first: the sensor's SCCB needs it running to answer at all
+                self.xclk.set_duty(CAMERA_XCLK_TOP / 2);
+                self.pwdn.set(false);
+                SysClock.delay_ms(30);
+                self.powered = true;
+        }
+
+        fn power_down(&mut self) {
+                self.pwdn.set(true);
+                self.xclk.set_duty(0);
+                self.powered = false;
+                self.configured = false;
+        }
+
+        fn arm(&mut self) {
+                // SAFETY: the buffer is not touched again until frame_complete answers true
+                unsafe { self.bus.start_frame(&mut self.frame[..]) };
+                self.armed_us = light_rp2::now_us();
+                self.stall_reported = false;
+        }
+
+        fn report_probe(&self) {
+                let p = self.bus.probe(20_000);
+                info!(
+                        "cam probe: vsync {}/{}, href {}/{}, pclk {}/{} high; data in-line OR {:#04x} AND {:#04x}; sm pc {}, {} words left, {}",
+                        p.vsync_highs,
+                        p.samples,
+                        p.href_highs,
+                        p.samples,
+                        p.pclk_highs,
+                        p.samples,
+                        p.data_or,
+                        p.data_and,
+                        p.pc,
+                        p.words_left,
+                        if p.armed { "armed" } else { "idle" }
+                );
+                //   what the buffer holds: how much of it is not zero, and the first pixels of the
+                // top, middle and bottom rows
+                info!("cam dma: ctrl {:#010x}, write addr {:#010x} (frame at {:#010x}), abort {:#x}", p.dma_ctrl, p.dma_write_addr, self.frame.as_ptr() as u32, p.dma_abort);
+                let nonzero = self.frame.iter().filter(|b| **b != 0).count();
+                info!("cam frame: {nonzero}/{} bytes nonzero", self.frame.len());
+                let stride = CAMERA_WIDTH as usize * 2;
+                for row in [0usize, CAMERA_HEIGHT as usize / 2, CAMERA_HEIGHT as usize - 1] {
+                        let r = &self.frame[row * stride..row * stride + 16];
+                        info!("cam frame row {row}: {:02x?}", r);
+                }
+        }
+
+        fn command(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>, op: CamOp) {
+                match op {
+                        CamOp::Id => {
+                                self.power_up();
+                                match self.sensor.chip_id() {
+                                        Ok(id) => info!("cam: chip id {id:#06x}{}", if id == light_camera::ov5640::CHIP_ID { " (OV5640)" } else { " -- not an OV5640" }),
+                                        Err(e) => warn!("cam: not answering ({e:?})"),
+                                }
+                        }
+                        CamOp::Live { bars } => {
+                                self.power_up();
+                                if !self.configured {
+                                        let t0 = light_rp2::now_us();
+                                        if let Err(e) = self.sensor.init(&mut SysClock, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_PLL) {
+                                                warn!("cam: init failed ({e:?})");
+                                                return;
+                                        }
+                                        self.configured = true;
+                                        info!("cam: OV5640 configured {}x{} RGB565 in {} ms", CAMERA_WIDTH, CAMERA_HEIGHT, (light_rp2::now_us() - t0) / 1000);
+                                }
+                                if let Err(e) = self.sensor.set_test_pattern(bars) {
+                                        warn!("cam: test pattern not set ({e:?})");
+                                }
+                                if !self.live {
+                                        //   the interface stops drawing; what it last drew stays around
+                                        // the preview
+                                        let _ = view.display.wait();
+                                        *view.mode = RenderMode::Paused;
+                                        self.live = true;
+                                        self.shown = 0;
+                                        self.shown_since_us = light_rp2::now_us();
+                                        self.arm();
+                                }
+                                info!("cam: live{}", if bars { ", colour bars" } else { "" });
+                        }
+                        CamOp::Off => {
+                                self.bus.stop();
+                                self.power_down();
+                                if self.live {
+                                        self.live = false;
+                                        *view.mode = RenderMode::Normal;
+                                        view.ui.invalidate_all();
+                                }
+                                info!("cam: off");
+                        }
+                        CamOp::Probe => self.report_probe(),
+                        CamOp::Raw => {
+                                let was_live = self.live;
+                                let mut words = [0u32; 8];
+                                let n = self.bus.capture_raw(&mut words, 200_000, light_rp2::now_us);
+                                info!("cam raw: {n} words: {:08x?}", &words[..n]);
+                                if was_live {
+                                        self.arm();
+                                }
+                        }
+                }
+        }
+
+        /// One preview step: a landed frame goes to the panel and the next is armed.
+        fn poll(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>) -> bool {
+                if !self.live {
+                        return false;
+                }
+                if !self.bus.frame_complete() {
+                        if !self.stall_reported && light_rp2::now_us() - self.armed_us > CAMERA_STALL_US {
+                                self.stall_reported = true;
+                                warn!("cam: no frame in {} ms", CAMERA_STALL_US / 1000);
+                                self.report_probe();
+                        }
+                        return true;
+                }
+                if let Err(e) = view.display.push_rows_blocking(&self.frame[..], CAMERA_Y0, CAMERA_HEIGHT) {
+                        warn!("cam: push failed ({e:?})");
+                }
+                self.shown += 1;
+                self.arm();
+                true
+        }
+
+        fn stats(&mut self) {
+                let now = light_rp2::now_us();
+                let ms = (now - self.shown_since_us) / 1000;
+                if self.live && ms > 0 {
+                        let centi_fps = u64::from(self.shown) * 100_000 / ms;
+                        info!("cam: {} frames in {} ms, {}.{:02} fps; {} captured since boot", self.shown, ms, centi_fps / 100, centi_fps % 100, self.bus.frames);
+                } else {
+                        info!("cam: {}; {} frames captured since boot", if self.live { "live" } else { "off" }, self.bus.frames);
+                }
+                self.shown = 0;
+                self.shown_since_us = now;
+        }
+}
+
 // --- the driver-specific edges -------------------------------------------------------------
 
-struct Hook;
+struct Hook {
+        camera: Camera,
+}
 
 impl BoardHook<St7796<Spi0Display>, Ext> for Hook {
         fn after_init(&mut self, display: &mut Display<'static, St7796<Spi0Display>>, bg: u16) {
@@ -152,8 +355,15 @@ impl BoardHook<St7796<Spi0Display>, Ext> for Hook {
                                 // shows immediately rather than on the next interaction
                                 view.ui.invalidate_all();
                         }
+                        Ext::Cam(op) => self.camera.command(view, op),
                         Ext::Pmic | Ext::RtcShow | Ext::RtcSet(_) | Ext::Sd | Ext::Fs { .. } => {}
                 }
+        }
+        fn on_poll(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>) -> bool {
+                self.camera.poll(view)
+        }
+        fn on_stats(&mut self) {
+                self.camera.stats();
         }
 }
 
@@ -270,7 +480,21 @@ static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "rtc", usage: light_rtc::command::USAGE, parse: parse_rtc },
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Sd)) },
         CliCommand { name: "fs", usage: light_fs::console::USAGE, parse: parse_fs },
+        CliCommand { name: "cam", usage: "cam id|on|bars|off|probe|raw", parse: parse_cam },
 ];
+
+fn parse_cam(w: &mut Words) -> Parsed<AppEvent> {
+        let op = match w.next() {
+                Some("id") => CamOp::Id,
+                Some("on") => CamOp::Live { bars: false },
+                Some("bars") => CamOp::Live { bars: true },
+                Some("off") => CamOp::Off,
+                Some("probe") => CamOp::Probe,
+                Some("raw") => CamOp::Raw,
+                _ => return Parsed::Usage,
+        };
+        Parsed::Event(DemoEvent::Ext(Ext::Cam(op)))
+}
 
 fn parse_fs(w: &mut Words) -> Parsed<AppEvent> {
         light_fs::console::parse_command(w, |op, path, arg| DemoEvent::Ext(Ext::Fs { op, path, arg }))
@@ -325,6 +549,21 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let mut storage_mod = StorageMod { card, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut pmic_mod = PmicMod { pmic, events: EVENTS.subscribe().expect("subscriber slot"), next_key_poll_us: 0 };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
+        //   powered down until a `cam` command wants it
+        let camera = Camera {
+                sensor: Ov5640::new(i2c),
+                bus: p.camera,
+                xclk: p.cam_xclk,
+                pwdn: p.cam_pwdn,
+                frame: &mut CAMERA_FRAME.take().0,
+                powered: false,
+                configured: false,
+                live: false,
+                armed_us: 0,
+                stall_reported: false,
+                shown: 0,
+                shown_since_us: 0,
+        };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
@@ -361,7 +600,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         source: lui,
                         backlight_dim: BACKLIGHT_DIM,
                 },
-                Hook,
+                Hook { camera },
         ));
         static TOUCH_MOD: StaticCell<TouchMod<AppEvent, Ft6336<&'static RefCell<I2c1>, Input, Output>, SysClock>> = StaticCell::new();
         let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, SysClock, demo::touch_reads_held));

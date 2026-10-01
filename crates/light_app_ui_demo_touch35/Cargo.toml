@@ -13,6 +13,7 @@ crate-type = ["staticlib"]
 light_app_ui_demo = { path = "../light_app_ui_demo" }
 light-board-touch35 = { path = "../light-board-touch35" }
 light-core = { path = "../light-core" }
+light-camera = { path = "../light-camera" }
 light-draw = { path = "../light-draw" }
 light-display = { path = "../light-display" }
 light-input = { path = "../light-input" }

@@ -8,7 +8,9 @@
 
 use light_core::atomic::{AtomicBool, Ordering};
 use light_input::drivers::ft6336::CoordMap;
+use light_camera::Pll;
 use light_input::imu::{self, AxisMap};
+use light_rp2::camera::{CameraPins, PioCamera};
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
 use light_rp2::i2s::PioI2sOut;
@@ -93,8 +95,27 @@ pub const PIN_SD_MISO: usize = 28;
 pub const PIN_SD_D1: usize = 29;
 pub const PIN_SD_D2: usize = 30;
 pub const PIN_SD_CS: usize = 31;
-// the camera: D0..D7 on 0..7, VSYNC 8, HREF 9, PCLK 10, XCLK 11, and its power-down
+// the OV5640 camera: D0..D7 on 0..7, VSYNC 8, HREF 9, PCLK 10, the master clock out on 11, and its
+// power-down (high = powered down); SCCB on the shared I2C1. No reset line is wired
+pub const PIN_CAM_D0: usize = 0;
+pub const PIN_CAM_VSYNC: usize = 8;
+pub const PIN_CAM_HREF: usize = 9;
+pub const PIN_CAM_PCLK: usize = 10;
+pub const PIN_CAM_XCLK: usize = 11;
 pub const PIN_CAM_PWDN: usize = 36;
+/// The master clock: a PWM output counting 0..=4 at the system clock -- 40 MHz at 200 MHz, the
+/// rate the module's vendor feeds it.
+pub const CAMERA_XCLK_TOP: u16 = 4;
+pub const CAMERA_XCLK_HZ: u32 = 40_000_000;
+/// The sensor's PLL at that master clock: PCLK = 40 / 1 * 11 / 1 * 2 / 5 / 2 / 4 = 22 MHz, which
+/// carries a 320-pixel line well inside the binned line time and is within what the PIO capture
+/// keeps up with at 200 MHz.
+pub const CAMERA_PLL: Pll = Pll { multiplier: 11, sys_div: 1, pre_div: 1, root_2x: false, pclk_root_div: 1, pclk_div: 4 };
+/// The preview size: the panel's width at the sensor's 4:3, one 150 KB RGB565 frame.
+pub const CAMERA_WIDTH: u16 = 320;
+pub const CAMERA_HEIGHT: u16 = 240;
+/// DMA channel for the capture, below the audio's.
+pub const CAMERA_DMA_CH: usize = 9;
 // UART0 on the header (TX through the UART aux function on 46)
 pub const PIN_UART_TX: usize = 46;
 pub const PIN_UART_RX: usize = 45;
@@ -116,6 +137,12 @@ pub struct Peripherals {
         /// The TF slot's bus, at the card-initialisation rate until a card is brought up.
         pub sd_spi: Spi1Bus,
         pub sd_cs: Output,
+        /// The camera's pixel bus on PIO2, idle until a frame is armed.
+        pub camera: PioCamera,
+        /// The camera's master clock, stopped (duty 0) until the camera is powered up.
+        pub cam_xclk: PwmOutput,
+        /// Held high: the camera starts powered down.
+        pub cam_pwdn: Output,
 }
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -152,6 +179,9 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
                         i2c: I2c1::new(clocks.sys_hz, PIN_I2C_SCL, PIN_I2C_SDA, I2C_HZ),
                         touch_int: Input::new_pull_up(PIN_TOUCH_INT),
                         touch_reset: Output::new(PIN_TOUCH_RST, true),
+                        camera: PioCamera::new(CameraPins { data0: PIN_CAM_D0, vsync: PIN_CAM_VSYNC, href: PIN_CAM_HREF, pclk: PIN_CAM_PCLK }, CAMERA_DMA_CH),
+                        cam_xclk: PwmOutput::new(PIN_CAM_XCLK, clocks.sys_hz, CAMERA_XCLK_HZ, CAMERA_XCLK_TOP),
+                        cam_pwdn: Output::new(PIN_CAM_PWDN, true),
                 })
         }
 }
