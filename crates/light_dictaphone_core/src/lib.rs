@@ -299,7 +299,11 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                         Event::Touch(t) => {
                                 if self.mode == RenderMode::Repush {
                                         if let TouchSample::Down { .. } = t {
-                                                if !self.display.busy() {
+                                                //   a banded display has no frame to resend: the whole
+                                                // tree repainted is the same traffic on the bus
+                                                if self.display.band_rows().is_some() {
+                                                        self.ui.invalidate_all();
+                                                } else if !self.display.busy() {
                                                         let _ = self.display.update_async(Region::full(self.cfg.width, self.cfg.height));
                                                 }
                                         }

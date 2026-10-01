@@ -38,14 +38,14 @@ use light_rp2::spi::Spi0Display;
 use light_rp2::shell::{panic_report, ShellInfo};
 use light_rp2::{Breathe, Clocks, SysClock};
 
-const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+const BAND_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_BAND_ROWS);
 
-/// One frame buffer, 300 KB of the RP2350's 520 -- a second would not fit. Region (partial)
-/// buffering keeps the page-slide transition without it: the outgoing image is scrolled off this
-/// buffer in place while the incoming is painted into the strip it uncovers (see
-/// [`Display::set_region_buffering`] and the toolkit's page step). Rotation snaps rather than
-/// animating -- the one animation a single buffer cannot carry.
-static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
+/// No frame buffer: the ST7796 keeps its own frame, so the display is BANDED -- two band buffers
+/// (one drawn while the other is pushed), 40 KB in place of a 300 KB frame. The page slide is a
+/// cover (the incoming page slides in over the outgoing, which stays on the panel); rotation
+/// snaps.
+static BAND_A: ConstStaticCell<[u8; BAND_BYTES]> = ConstStaticCell::new([0; BAND_BYTES]);
+static BAND_B: ConstStaticCell<[u8; BAND_BYTES]> = ConstStaticCell::new([0; BAND_BYTES]);
 
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's steel theme, the default for every board with
@@ -290,11 +290,16 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let p = take(&clocks).expect("the board's peripherals are taken once");
         info!("clocks: sys {} Hz, peri {} Hz; spi0 at {} Hz, i2c1 at {} Hz", clocks.sys_hz, clocks.peri_hz, p.display_bus.actual_hz, p.i2c.actual_hz);
 
-        let front: &'static mut [u8] = FRAME_FRONT.take();
-        let mut display = Display::new(St7796::new(p.display_bus, DISPLAY_MADCTL, DISPLAY_INVERT), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2::now_us);
-        //   region buffering: the page slide runs on this one buffer -- reveal off on open, cover
-        // back on close
-        display.set_region_buffering(true);
+        let display = Display::new_banded(
+                St7796::new(p.display_bus, DISPLAY_MADCTL, DISPLAY_INVERT),
+                BAND_A.take(),
+                BAND_B.take(),
+                DISPLAY_WIDTH,
+                DISPLAY_HEIGHT,
+                DISPLAY_BAND_ROWS,
+                PixelFormat::Rgb565,
+                light_rp2::now_us,
+        );
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),
@@ -349,7 +354,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         width: DISPLAY_WIDTH,
                         height: DISPLAY_HEIGHT,
                         fps: FPS,
-                        desc: "ST7796 over SPI, single-buffered (region)",
+                        desc: "ST7796 over SPI, banded (32-row bands)",
                         repush: true,
                         draw_over: false,
                         rotation_map,

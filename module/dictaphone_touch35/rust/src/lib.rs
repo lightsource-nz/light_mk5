@@ -35,11 +35,12 @@ use light_rtc::{Datetime, Pcf85063a, RtcMod};
 use light_sd::SpiSd;
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 
-const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+const BAND_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_BAND_ROWS);
 
-/// One frame buffer, 300 KB of the RP2350's 520: region buffering keeps the page slide without a
-/// second (see the widget demo on this board).
-static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
+/// No frame buffer: the panel keeps its own frame, so the display is banded -- two band buffers,
+/// 40 KB in place of a 300 KB frame (see the widget demo on this board).
+static BAND_A: ConstStaticCell<[u8; BAND_BYTES]> = ConstStaticCell::new([0; BAND_BYTES]);
+static BAND_B: ConstStaticCell<[u8; BAND_BYTES]> = ConstStaticCell::new([0; BAND_BYTES]);
 
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
@@ -168,9 +169,16 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let p = take(&clocks).expect("the board's peripherals are taken once");
         info!("clocks: sys {} Hz, peri {} Hz; spi0 at {} Hz, i2c1 at {} Hz", clocks.sys_hz, clocks.peri_hz, p.display_bus.actual_hz, p.i2c.actual_hz);
 
-        let front: &'static mut [u8] = FRAME_FRONT.take();
-        let mut display = Display::new(St7796::new(p.display_bus, DISPLAY_MADCTL, DISPLAY_INVERT), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2::now_us);
-        display.set_region_buffering(true);
+        let display = Display::new_banded(
+                St7796::new(p.display_bus, DISPLAY_MADCTL, DISPLAY_INVERT),
+                BAND_A.take(),
+                BAND_B.take(),
+                DISPLAY_WIDTH,
+                DISPLAY_HEIGHT,
+                DISPLAY_BAND_ROWS,
+                PixelFormat::Rgb565,
+                light_rp2::now_us,
+        );
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),
@@ -261,7 +269,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         width: DISPLAY_WIDTH,
                         height: DISPLAY_HEIGHT,
                         fps: FPS,
-                        desc: "ST7796 over SPI, single-buffered (region)",
+                        desc: "ST7796 over SPI, banded (32-row bands)",
                         rotation_map,
                         initial_rotation: Rotation::R0,
                         source: lui,

@@ -314,8 +314,12 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                                 // the finger's movement
                                 if self.mode == RenderMode::Repush {
                                         if let TouchSample::Down { .. } = t {
-                                                // the front buffer as it stands, to the whole panel
-                                                if !self.display.busy() {
+                                                // the front buffer as it stands, to the whole panel --
+                                                // or, on a banded display (no frame to resend), the
+                                                // whole tree repainted, the same traffic on the bus
+                                                if self.display.band_rows().is_some() {
+                                                        self.ui.invalidate_all();
+                                                } else if !self.display.busy() {
                                                         let _ = self.display.update_async(Region::full(self.cfg.width, self.cfg.height));
                                                 }
                                         }

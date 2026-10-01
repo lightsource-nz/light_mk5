@@ -35,6 +35,10 @@ pub const DISPLAY_SPI_HZ: u32 = 75_000_000;
 pub const DISPLAY_MADCTL: u8 = 0x48;
 /// IPS glass: true colours need display inversion on.
 pub const DISPLAY_INVERT: bool = true;
+/// The panel keeps its own frame, so the RP2350 holds none: the display is BANDED, drawn and
+/// pushed this many full-width rows at a time, from two band buffers (one drawn while the other
+/// is pushed) -- 2 x 20 KB in place of a 300 KB frame. Each band is one DMA burst.
+pub const DISPLAY_BAND_ROWS: u16 = 32;
 
 // FT6336U touch controller on the shared I2C1, with its own reset line.
 pub const PIN_I2C_SDA: usize = 34;
