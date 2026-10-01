@@ -2,6 +2,24 @@
   "extends": "light_app_ui_demo",
   "device": { "width": 320, "height": 480 },
   "pages": [
-    { "title": "mk5 3.5" }
+    {
+      "title": "mk5 3.5",
+      "children": [
+        {}, {}, {}, {}, {}, {},
+        { "button": "Camera >", "goto": 4 }
+      ]
+    },
+    {},
+    {},
+    {},
+    {
+      "title": "Camera",
+      "layout": "stack",
+      "gap": 6,
+      "children": [
+        { "label": "", "tag": 200, "min_h": 240, "max_h": 240 },
+        { "button": "< Back", "back": true, "min_h": 56, "max_h": 56 }
+      ]
+    }
   ]
 }

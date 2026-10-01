@@ -153,8 +153,12 @@ fn rotation_map(o: Orientation) -> Option<Rotation> {
 // --- the camera preview ---------------------------------------------------------------------
 
 const CAMERA_FRAME_BYTES: usize = CAMERA_WIDTH as usize * CAMERA_HEIGHT as usize * 2;
-/// The panel row the preview's top lands on: centred.
+/// The panel row the console preview's top lands on: centred.
 const CAMERA_Y0: u16 = (DISPLAY_HEIGHT - CAMERA_HEIGHT) / 2;
+/// The camera page, and the tag of the empty area on it the preview fills -- both this board's
+/// design facts (module/ui_demo_touch35's design.json appends the page).
+const CAMERA_PAGE: usize = 4;
+const CAMERA_VIEW_TAG: u8 = 200;
 /// A frame that has not landed in this long is reported once: the sensor is not streaming, or
 /// the capture is not seeing it.
 const CAMERA_STALL_US: u64 = 500_000;
@@ -168,8 +172,12 @@ static CAMERA_FRAME_A: ConstStaticCell<CameraFrame> = ConstStaticCell::new(Camer
 static CAMERA_FRAME_B: ConstStaticCell<CameraFrame> = ConstStaticCell::new(CameraFrame([0; CAMERA_FRAME_BYTES]));
 
 /// The OV5640 on its pixel bus, previewed straight to the panel: when a frame lands, the next is
-/// armed into the other buffer at once and the landed one is pushed while it captures. The
-/// interface's rendering is paused for the duration, and repaints in full after.
+/// armed into the other buffer at once and the landed one is pushed while it captures.
+///
+/// Two ways in. The camera PAGE previews into the empty area its design leaves for it, with the
+/// interface drawing around it as usual: it starts once the page's transition has finished and
+/// stops the moment the page is left. The CONSOLE (`cam on`/`bars`) previews centred on whatever
+/// is showing, with the interface's rendering paused, and repaints it in full at `cam off`.
 struct Camera {
         sensor: Ov5640<&'static RefCell<I2c1>>,
         bus: PioCamera,
@@ -181,6 +189,12 @@ struct Camera {
         powered: bool,
         configured: bool,
         live: bool,
+        /// The panel row the running preview's top is at.
+        y0: u16,
+        /// The running preview paused the interface (the console's), so stopping resumes it.
+        paused_ui: bool,
+        /// The camera page is showing, so a preview belongs on it.
+        on_page: bool,
         armed_us: u64,
         stall_reported: bool,
         /// Frames shown since the last `stats`, and when that count started.
@@ -254,42 +268,20 @@ impl Camera {
                                 }
                         }
                         CamOp::Live { bars } => {
-                                self.power_up();
-                                if !self.configured {
-                                        let t0 = light_rp2::now_us();
-                                        if let Err(e) = self.sensor.init(&mut SysClock, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_PLL) {
-                                                warn!("cam: init failed ({e:?})");
-                                                return;
-                                        }
-                                        if let Err(e) = self.sensor.set_orientation(CAMERA_MIRROR, CAMERA_FLIP) {
-                                                warn!("cam: orientation not set ({e:?})");
-                                        }
-                                        self.configured = true;
-                                        info!("cam: OV5640 configured {}x{} RGB565 in {} ms", CAMERA_WIDTH, CAMERA_HEIGHT, (light_rp2::now_us() - t0) / 1000);
-                                }
-                                if let Err(e) = self.sensor.set_test_pattern(bars) {
-                                        warn!("cam: test pattern not set ({e:?})");
+                                if !self.configure(bars) {
+                                        return;
                                 }
                                 if !self.live {
                                         //   the interface stops drawing; what it last drew stays around
                                         // the preview
-                                        let _ = view.display.wait();
-                                        *view.mode = RenderMode::Paused;
-                                        self.live = true;
-                                        self.shown = 0;
-                                        self.shown_since_us = light_rp2::now_us();
-                                        self.arm();
+                                        self.start(view, CAMERA_Y0, true);
                                 }
                                 info!("cam: live{}", if bars { ", colour bars" } else { "" });
                         }
                         CamOp::Off => {
-                                self.bus.stop();
-                                self.power_down();
-                                if self.live {
-                                        self.live = false;
-                                        *view.mode = RenderMode::Normal;
-                                        view.ui.invalidate_all();
-                                }
+                                //   off means off, on the camera page too, until it is next opened
+                                self.on_page = false;
+                                self.stop(view);
                                 info!("cam: off");
                         }
                         CamOp::Probe => self.report_probe(),
@@ -305,8 +297,88 @@ impl Camera {
                 }
         }
 
-        /// One preview step: a landed frame goes to the panel and the next is armed.
+        /// Power the sensor up and configure it if it is not already, then set the test pattern.
+        /// Blocking the first time (about 370 ms). `false` when the sensor would not come up.
+        fn configure(&mut self, bars: bool) -> bool {
+                self.power_up();
+                if !self.configured {
+                        let t0 = light_rp2::now_us();
+                        if let Err(e) = self.sensor.init(&mut SysClock, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_PLL) {
+                                warn!("cam: init failed ({e:?})");
+                                return false;
+                        }
+                        if let Err(e) = self.sensor.set_orientation(CAMERA_MIRROR, CAMERA_FLIP) {
+                                warn!("cam: orientation not set ({e:?})");
+                        }
+                        self.configured = true;
+                        info!("cam: OV5640 configured {}x{} RGB565 in {} ms", CAMERA_WIDTH, CAMERA_HEIGHT, (light_rp2::now_us() - t0) / 1000);
+                }
+                if let Err(e) = self.sensor.set_test_pattern(bars) {
+                        warn!("cam: test pattern not set ({e:?})");
+                }
+                true
+        }
+
+        /// Start previewing with the top at panel row `y0`, pausing the interface or not.
+        fn start(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>, y0: u16, pause_ui: bool) {
+                let _ = view.display.wait();
+                if pause_ui {
+                        *view.mode = RenderMode::Paused;
+                }
+                self.paused_ui = pause_ui;
+                self.y0 = y0.min(DISPLAY_HEIGHT - CAMERA_HEIGHT);
+                self.live = true;
+                self.shown = 0;
+                self.shown_since_us = light_rp2::now_us();
+                self.arm();
+        }
+
+        /// Stop the preview and power the sensor down; resume the interface if the preview paused it.
+        fn stop(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>) {
+                self.bus.stop();
+                self.power_down();
+                if self.live {
+                        self.live = false;
+                        if self.paused_ui {
+                                *view.mode = RenderMode::Normal;
+                                view.ui.invalidate_all();
+                        }
+                }
+        }
+
+        /// The interface changed page. Leaving the camera page stops its preview at once, so the
+        /// transition away covers the last frame rather than racing the next one.
+        fn page_changed(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>, page: usize) {
+                self.on_page = page == CAMERA_PAGE;
+                if !self.on_page && self.live && !self.paused_ui {
+                        self.stop(view);
+                        info!("cam: page preview stopped");
+                }
+        }
+
+        /// The camera page's preview area, in panel rows: the top of the design's empty view widget.
+        fn page_view_y0(view: &DemoView<'_, St7796<Spi0Display>, Ext>) -> Option<u16> {
+                let id = view.ui.find(CAMERA_VIEW_TAG)?;
+                let r = view.ui.get(id)?.rect;
+                u16::try_from(r.y0).ok()
+        }
+
+        /// One preview step: a landed frame goes to the panel and the next is armed. On the camera
+        /// page, the preview starts here once the page has finished arriving.
         fn poll(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>) -> bool {
+                if self.on_page && !self.live && !view.ui.is_animating() {
+                        let Some(y0) = Self::page_view_y0(view) else {
+                                warn!("cam: the camera page has no view area (tag {CAMERA_VIEW_TAG})");
+                                self.on_page = false;
+                                return false;
+                        };
+                        if !self.configure(false) {
+                                self.on_page = false;
+                                return false;
+                        }
+                        self.start(view, y0, false);
+                        info!("cam: page preview at row {}", self.y0);
+                }
                 if !self.live {
                         return false;
                 }
@@ -324,7 +396,7 @@ impl Camera {
                 let landed = self.capturing;
                 self.capturing ^= 1;
                 self.arm();
-                if let Err(e) = view.display.push_rows_blocking(&self.frames[landed][..], CAMERA_Y0, CAMERA_HEIGHT) {
+                if let Err(e) = view.display.push_rows_blocking(&self.frames[landed][..], self.y0, CAMERA_HEIGHT) {
                         warn!("cam: push failed ({e:?})");
                 }
                 self.shown += 1;
@@ -376,6 +448,9 @@ impl BoardHook<St7796<Spi0Display>, Ext> for Hook {
         }
         fn on_poll(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>) -> bool {
                 self.camera.poll(view)
+        }
+        fn on_page(&mut self, view: &mut DemoView<'_, St7796<Spi0Display>, Ext>, page: usize) {
+                self.camera.page_changed(view, page);
         }
         fn on_stats(&mut self) {
                 self.camera.stats();
@@ -575,6 +650,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 powered: false,
                 configured: false,
                 live: false,
+                y0: 0,
+                paused_ui: false,
+                on_page: false,
                 armed_us: 0,
                 stall_reported: false,
                 shown: 0,

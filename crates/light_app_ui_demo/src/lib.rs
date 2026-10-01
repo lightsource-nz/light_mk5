@@ -237,6 +237,9 @@ pub trait BoardHook<D: DisplayDriver, X: Copy + 'static> {
         fn on_poll(&mut self, _view: &mut DemoView<'_, D, X>) -> bool {
                 false
         }
+        /// The interface has navigated to design page `page` -- called as the transition starts, so
+        /// a board stops what it was drawing on the page being left before it is covered.
+        fn on_page(&mut self, _view: &mut DemoView<'_, D, X>, _page: usize) {}
         /// Whether a draw may start NOW. `false` defers it: dirty stays set, the module
         /// stays busy, and the next poll asks again. For a panel whose framebuffer is live
         /// on the glass, this is where drawing is scheduled around the beam.
@@ -468,6 +471,9 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                 self.blob_page = page;
                 //   the tree is rebuilt from the design text, so re-apply any toggles that are on
                 self.apply_toggle_labels();
+                let Self { display, layer, ui, mode, hook, .. } = self;
+                let mut view = DemoView { display, layer: &mut **layer, ui: &mut **ui, mode };
+                hook.on_page(&mut view, page);
         }
 
         /// Go back a page: return to the root (the demo's pages all hang off the main page).
