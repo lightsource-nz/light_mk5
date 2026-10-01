@@ -111,6 +111,10 @@ pub const CAMERA_XCLK_HZ: u32 = 40_000_000;
 /// carries a 320-pixel line well inside the binned line time and is within what the PIO capture
 /// keeps up with at 200 MHz.
 pub const CAMERA_PLL: Pll = Pll { multiplier: 11, sys_div: 1, pre_div: 1, root_2x: false, pclk_root_div: 1, pclk_div: 4 };
+/// How the module is mounted: unmirrored, its image reads mirrored on the panel (and the right
+/// way up) -- confirmed on the glass.
+pub const CAMERA_MIRROR: bool = true;
+pub const CAMERA_FLIP: bool = false;
 /// The preview size: the panel's width at the sensor's 4:3, one 150 KB RGB565 frame.
 pub const CAMERA_WIDTH: u16 = 320;
 pub const CAMERA_HEIGHT: u16 = 240;

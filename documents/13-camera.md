@@ -86,10 +86,11 @@ flowchart LR
 
 ## Design decisions and constraints
 
-- **A single frame buffer serves a preview.** Capture lands a frame, the display pushes it, and only
-  then is the next frame armed. One buffer is never written and read at once, so the preview shows
-  every other sensor frame. On a board with room for a second frame, alternating two buffers would
-  overlap the push with the next capture.
+- **A preview alternates two frame buffers.** When a frame lands, the next capture is armed into the
+  other buffer at once, and the landed frame is pushed while that capture runs. The arming comes
+  first because the push outlasts the sensor's vertical blanking: armed after it, the capture would
+  miss the next frame and the preview would show every other one. With one buffer, capture and push
+  cannot overlap, and the preview runs at half the sensor's rate.
 - **The capture is the port's, and so is its timing budget.** How fast a pixel clock a port keeps
   up with depends on its capture hardware and its system clock. The figure for each port is in
   [07-ports-and-shell.md](07-ports-and-shell.md).

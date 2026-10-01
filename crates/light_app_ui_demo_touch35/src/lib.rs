@@ -159,20 +159,25 @@ const CAMERA_Y0: u16 = (DISPLAY_HEIGHT - CAMERA_HEIGHT) / 2;
 /// the capture is not seeing it.
 const CAMERA_STALL_US: u64 = 500_000;
 
-/// The one camera frame. Captured into, then pushed to the panel from, in turn -- never both at
-/// once, so one buffer serves. Word-aligned: the capture lands it in word writes.
+/// The two camera frames: one being captured into while the other is pushed to the panel, so the
+/// push overlaps the next capture and the preview keeps up with every sensor frame. Word-aligned:
+/// the capture lands them in word writes.
 #[repr(C, align(4))]
 struct CameraFrame([u8; CAMERA_FRAME_BYTES]);
-static CAMERA_FRAME: ConstStaticCell<CameraFrame> = ConstStaticCell::new(CameraFrame([0; CAMERA_FRAME_BYTES]));
+static CAMERA_FRAME_A: ConstStaticCell<CameraFrame> = ConstStaticCell::new(CameraFrame([0; CAMERA_FRAME_BYTES]));
+static CAMERA_FRAME_B: ConstStaticCell<CameraFrame> = ConstStaticCell::new(CameraFrame([0; CAMERA_FRAME_BYTES]));
 
-/// The OV5640 on its pixel bus, previewed straight to the panel: capture a frame, push it, arm
-/// the next. The interface's rendering is paused for the duration, and repaints in full after.
+/// The OV5640 on its pixel bus, previewed straight to the panel: when a frame lands, the next is
+/// armed into the other buffer at once and the landed one is pushed while it captures. The
+/// interface's rendering is paused for the duration, and repaints in full after.
 struct Camera {
         sensor: Ov5640<&'static RefCell<I2c1>>,
         bus: PioCamera,
         xclk: PwmOutput,
         pwdn: Output,
-        frame: &'static mut [u8; CAMERA_FRAME_BYTES],
+        frames: [&'static mut [u8; CAMERA_FRAME_BYTES]; 2],
+        /// The frame the capture is writing (or last wrote); the other is the panel's.
+        capturing: usize,
         powered: bool,
         configured: bool,
         live: bool,
@@ -203,8 +208,9 @@ impl Camera {
         }
 
         fn arm(&mut self) {
-                // SAFETY: the buffer is not touched again until frame_complete answers true
-                unsafe { self.bus.start_frame(&mut self.frame[..]) };
+                // SAFETY: the capturing buffer is not touched again until frame_complete answers
+                // true; only the other one is pushed meanwhile
+                unsafe { self.bus.start_frame(&mut self.frames[self.capturing][..]) };
                 self.armed_us = light_rp2::now_us();
                 self.stall_reported = false;
         }
@@ -227,12 +233,13 @@ impl Camera {
                 );
                 //   what the buffer holds: how much of it is not zero, and the first pixels of the
                 // top, middle and bottom rows
-                info!("cam dma: ctrl {:#010x}, write addr {:#010x} (frame at {:#010x}), abort {:#x}", p.dma_ctrl, p.dma_write_addr, self.frame.as_ptr() as u32, p.dma_abort);
-                let nonzero = self.frame.iter().filter(|b| **b != 0).count();
-                info!("cam frame: {nonzero}/{} bytes nonzero", self.frame.len());
+                let frame = &self.frames[self.capturing];
+                info!("cam dma: ctrl {:#010x}, write addr {:#010x} (frame at {:#010x}), abort {:#x}", p.dma_ctrl, p.dma_write_addr, frame.as_ptr() as u32, p.dma_abort);
+                let nonzero = frame.iter().filter(|b| **b != 0).count();
+                info!("cam frame: {nonzero}/{} bytes nonzero", frame.len());
                 let stride = CAMERA_WIDTH as usize * 2;
                 for row in [0usize, CAMERA_HEIGHT as usize / 2, CAMERA_HEIGHT as usize - 1] {
-                        let r = &self.frame[row * stride..row * stride + 16];
+                        let r = &frame[row * stride..row * stride + 16];
                         info!("cam frame row {row}: {:02x?}", r);
                 }
         }
@@ -253,6 +260,9 @@ impl Camera {
                                         if let Err(e) = self.sensor.init(&mut SysClock, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_PLL) {
                                                 warn!("cam: init failed ({e:?})");
                                                 return;
+                                        }
+                                        if let Err(e) = self.sensor.set_orientation(CAMERA_MIRROR, CAMERA_FLIP) {
+                                                warn!("cam: orientation not set ({e:?})");
                                         }
                                         self.configured = true;
                                         info!("cam: OV5640 configured {}x{} RGB565 in {} ms", CAMERA_WIDTH, CAMERA_HEIGHT, (light_rp2::now_us() - t0) / 1000);
@@ -308,11 +318,16 @@ impl Camera {
                         }
                         return true;
                 }
-                if let Err(e) = view.display.push_rows_blocking(&self.frame[..], CAMERA_Y0, CAMERA_HEIGHT) {
+                //   the next capture first, so it is armed before the sensor's next frame starts --
+                // the push below outlasts the vertical blanking, and arming after it would miss
+                // that frame
+                let landed = self.capturing;
+                self.capturing ^= 1;
+                self.arm();
+                if let Err(e) = view.display.push_rows_blocking(&self.frames[landed][..], CAMERA_Y0, CAMERA_HEIGHT) {
                         warn!("cam: push failed ({e:?})");
                 }
                 self.shown += 1;
-                self.arm();
                 true
         }
 
@@ -555,7 +570,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 bus: p.camera,
                 xclk: p.cam_xclk,
                 pwdn: p.cam_pwdn,
-                frame: &mut CAMERA_FRAME.take().0,
+                frames: [&mut CAMERA_FRAME_A.take().0, &mut CAMERA_FRAME_B.take().0],
+                capturing: 0,
                 powered: false,
                 configured: false,
                 live: false,
