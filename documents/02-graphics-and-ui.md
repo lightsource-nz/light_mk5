@@ -91,7 +91,9 @@ transform and a clip rectangle, in the panel's pixel format.
 ### Public surface
 
 - **`Canvas<'a>`** — the drawing context over a `&mut [u8]` buffer. Constructed with `new(buf,
-  format, width, height)`. Orientation: `set_rotation`, `set_flip`, `set_offset(dx, dy)` (a logical
+  format, width, height)` over a whole frame, or `band(buf, format, width, height, y0, rows)` over a
+  band of the panel — the full-width physical rows `y0 .. y0 + rows` — with `is_band` and
+  `band_region`. Orientation: `set_rotation`, `set_flip`, `set_offset(dx, dy)` (a logical
   translation for a page-transition slide), `set_clip`/`clear_clip`/`clip`. Queries: `width`,
   `height` (logical, swapped under R90/R270), `format`, `transform`, `buffer`. Mapping:
   `transform_rect`, `untransform_point` (physical → logical, for input). Fields `fg`, `bg`.
@@ -111,6 +113,14 @@ transform and a clip rectangle, in the panel's pixel format.
 
 ### Behaviour and invariants
 
+- **A band is the panel, seen through a slot.** A band canvas keeps the whole panel's geometry,
+  orientation and coordinates, so drawing code is the same whether it paints a frame or a band; only
+  the buffer holds fewer rows. Every buffer index is taken relative to the band's first row, and the
+  clip window is intersected with the band's rows mapped back into logical space — under a quarter
+  turn a physical row band is a logical column strip — so a draw outside the band writes nothing.
+  The whole-frame operations (`blit_rotated`, `blit_offset`, `shift_region`) refuse a band. A scene
+  painted band by band and reassembled is byte-identical to the scene painted whole, in every format,
+  rotation and flip and for band heights that do not divide the panel: that is the tested invariant.
 - **Logical draws onto a physical buffer through one transform.** `Transform::for_canvas` composes a
   flip (in logical space, first) with a rotation, giving a matrix whose entries are in `{-1, 0, 1}`
   with determinant ±1 — so its inverse (used for input) is exact integer arithmetic. Under R90/R270
@@ -182,7 +192,9 @@ drivers**, each of which sees only a `light_core::hal` bus and nothing about the
 ### Public surface
 
 - **`Display<'b, D: DisplayDriver>`** — the core. `new(driver, buf, width, height, format, now)`;
-  optional `set_back_buffer` (double buffering) and `is_double_buffered`. Drawing access:
+  optional `set_back_buffer` (double buffering) and `is_double_buffered`. Or
+  `new_banded(driver, a, b, width, height, rows, format, now)` — no frame, two band buffers — with
+  `band_rows`, `band_mut(y0)` (the band to draw, never the one being pushed) and `present_band`. Drawing access:
   `frame_mut` (the back buffer, or the single buffer unless an update is reading it — then `None`),
   `front`. Update lifecycle: `update_async(region)`, `poll` (`Ok(true)` busy / `Ok(false)` idle),
   `wait`, `update_blocking`, `busy`. Double buffering: `swap`, `freeze`, `freeze_render`, `thaw`,
@@ -191,12 +203,15 @@ drivers**, each of which sees only a `light_core::hal` bus and nothing about the
 - **`DisplayDriver`** — the trait a panel implements: `init`; `chunk_count(region)`;
   `chunks_per_poll(region)` (the spin-or-yield budget); `kick(frame, region, index)` (start pushing
   chunk N, must not wait); `chunk_complete`; `chunk_timeout_ms`.
-- **`Frame<'a>`** — a read-only buffer view handed to `kick`: `buf`, geometry, `stride`, and helpers
-  `row` (one row-run inside a region) and `rows` (contiguous full-width rows).
+- **`Frame<'a>`** — a read-only buffer view handed to `kick`: `buf`, geometry, `stride`, `origin_y`
+  (the panel row the buffer's first row is: 0 for a frame, the band's first row for a band), and
+  helpers `row` (one row-run inside a region) and `rows` (contiguous full-width rows), both addressed
+  by panel row, so a driver pushes a band exactly as it pushes a frame.
 - **`UpdateError`** — `Busy`, `Timeout`.
 - **`FrameLayer`** — `const new(width, height, format)`. `set_frame_rate`, `set_orientation`,
   `canvas`, `transform`/`untransform_point`, `physical_size`/`logical_size`, `frames`. Frame loop:
-  `frame_begin` (cleared canvas) / `frame_begin_over` (uncleared) / `frame_end`; `poll`; `busy`.
+  `frame_begin` (cleared canvas) / `frame_begin_over` (uncleared) / `frame_end`; `poll`; `busy`. On a
+  banded display, `frame_banded(display, now, paint)` instead, with `frame_due` to ask first.
   Dirty tracking: `invalidate(LogicalRegion)`, `invalidate_all`, `pending`, `to_physical`. Public
   fields `bg`, `draw_over`, and the `skipped` counter. Constant `MAX_REGIONS` (8).
 - **`LogicalRegion`** — a signed logical rectangle (content near an edge falls off as negative, not
@@ -380,6 +395,41 @@ frame; a second test locks the routing (open reveals via the shift, close covers
 `shift_region` carries per-format tests for each axis. A board that does not opt in, and the
 double-buffered and scanout paths, are unaffected.
 
+### Band rendering — no frame in RAM
+
+A panel that keeps its own frame memory and accepts windowed pushes needs no frame in RAM at all: the
+image lives on the panel, and the MCU only has to produce what changes. A **banded** display
+(`Display::new_banded`) holds two buffers of a few full-width rows instead of a frame — on a 320×480
+RGB565 panel, two 32-row bands are 40 KB where the frame is 300 KB — and the frame layer paints and
+pushes a frame a band at a time:
+
+- **The frame-layer contracts hold per band.** `frame_banded` computes exactly the push list a
+  whole-frame display would (this frame's invalidated regions and last frame's, merged); each band any
+  of it touches is cleared and repainted by the caller through a band canvas cropped to that band's
+  dirty part, then exactly that part is pushed. Untouched bands are neither painted nor pushed. One
+  band is drawn while the other is pushed, so paint and transfer overlap; a frame's bands are painted
+  within one call (a full repaint blocks the loop for one full-frame transfer — about 40 ms on a
+  320×480 panel at 75 MHz — and typical updates are a fraction of that).
+- **The toolkit renders through it unchanged.** `Ui::render` paints a banded frame with `paint_within`
+  as the per-band paint, handing its dirty regions to the layer only once `frame_due` says the frame
+  will run, so a refused frame keeps the tree dirty.
+- **The page slide is a cover both ways.** Neither reveal mechanic has pixels to move — there is no
+  frame to scroll or capture — but the outgoing page is on the panel and stays there wherever a step
+  does not push. So each step marks only the incoming page's on-screen rectangle and repaints just the
+  bands it touches: the incoming slides in over the outgoing, on open and on close, each step costing
+  the incoming's area. **Rotation snaps.**
+- **Eligibility.** Only a panel that honours its window and retains what it was sent: the ST77xx
+  family. A panel that ignores its window (the AXS15231B) or is scanned out of this RAM keeps a whole
+  frame. Whatever needs a frame reports unavailable on a banded display — `frame_mut` is `None`, and
+  freeze, region buffering and double buffering are off — so nothing takes the whole-frame path by
+  mistake.
+
+**Invariants, as tested.** Against a fake panel that keeps its own frame memory, a banded display
+leaves that memory byte-identical to a whole-frame display's after a full paint, a moving box, a change
+straddling band edges and a rotation (frame layer), and after a real multi-page demo's first paint,
+focus moves, a page transition, a scroll, rotations and a tap back (toolkit), with band heights that
+do not divide the panel.
+
 ## The widget toolkit — `light-ui`
 
 ### Responsibility
@@ -530,7 +580,8 @@ it means the same however the interface is rotated.*
   freezes the outgoing and slides it off the live incoming, and the cover renders the returning parent
   into the back and slides it on over the static outgoing; on a single buffer the reveal scrolls the
   outgoing off in place (region buffering, see the memory-model decision above) and the cover redraws
-  the incoming at a shrinking offset. Either way open and close mirror. Direction comes from the
+  the incoming at a shrinking offset. Either way open and close mirror — except on a banded display,
+  which has no pixels to reveal from and covers both ways (see band rendering above). Direction comes from the
   page's `Descent` (its own, then the tree default, then a layout-derived seed: a `Row`/horizontal page
   runs the vertical axis, everything else the horizontal one), and the sign is the descent axis's
   alone — it does not turn on `back` — so the reveal leaves and the cover returns the same edge. A **rotation** animation freezes the pre-rotation image into the back
