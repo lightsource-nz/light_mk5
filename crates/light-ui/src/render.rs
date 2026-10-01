@@ -665,6 +665,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 if !self.dirty || self.root.is_none() {
                         return false;
                 }
+                if display.band_rows().is_some() {
+                        //   BANDED: no frame in RAM. The tree is painted a band at a time, each band
+                        // cleared and cropped to its dirty part, and pushed into the panel's own
+                        // frame memory. The regions are handed over only once the frame will run,
+                        // so a refused frame keeps the tree dirty for a later pass
+                        if !layer.frame_due(display, now_us) {
+                                return false;
+                        }
+                        self.commit(layer);
+                        let began = light_core::log::now_us();
+                        let _ = layer.frame_banded(display, now_us, |c, clip| self.paint_within(c, style, clip));
+                        self.frame_cost.paint_us = self.frame_cost.paint_us.max(Self::since(began));
+                        return true;
+                }
                 //   on a cleared canvas the whole tree; on a persistent one only the invalidated
                 // bounds, the rest being right already (and the whole canvas when everything is)
                 let within = if layer.draw_over { self.dirty_bounds() } else { None };

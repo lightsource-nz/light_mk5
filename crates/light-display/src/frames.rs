@@ -339,14 +339,7 @@ impl FrameLayer {
         /// pushing -- exactly as [`frame_begin`](Self::frame_begin) returns `None`.
         pub fn frame_banded<D: DisplayDriver>(&mut self, display: &mut Display<'_, D>, now_us: u64, mut paint: impl FnMut(&mut Canvas<'_>, LogicalRegion)) -> Result<bool, UpdateError> {
                 let Some(rows) = display.band_rows() else { return Ok(false) };
-                if self.frame_interval_us != 0 && now_us < self.next_frame_us {
-                        return Ok(false);
-                }
-                if self.busy(display) {
-                        if self.frame_interval_us != 0 && now_us >= self.next_frame_us + self.frame_interval_us {
-                                self.next_frame_us += self.frame_interval_us;
-                                self.skipped += 1;
-                        }
+                if !self.frame_due(display, now_us) {
                         return Ok(false);
                 }
                 self.next_frame_us = now_us + self.frame_interval_us;
@@ -397,6 +390,25 @@ impl FrameLayer {
                         y0 += n;
                 }
                 Ok(true)
+        }
+
+        /// Whether a frame may run now: its deadline has passed and the display can take it. A
+        /// frame lost to a busy display is counted `skipped` once a whole interval has gone, as
+        /// [`frame_begin`](Self::frame_begin) counts it. For a caller that must decide before
+        /// committing to a [`frame_banded`](Self::frame_banded) -- handing over its dirty regions
+        /// only when they will be drawn.
+        pub fn frame_due<D: DisplayDriver>(&mut self, display: &Display<'_, D>, now_us: u64) -> bool {
+                if self.frame_interval_us != 0 && now_us < self.next_frame_us {
+                        return false;
+                }
+                if self.busy(display) {
+                        if self.frame_interval_us != 0 && now_us >= self.next_frame_us + self.frame_interval_us {
+                                self.next_frame_us += self.frame_interval_us;
+                                self.skipped += 1;
+                        }
+                        return false;
+                }
+                true
         }
 
         /// This frame's push list in panel coordinates: what was invalidated this frame and last,

@@ -258,6 +258,24 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
                 let travel = ((self.page_move_span as i64 * elapsed as i64) / (i64::from(self.page_move_ms) * 1000)) as i32;
                 let cover = !self.page_move_over && !self.page_move_region && self.page_move_back;
+                if self.page_move_over && display.band_rows().is_some() {
+                        //   BANDED: the outgoing page is not in RAM but on the panel, in its own frame
+                        // memory -- and stays there wherever this step does not push. So the step
+                        // marks ONLY the incoming page's on-screen rectangle, and the banded frame
+                        // repaints just the bands it touches: the incoming slides in over the outgoing
+                        // (a cover, both ways), each step's cost the incoming's area, not the panel's
+                        let (ox, oy) = (self.page_move_dx * (self.page_move_span - travel), self.page_move_dy * (self.page_move_span - travel));
+                        let (lw, lh) = layer.logical_size();
+                        layer.invalidate(Rect::new(ox, oy, ox + i32::from(lw) - 1, oy + i32::from(lh) - 1));
+                        let drew = layer
+                                .frame_banded(display, now_us, |c, _| {
+                                        c.set_offset(ox, oy);
+                                        self.paint(c, style);
+                                        c.set_offset(0, 0);
+                                })
+                                .unwrap_or(false);
+                        return if drew { Step::Drew } else { Step::Waiting };
+                }
                 if self.page_move_over {
                         //   no clear: the outgoing image IS the ground the incoming page
                         // slides in over

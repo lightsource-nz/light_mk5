@@ -2364,6 +2364,157 @@ mod tests {
 
         /// The touch169 demo, end to end on the host: every page built, painted at every
         /// rotation, scrolled and navigated, with the real panel geometry and a 12x19 cell.
+        /// A panel with its own frame memory, as a GDDRAM panel has: every pushed window lands in
+        /// it, read through the frame's panel-row helpers the way a real driver reads. Comparing
+        /// two of these compares what two displays SHOW.
+        struct PanelMem {
+                width: u16,
+                mem: StdVec<u8>,
+        }
+        impl DisplayDriver for PanelMem {
+                fn init(&mut self, _: &mut dyn Clock, _: u16, _: u16) {}
+                fn chunk_count(&self, _: &Region) -> u16 {
+                        1
+                }
+                fn chunks_per_poll(&self, _: &Region) -> u16 {
+                        0
+                }
+                fn kick(&mut self, frame: &Frame<'_>, r: &Region, _: u16) {
+                        for y in r.y0..=r.y1 {
+                                let src = frame.row(r, y);
+                                let at = (usize::from(y) * usize::from(self.width) + usize::from(r.x0)) * 2;
+                                self.mem[at..at + src.len()].copy_from_slice(src);
+                        }
+                }
+                fn chunk_complete(&mut self) -> bool {
+                        true
+                }
+                fn chunk_timeout_ms(&self) -> u32 {
+                        10
+                }
+        }
+
+        #[test]
+        fn a_banded_display_shows_exactly_what_a_whole_frame_display_does() {
+                //   the same demo driven through a single-buffered whole-frame display and a banded
+                // one (seven-row bands, which do not divide the panel): after every settled
+                // interaction -- first paint, focus moves, a page transition, a drag-scroll, a
+                // rotation, a tap back -- the two panels' frame memories must be identical
+                let mut e = Encoder::new(12, 19, 15, 16);
+                for c in 0x20u8..0x7f {
+                        e.add(c, &[0xA5; 38]).unwrap();
+                }
+                let blob = e.encode();
+                let font = Font::parse(&blob).unwrap();
+                let (w, h) = (240u16, 280u16);
+                let fmt = PixelFormat::Rgb565;
+                let mut frame = std::vec![0u8; fmt.buffer_len(w, h)];
+                let mut whole = Display::new(PanelMem { width: w, mem: std::vec![0; fmt.buffer_len(w, h)] }, &mut frame, w, h, fmt, now);
+                let mut whole_layer = FrameLayer::new(w, h, fmt);
+                let mut whole_ui: Ui<Ev, 12> = Ui::new();
+                let (mut a, mut b) = (std::vec![0u8; fmt.buffer_len(w, 7)], std::vec![0u8; fmt.buffer_len(w, 7)]);
+                let mut banded = Display::new_banded(PanelMem { width: w, mem: std::vec![0; fmt.buffer_len(w, h)] }, &mut a, &mut b, w, h, 7, fmt, now);
+                let mut banded_layer = FrameLayer::new(w, h, fmt);
+                let mut banded_ui: Ui<Ev, 12> = Ui::new();
+
+                fn settle(ui: &mut Ui<Ev, 12>, layer: &mut FrameLayer, display: &mut Display<'_, PanelMem>, font: &Font<'_>, t: &mut u64) {
+                        for _ in 0..200 {
+                                ui.render(layer, display, &styled(font), *t);
+                                while layer.poll(display).unwrap() {}
+                                *t += 50_000;
+                                if !ui.is_animating() && !ui.is_dirty() {
+                                        return;
+                                }
+                        }
+                        panic!("never settled");
+                }
+                let mut t = 0u64;
+                macro_rules! both {
+                        ($what:expr, |$ui:ident, $layer:ident| $act:expr) => {{
+                                for ($ui, $layer, display) in [
+                                        (&mut whole_ui, &mut whole_layer, &mut whole as &mut Display<'_, PanelMem>),
+                                        (&mut banded_ui, &mut banded_layer, &mut banded),
+                                ] {
+                                        let _ = &$layer;
+                                        $act;
+                                        let mut tt = t;
+                                        settle($ui, $layer, display, &font, &mut tt);
+                                }
+                                t += 10_000_000;
+                                assert!(whole.driver().mem == banded.driver().mem, "the panels differ after: {}", $what);
+                        }};
+                }
+                both!("the first paint", |ui, layer| {
+                        ui.set_style(&styled(&font));
+                        ui.fit(layer);
+                        ui.navigate(&T_PAGE_MAIN).unwrap();
+                });
+                both!("two focus moves", |ui, layer| {
+                        ui.focus_next();
+                        ui.focus_next();
+                });
+                both!("a page transition", |ui, layer| {
+                        let root = ui.root().unwrap();
+                        let list_btn = ui.children(root).last().unwrap();
+                        ui.set_focus(Some(list_btn));
+                        let _ = ui.activate();
+                });
+                both!("a scroll", |ui, layer| {
+                        let root = ui.root().unwrap();
+                        let _ = ui.scroll_by(root, 0, 60);
+                });
+                both!("a rotation", |ui, layer| ui.set_rotation(layer, Rotation::R90));
+                both!("a rotation back", |ui, layer| ui.set_rotation(layer, Rotation::R0));
+                both!("a tap back to the main page", |ui, layer| {
+                        let root = ui.root().unwrap();
+                        let _ = ui.scroll_by(root, 0, 1000);
+                        let back = ui.children(root).last().unwrap();
+                        ui.set_focus(Some(back));
+                        let _ = ui.activate();
+                });
+                assert!(core::ptr::eq(banded_ui.page().unwrap(), &T_PAGE_MAIN));
+                assert!(banded.band_rows() == Some(7) && !banded.is_double_buffered());
+        }
+
+        #[test]
+        fn a_banded_page_slide_covers_and_pushes_only_the_incoming_page() {
+                //   on a banded display the slide is a cover both ways: each step marks only the
+                // incoming page's on-screen rectangle, so early steps push a sliver and the outgoing
+                // page stays on the panel everywhere else
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let (w, h) = (40u16, 24u16);
+                let fmt = PixelFormat::Rgb565;
+                let (mut a, mut b) = (std::vec![0u8; fmt.buffer_len(w, 4)], std::vec![0u8; fmt.buffer_len(w, 4)]);
+                let mut display = Display::new_banded(Mock { pushed: StdVec::new() }, &mut a, &mut b, w, h, 4, fmt, now);
+                let mut layer = FrameLayer::new(w, h, fmt);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                ui.navigate(&PAGE_MAIN).unwrap();
+                let mut t = 0u64;
+                for _ in 0..20 {
+                        ui.render(&mut layer, &mut display, &styled(&font), t);
+                        let _ = flush(&mut layer, &mut display);
+                        t += 50_000;
+                        if !ui.is_dirty() {
+                                break;
+                        }
+                }
+                ui.navigate(&PAGE_DETAIL).unwrap();
+                let ms = u64::from(ui.page_move_ms);
+                //   an early step: the incoming has travelled a fraction of the width, and only
+                // that strip is pushed
+                ui.render(&mut layer, &mut display, &styled(&font), t);
+                let _ = flush(&mut layer, &mut display);
+                ui.render(&mut layer, &mut display, &styled(&font), t + ms * 1000 / 5);
+                let pushed = flush(&mut layer, &mut display);
+                assert!(!pushed.is_empty());
+                let widest = pushed.iter().map(|r| r.width()).max().unwrap();
+                assert!(widest < w, "an early cover step pushed the whole width ({widest} of {w})");
+                assert!(!display.is_frozen());
+        }
+
         #[test]
         fn the_touch169_demo_builds_paints_and_navigates_at_every_rotation() {
                 let mut e = Encoder::new(12, 19, 15, 16);
