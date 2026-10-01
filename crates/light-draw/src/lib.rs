@@ -237,6 +237,10 @@ pub struct Canvas<'a> {
         transform: Transform,
         /// Inclusive, logical, never larger than the canvas.
         clip: Region,
+        /// The physical rows the buffer holds: `band_y0 .. band_y0 + band_rows`. The whole panel
+        /// for a frame canvas; a strip of it for a band (see [`Canvas::band`]).
+        band_y0: u16,
+        band_rows: u16,
         pub fg: u16,
         pub bg: u16,
 }
@@ -244,7 +248,23 @@ pub struct Canvas<'a> {
 impl<'a> Canvas<'a> {
         /// `buf` must be at least `format.buffer_len(width, height)`.
         pub fn new(buf: &'a mut [u8], format: PixelFormat, width: u16, height: u16) -> Self {
-                assert!(buf.len() >= format.buffer_len(width, height));
+                Self::band(buf, format, width, height, 0, height)
+        }
+
+        /// A canvas over a BAND of a `width` x `height` panel: `buf` holds only the full-width
+        /// physical rows `y0 .. y0 + rows`. Geometry, orientation and coordinates are the whole
+        /// panel's, so drawing code is unchanged; every primitive clips to the band, so a draw
+        /// that lands outside it writes nothing. Painting a frame band by band, each band its own
+        /// small buffer, is how a panel with its own frame memory is driven without a full frame
+        /// in RAM. The whole-frame operations ([`blit_rotated`](Self::blit_rotated),
+        /// [`blit_offset`](Self::blit_offset), [`shift_region`](Self::shift_region)) need the
+        /// whole frame and refuse a band.
+        ///
+        /// `buf` must be at least `format.buffer_len(width, rows)`, and the band must lie on the
+        /// panel.
+        pub fn band(buf: &'a mut [u8], format: PixelFormat, width: u16, height: u16, y0: u16, rows: u16) -> Self {
+                assert!(rows > 0 && u32::from(y0) + u32::from(rows) <= u32::from(height), "the band lies on the panel");
+                assert!(buf.len() >= format.buffer_len(width, rows));
                 let mut c = Self {
                         buf,
                         format,
@@ -258,11 +278,23 @@ impl<'a> Canvas<'a> {
                         off_y: 0,
                         transform: Transform::IDENTITY,
                         clip: Region::full(width, height),
+                        band_y0: y0,
+                        band_rows: rows,
                         fg: 0xFFFF,
                         bg: 0,
                 };
                 c.recompute();
                 c
+        }
+
+        /// Whether this canvas holds only a band of the panel.
+        pub fn is_band(&self) -> bool {
+                self.band_rows != self.phys_h
+        }
+
+        /// The physical rows this canvas's buffer holds.
+        pub fn band_region(&self) -> Region {
+                Region::new(0, self.band_y0, self.phys_w - 1, self.band_y0 + self.band_rows - 1)
         }
 
         pub fn width(&self) -> u16 {
@@ -320,15 +352,40 @@ impl<'a> Canvas<'a> {
         /// the clip to keep `run` on the buffer, so nothing may widen past it.
         fn offset_window(&self) -> Region {
                 let (w, h) = (i32::from(self.dim_x), i32::from(self.dim_y));
-                let x0 = (-self.off_x).max(0);
-                let x1 = (w - 1 - self.off_x).min(w - 1);
-                let y0 = (-self.off_y).max(0);
-                let y1 = (h - 1 - self.off_y).min(h - 1);
+                let mut x0 = (-self.off_x).max(0);
+                let mut x1 = (w - 1 - self.off_x).min(w - 1);
+                let mut y0 = (-self.off_y).max(0);
+                let mut y1 = (h - 1 - self.off_y).min(h - 1);
+                if self.is_band() {
+                        //   and only what lands in the band: its physical rows, mapped back into
+                        // logical space through the whole transform (offset included), so under a
+                        // quarter turn a row band is a logical column strip
+                        let (bx0, by0, bx1, by1) = self.band_logical();
+                        x0 = x0.max(bx0);
+                        x1 = x1.min(bx1);
+                        y0 = y0.max(by0);
+                        y1 = y1.min(by1);
+                }
                 if x0 > x1 || y0 > y1 {
                         //   nothing lands on the buffer: a clip no span or cell passes
                         return Region::new(1, 1, 0, 0);
                 }
                 Region::new(x0 as u16, y0 as u16, x1 as u16, y1 as u16)
+        }
+
+        /// The band's physical rows as an inclusive logical rectangle, unclamped. Exact: every
+        /// transform here has determinant ±1 and maps axis-aligned rectangles to axis-aligned
+        /// rectangles, so two opposite corners invert to the rectangle's.
+        fn band_logical(&self) -> (i32, i32, i32, i32) {
+                let m = &self.transform;
+                let det = m.a * m.d - m.b * m.c;
+                let inv = |px: i32, py: i32| {
+                        let (dx, dy) = (px - m.tx, py - m.ty);
+                        ((m.d * dx - m.b * dy) * det, (m.a * dy - m.c * dx) * det)
+                };
+                let (ax, ay) = inv(0, i32::from(self.band_y0));
+                let (bx, by) = inv(i32::from(self.phys_w) - 1, i32::from(self.band_y0) + i32::from(self.band_rows) - 1);
+                (ax.min(bx), ay.min(by), ax.max(bx), ay.max(by))
         }
 
         /// Translate everything drawn next by `(dx, dy)` LOGICAL pixels -- the page
@@ -378,8 +435,10 @@ impl<'a> Canvas<'a> {
 
         // --- pixels -----------------------------------------------------------------------
 
-        /// Unclipped physical write. Callers guarantee the logical point is on the canvas.
+        /// Unclipped physical write. Callers guarantee the logical point is on the canvas (and,
+        /// for a band, in the band).
         fn set_phys(&mut self, x: u16, y: u16, color: u16) {
+                let y = y - self.band_y0;
                 match self.format {
                         PixelFormat::Mono1 => {
                                 let stride = self.format.stride(self.phys_w);
@@ -400,6 +459,7 @@ impl<'a> Canvas<'a> {
         }
 
         fn get_phys(&self, x: u16, y: u16) -> u16 {
+                let y = y - self.band_y0;
                 match self.format {
                         PixelFormat::Mono1 => {
                                 let stride = self.format.stride(self.phys_w);
@@ -429,12 +489,15 @@ impl<'a> Canvas<'a> {
                 self.set_phys(px as u16, py as u16, color);
         }
 
-        /// Read a logical pixel; 0 outside the canvas.
+        /// Read a logical pixel; 0 outside the canvas (or, for a band, outside the band).
         pub fn get(&self, x: i32, y: i32) -> u16 {
                 if x < 0 || y < 0 || x >= i32::from(self.dim_x) || y >= i32::from(self.dim_y) {
                         return 0;
                 }
                 let (px, py) = self.transform.apply(x, y);
+                if py < i32::from(self.band_y0) || py >= i32::from(self.band_y0) + i32::from(self.band_rows) {
+                        return 0;
+                }
                 self.get_phys(px as u16, py as u16)
         }
 
@@ -464,7 +527,7 @@ impl<'a> Canvas<'a> {
                 let (px, py) = self.transform.apply(x0, y);
                 // physical step per logical +x, in pixels
                 let step = self.transform.a as isize + self.transform.c as isize * self.phys_w as isize;
-                let mut i = py as isize * self.phys_w as isize + px as isize;
+                let mut i = (py - i32::from(self.band_y0)) as isize * self.phys_w as isize + px as isize;
                 match self.format {
                         PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
                                 let [hi, lo] = self.format.rgb565_bytes(color);
@@ -500,17 +563,18 @@ impl<'a> Canvas<'a> {
 
         // --- primitives -------------------------------------------------------------------
 
-        /// Fill the whole physical buffer with the background colour, ignoring the clip.
+        /// Fill the whole physical buffer (a band's own rows, for a band) with the background
+        /// colour, ignoring the clip.
         pub fn clear(&mut self) {
                 match self.format {
                         PixelFormat::Mono1 => {
                                 let v = if self.bg != 0 { 0xFF } else { 0x00 };
-                                let n = self.format.buffer_len(self.phys_w, self.phys_h);
+                                let n = self.format.buffer_len(self.phys_w, self.band_rows);
                                 self.buf[..n].fill(v);
                         }
                         PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
                                 let [hi, lo] = self.format.rgb565_bytes(self.bg);
-                                let n = self.format.buffer_len(self.phys_w, self.phys_h);
+                                let n = self.format.buffer_len(self.phys_w, self.band_rows);
                                 if hi == lo {
                                         // black, white and the greys: one memset
                                         self.buf[..n].fill(hi);
@@ -536,7 +600,7 @@ impl<'a> Canvas<'a> {
                 }
                 let (px, py) = self.transform.apply(x, y0);
                 let step = self.transform.b as isize + self.transform.d as isize * self.phys_w as isize;
-                let mut i = py as isize * self.phys_w as isize + px as isize;
+                let mut i = (py - i32::from(self.band_y0)) as isize * self.phys_w as isize + px as isize;
                 match self.format {
                         PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
                                 let [hi, lo] = self.format.rgb565_bytes(color);
@@ -570,6 +634,8 @@ impl<'a> Canvas<'a> {
                 if len == 0 {
                         return;
                 }
+                //   the buffer's own row: a band holds its rows from zero
+                let py = py - self.band_y0 as isize;
                 let stride = self.format.stride(self.phys_w);
                 let on = color != 0;
                 if dy == 0 && dx.unsigned_abs() == 1 {
@@ -950,8 +1016,9 @@ impl<'a> Canvas<'a> {
         /// gaps that widen with the scale. Destination pixels whose source falls outside the
         /// buffer are left as they are, so clear first if that matters.
         pub fn blit_rotated(&mut self, src: &[u8], angle_deg: i16, scale_q15: i32) -> bool {
-                //   byte pairs copied verbatim from a same-format snapshot: endian-agnostic
-                if !self.format.is_rgb565() || scale_q15 <= 0 {
+                //   byte pairs copied verbatim from a same-format snapshot: endian-agnostic. A
+                // whole-frame operation: a band refuses it
+                if !self.format.is_rgb565() || scale_q15 <= 0 || self.is_band() {
                         return false;
                 }
                 let (w, h) = (i32::from(self.phys_w), i32::from(self.phys_h));
@@ -996,7 +1063,7 @@ impl<'a> Canvas<'a> {
         /// to slide in a direction the VIEWER would name maps it through the transform's `a` and
         /// `c`, which give the physical direction logical +x points in.
         pub fn blit_offset(&mut self, src: &[u8], off_x: i32, off_y: i32) -> bool {
-                if !self.format.is_rgb565() {
+                if !self.format.is_rgb565() || self.is_band() {
                         return false;
                 }
                 let (w, h) = (i32::from(self.phys_w), i32::from(self.phys_h));
@@ -1042,7 +1109,7 @@ impl<'a> Canvas<'a> {
         /// into the uncovered strip -- the region-buffering alternative to capturing a whole second
         /// frame to blit from (see [`blit_offset`](Self::blit_offset), its two-buffer sibling).
         pub fn shift_region(&mut self, region: Region, dx: i32, dy: i32) -> bool {
-                if (dx != 0) == (dy != 0) {
+                if (dx != 0) == (dy != 0) || self.is_band() {
                         // exactly one axis: a page slide runs one way at a time, and a two-axis
                         // in-place move would need an intermediate copy this primitive avoids
                         return false;
@@ -1218,7 +1285,7 @@ impl<'a> Canvas<'a> {
                                                 if let Some(r) = row {
                                                         let (px, py) = self.transform.apply(x_lo, y);
                                                         let step = self.transform.a as isize + self.transform.c as isize * self.phys_w as isize;
-                                                        let mut i = py as isize * self.phys_w as isize + px as isize;
+                                                        let mut i = (py - i32::from(self.band_y0)) as isize * self.phys_w as isize + px as isize;
                                                         let [hi, lo] = self.format.rgb565_bytes(fg);
                                                         for gx in (x_lo - pen)..=(x_hi - pen) {
                                                                 if r[gx as usize / 8] >> (7 - gx % 8) & 1 != 0 {
@@ -1495,6 +1562,111 @@ mod tests {
                 assert_eq!(c.get(2, 2), 0);
                 assert_eq!(c.get(20, 2), 1);
                 assert_eq!(c.get(2, 12), 1);
+        }
+
+        /// A scene touching every primitive and both text paths, deterministic in the canvas
+        /// state alone: what a band must reproduce exactly.
+        fn scene(c: &mut Canvas<'_>, font: &Font<'_>, rgb: bool) {
+                let (fg, alt) = if rgb { (0xF81F, 0x1234) } else { (1, 1) };
+                c.bg = if rgb { 0x2104 } else { 0 };
+                c.clear();
+                c.fg = fg;
+                c.rect(Point::new(2, 3), Point::new(30, 40), true);
+                c.fg = alt;
+                c.rect(Point::new(5, 1), Point::new(25, 50), false);
+                c.rect_rounded(Point::new(6, 10), Point::new(33, 30), 5, corner::ALL, true);
+                c.circle(Point::new(20, 20), 9, false);
+                c.circle(Point::new(10, 44), 6, true);
+                c.arc(Point::new(18, 30), 11, 30, 250);
+                c.line(Point::new(0, 0), Point::new(37, 53));
+                c.line(Point::new(37, 2), Point::new(1, 51));
+                if rgb {
+                        c.rect_shaded(Point::new(3, 33), Point::new(36, 47), 0x001F, 0xF800);
+                }
+                //   a clipped draw: nothing past the clip, in any band
+                c.set_clip(Region::new(8, 8, 21, 19));
+                c.fg = fg;
+                c.rect(Point::new(0, 0), Point::new(39, 55), true);
+                c.clear_clip();
+                //   a translated (sliding) draw
+                c.set_offset(5, -4);
+                c.fg = alt;
+                c.rect_rounded(Point::new(4, 6), Point::new(26, 22), 4, corner::TOP, true);
+                c.set_offset(0, 0);
+                //   ink-only text (the RGB565 fast path) and boxed text (the run path)
+                c.fg = fg;
+                let _ = c.text(font, Point::new(3, 12), "IIII");
+                c.bg = if rgb { 0x07E0 } else { 0 };
+                let _ = c.text_boxed(font, Point::new(1, 25), "II");
+        }
+
+        #[test]
+        fn a_frame_painted_band_by_band_is_the_frame_painted_whole() {
+                let mut e = light_font::Encoder::new(8, 6, 5, 6);
+                e.add(b'I', &[0x18, 0x18, 0x10, 0x10, 0x18, 0x3C]).unwrap();
+                let blob = e.encode();
+                let font = Font::parse(&blob).unwrap();
+                //   a non-square panel, so rotation changes the logical shape; band heights that
+                // divide it, that do not, and a single row
+                let (w, h) = (40u16, 56u16);
+                for format in [PixelFormat::Rgb565, PixelFormat::Rgb565Le, PixelFormat::Mono1] {
+                        let rgb = format.is_rgb565();
+                        for rotation in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
+                                for flip in [Flip::None, Flip::Horizontal] {
+                                        let mut whole = std::vec![0u8; format.buffer_len(w, h)];
+                                        {
+                                                let mut c = Canvas::new(&mut whole, format, w, h);
+                                                c.set_rotation(rotation);
+                                                c.set_flip(flip);
+                                                scene(&mut c, &font, rgb);
+                                        }
+                                        for rows in [8u16, 7, 1] {
+                                                let mut assembled = std::vec![0u8; format.buffer_len(w, h)];
+                                                let stride = format.stride(w);
+                                                let mut y0 = 0u16;
+                                                while y0 < h {
+                                                        let n = rows.min(h - y0);
+                                                        let mut band = std::vec![0xA5u8; format.buffer_len(w, n)];
+                                                        {
+                                                                let mut c = Canvas::band(&mut band, format, w, h, y0, n);
+                                                                c.set_rotation(rotation);
+                                                                c.set_flip(flip);
+                                                                scene(&mut c, &font, rgb);
+                                                        }
+                                                        let at = usize::from(y0) * stride;
+                                                        assembled[at..at + usize::from(n) * stride].copy_from_slice(&band[..usize::from(n) * stride]);
+                                                        y0 += n;
+                                                }
+                                                assert!(assembled == whole, "{format:?} {rotation:?} {flip:?}, {rows}-row bands differ from the whole frame");
+                                        }
+                                }
+                        }
+                }
+        }
+
+        #[test]
+        fn a_band_clips_to_its_rows_and_refuses_whole_frame_operations() {
+                let (w, h) = (16u16, 24u16);
+                let mut band = std::vec![0u8; PixelFormat::Rgb565.buffer_len(w, 4)];
+                let mut c = Canvas::band(&mut band, PixelFormat::Rgb565, w, h, 8, 4);
+                assert!(c.is_band());
+                assert_eq!(c.band_region(), Region::new(0, 8, 15, 11));
+                //   the logical size is the panel's; the clip is the band's rows
+                assert_eq!((c.width(), c.height()), (16, 24));
+                assert_eq!(c.clip(), Region::new(0, 8, 15, 11));
+                c.fg = 0xFFFF;
+                c.set(3, 2, 0xFFFF); // outside: no write, no panic
+                c.set(3, 9, 0xFFFF);
+                assert_eq!(c.get(3, 9), 0xFFFF);
+                assert_eq!(c.get(3, 2), 0, "outside the band reads as nothing");
+                //   under a quarter turn the band's physical rows are a logical column strip
+                c.set_rotation(Rotation::R90);
+                let clip = c.clip();
+                assert_eq!((clip.x0, clip.x1, clip.y0, clip.y1), (8, 11, 0, 15));
+                let frame = std::vec![0u8; PixelFormat::Rgb565.buffer_len(w, h)];
+                assert!(!c.blit_offset(&frame, 1, 0));
+                assert!(!c.blit_rotated(&frame, 10, Canvas::SCALE_ONE));
+                assert!(!c.shift_region(Region::new(0, 8, 15, 11), 1, 0));
         }
 
         #[test]
