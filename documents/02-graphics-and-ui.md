@@ -197,7 +197,9 @@ drivers**, each of which sees only a `light_core::hal` bus and nothing about the
   `band_rows`, `band_mut(y0)` (the band to draw, never the one being pushed) and `present_band`. Drawing access:
   `frame_mut` (the back buffer, or the single buffer unless an update is reading it — then `None`),
   `front`. Update lifecycle: `update_async(region)`, `poll` (`Ok(true)` busy / `Ok(false)` idle),
-  `wait`, `update_blocking`, `busy`. Double buffering: `swap`, `freeze`, `freeze_render`, `thaw`,
+  `wait`, `update_blocking`, `busy`. `push_rows_blocking(buf, y0, rows)` pushes full-width rows from
+  a buffer the display does not own (a camera frame) and leaves its own buffers untouched, so on a
+  panel that keeps its frame the image stands until painted over. Double buffering: `swap`, `freeze`, `freeze_render`, `thaw`,
   `is_frozen`, `frame_and_capture`. `init`, `driver`, geometry accessors, and a public `timeouts`
   counter.
 - **`DisplayDriver`** — the trait a panel implements: `init`; `chunk_count(region)`;

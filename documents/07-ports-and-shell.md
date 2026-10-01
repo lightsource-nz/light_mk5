@@ -122,6 +122,14 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
   - `adc` — `Adc`, one-shot analog reads;
   - `rgb` (RP2350 only) — a continuous RGB/DPI scanout engine on four PIO state machines, for
     GDDRAM-less panels;
+  - `camera` (RP2350 only) — `PioCamera` (`CameraBus`), a parallel camera port on one PIO2 state
+    machine and one DMA channel. Each frame begins with a `pull` of its byte count and a wait for
+    the VSYNC rising edge, so every frame re-synchronises. Bytes shift in from the right and autopush
+    every four, so memory order is arrival order. The FIFOs stay unjoined, because joining RX takes
+    TX's storage and the per-frame count arrives through TX: joined, that write is dropped silently.
+    The loop is five instructions per byte, enough for a pixel clock past 25 MHz at a 200 MHz system
+    clock. `probe` samples the sync lines and the data lines and reports the DMA channel's state;
+    `capture_raw` reads the FIFO from the CPU with no DMA, to tell the two halves apart;
   - `usb` — `UsbBus`, the USB device controller as a `usb_device::bus::UsbBus`, polled (below);
   - `uart` — `Uart`, a UART as a console transport (the debug-probe path, and the host role's only
     console);

@@ -1901,6 +1901,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-camera"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+]
+
+[[package]]
 name = "light-core"
 version = "0.1.0"
 dependencies = [

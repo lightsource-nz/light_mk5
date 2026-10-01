@@ -162,6 +162,7 @@ Portable crates, each depending only on those above it, never on a port:
     light-midi        the USB-MIDI forwarder engine and its transport trait
     light-audio       codec drivers over the I2C bus trait
     light-rtc         real-time clock drivers over the I2C bus trait
+    light-camera      image sensor drivers over the I2C bus trait
     light-sd          SD/TF card access: the SPI-mode block layer
     light-fs          filesystems: FAT16/FAT32 over any BlockDevice
     light-recorder    WAV record and playback over a codec, a sample transport and a card, as a
@@ -217,6 +218,7 @@ differing sizes, and an OLED-panel board.
 | [10-build-and-release.md](10-build-and-release.md) | The build system: CMake + Corrosion, the presets, the `light-*.ps1` script layer, flashing, host tests, versioning and releases. |
 | [11-secure-boot-and-update.md](11-secure-boot-and-update.md) | Image authenticity and field update: what is signed, what the hardware verifies, the slot and probation model, rollback, the asset partition, and keys. |
 | [12-wireless.md](12-wireless.md) | `light-wireless`: the radio contract — credentials, scan results, join outcomes — the `RadioBus` seam, radio drivers as shared target-only crates, and the controller interface a Bluetooth host stack sits on. |
+| [13-camera.md](13-camera.md) | `light-camera`: image sensor drivers, the `CameraBus` pixel-bus seam, and how a captured frame reaches the panel. |
 
 Each subsystem document states, for its crates: the responsibility, the public surface (the types
 and traits that define its contract), the behaviour and the invariants, and the notable design

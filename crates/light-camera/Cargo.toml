@@ -1,0 +1,9 @@
+[package]
+name = "light-camera"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Image sensor drivers for the light framework, over the I2C bus trait"
+
+[dependencies]
+light-core = { path = "../light-core" }

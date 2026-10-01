@@ -232,6 +232,11 @@ pub trait BoardHook<D: DisplayDriver, X: Copy + 'static> {
         /// A board extension event that wants the display, the layer or the UI -- a bus
         /// re-clock, a test pattern. Everything else rides the bus past this module.
         fn on_ext(&mut self, _view: &mut DemoView<'_, D, X>, _ext: X) {}
+        /// Every display-module poll, after its events and before it renders: for display
+        /// content the board itself drives -- a camera preview. `true` keeps the module busy.
+        fn on_poll(&mut self, _view: &mut DemoView<'_, D, X>) -> bool {
+                false
+        }
         /// Whether a draw may start NOW. `false` defers it: dirty stays set, the module
         /// stays busy, and the next poll asks again. For a panel whose framebuffer is live
         /// on the glass, this is where drawing is scheduled around the beam.
@@ -568,10 +573,15 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                 while let Some(ev) = self.bus.poll(&self.sub) {
                         self.handle(ev);
                 }
+                let hook_busy = {
+                        let Self { display, layer, ui, mode, hook, .. } = self;
+                        let mut view = DemoView { display, layer: &mut **layer, ui: &mut **ui, mode };
+                        hook.on_poll(&mut view)
+                };
                 self.render();
                 let busy = self.layer.busy(&self.display);
                 PUSHING.store(busy, core::sync::atomic::Ordering::Relaxed);
-                if self.ui.is_dirty() || self.ui.is_animating() || busy { Poll::Busy } else { Poll::Idle }
+                if self.ui.is_dirty() || self.ui.is_animating() || busy || hook_busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();

@@ -39,6 +39,9 @@ is written against these, never against a concrete peripheral. The core ones:
 - **`AudioStream`** — the transport contract an audio module drives (stream push/free, capture,
   active gating), so an app's audio logic is independent of the concrete I2S port (see
   [04-audio-and-midi.md](04-audio-and-midi.md)).
+- **`CameraBus`** — an image sensor's parallel pixel bus landing whole frames in memory
+  (`start_frame`, `frame_complete`, `stop`), each frame re-synchronised on the sensor's frame start;
+  the sensor's registers are its driver's, over an `I2cBus` (see [13-camera.md](13-camera.md)).
 - **`UpdateTarget`** — the slot a new firmware image is written into (`capacity`, `erase`,
   `program`, `read`, `accept`, `boot`, `commit`), and never the one running. The seam an
   over-the-air update, a download over a cable and a copy from a card all end at: where the bytes

@@ -26,6 +26,7 @@ members = [
         "crates/light-net",
         "crates/light-recorder",
         "crates/light-rtc",
+        "crates/light-camera",
         "crates/light-sd",
         "crates/light-fs",
         #   hardware-independent applications: the logic of an app as a portable crate,

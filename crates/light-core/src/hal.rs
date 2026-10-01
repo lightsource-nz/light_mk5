@@ -460,3 +460,27 @@ pub trait QspiDisplayBus {
         /// Pulse the panel's reset line. Blocking; init only.
         fn reset_pulse(&mut self, clock: &mut dyn Clock);
 }
+
+/// A parallel camera port: an image sensor's 8-bit pixel bus, framed by its VSYNC, HREF and
+/// PCLK lines, landing in memory. Only the bus: the sensor's registers are reached over its own
+/// control bus (an [`I2cBus`]) by its driver, and its master clock and power lines are the
+/// board's.
+pub trait CameraBus {
+        /// Arm the capture of the next WHOLE frame -- from the next frame start, never a frame
+        /// already under way -- into `buf`, one byte per pixel-bus clock in the order the sensor
+        /// sends them, until `buf` is full. Returns immediately; a capture already armed is
+        /// abandoned first. `buf` is word-aligned and `buf.len()` a multiple of 4.
+        ///
+        /// # Safety
+        ///
+        /// `buf` is written asynchronously (by DMA) after this returns. The caller keeps it
+        /// alive, and neither reads nor writes it, until [`CameraBus::frame_complete`] answers
+        /// true or [`CameraBus::stop`] returns.
+        unsafe fn start_frame(&mut self, buf: &mut [u8]);
+
+        /// Whether the armed frame has fully landed. True when nothing is armed.
+        fn frame_complete(&mut self) -> bool;
+
+        /// Abandon an armed capture. On return nothing writes the buffer any more.
+        fn stop(&mut self);
+}

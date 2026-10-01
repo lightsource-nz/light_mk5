@@ -40,6 +40,8 @@ mod critical;
 
 pub mod adc;
 pub mod assets;
+#[cfg(feature = "rp2350")]
+pub mod camera;
 pub mod gpio;
 pub mod i2c;
 pub mod i2s;

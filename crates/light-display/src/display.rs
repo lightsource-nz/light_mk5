@@ -372,6 +372,35 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
                 self.update_async(region)?;
                 self.wait()
         }
+
+        /// Push full-width rows from a buffer the display does not own -- a camera frame, say --
+        /// to panel rows `y0..y0 + rows`, blocking until they have landed. Any update in flight is
+        /// driven out first. `buf` holds exactly those rows in the display's format. The display's
+        /// own buffers are untouched, so on a banded display (or any panel that keeps its frame)
+        /// the image stays until something paints over it.
+        pub fn push_rows_blocking(&mut self, buf: &[u8], y0: u16, rows: u16) -> Result<(), UpdateError> {
+                self.wait()?;
+                if rows == 0 || y0 >= self.height {
+                        return Ok(());
+                }
+                let rows = rows.min(self.height - y0);
+                let stride = self.format.stride(self.width);
+                assert!(buf.len() >= stride * rows as usize);
+                let region = Region::new(0, y0, self.width - 1, y0 + rows - 1);
+                let frame = Frame { buf, width: self.width, height: self.height, format: self.format, stride, origin_y: y0 };
+                for index in 0..self.driver.chunk_count(&region) {
+                        self.driver.kick(&frame, &region, index);
+                        let started = (self.now)();
+                        while !self.driver.chunk_complete() {
+                                if (self.now)().saturating_sub(started) > u64::from(self.driver.chunk_timeout_ms()) * 1000 {
+                                        self.timeouts += 1;
+                                        return Err(UpdateError::Timeout);
+                                }
+                                core::hint::spin_loop();
+                        }
+                }
+                Ok(())
+        }
 }
 
 #[cfg(test)]
@@ -516,6 +545,18 @@ mod tests {
                 let r = Region::new(20, 3, 40, 30).clamped(16, 8);
                 assert_eq!(r, Region::new(15, 3, 15, 7));
                 assert_eq!(Region::new(0, 0, 3, 3).union(&Region::new(2, 2, 9, 5)), Region::new(0, 0, 9, 5));
+        }
+
+        #[test]
+        fn an_external_buffer_pushes_full_width_rows_clamped_to_the_panel() {
+                let mut buf = [0u8; 16 * 8 * 2];
+                set_now(0);
+                let mut d = display(&mut buf, Mock::new(2));
+                let ext = [0xA5u8; 16 * 6 * 2];
+                d.push_rows_blocking(&ext, 4, 6).unwrap();
+                assert_eq!(d.driver().kicks, std::vec![(Region::new(0, 4, 15, 7), 0)], "one full-width chunk, rows past the panel dropped");
+                assert!(!d.busy(), "blocking: nothing left in flight");
+                assert!(d.frame_mut().unwrap().iter().all(|b| *b == 0), "the display's own buffer untouched");
         }
 
         #[test]
