@@ -27,9 +27,10 @@ pub const PIN_DISPLAY_RESET: usize = 23;
 /// 320x480 portrait: the ST7796's full native GDDRAM, so there is no offset.
 pub const DISPLAY_WIDTH: u16 = 320;
 pub const DISPLAY_HEIGHT: u16 = 480;
-/// 75 MHz: the highest rate the PL022 can make from a 150 MHz clk_peri. A full-frame push is
-/// ~33 ms at this rate. Unmeasured on this panel; the `spi` console command probes it live.
-pub const DISPLAY_SPI_HZ: u32 = 75_000_000;
+/// 100 MHz: clk_peri / 2 at the board's 200 MHz system clock, the rate the panel's vendor drives
+/// it at (the PL022's next step down is 50). A full-frame push is ~25 ms. The `spi` console
+/// command re-clocks it live.
+pub const DISPLAY_SPI_HZ: u32 = 100_000_000;
 /// Memory access control: MX with BGR colour order -- portrait, and the order the glass is
 /// bonded in. Confirmed on the glass: upright, true colours.
 pub const DISPLAY_MADCTL: u8 = 0x48;

@@ -19,6 +19,19 @@ light_add_font(ui_demo_touch35_font
         CRATE light_app_ui_demo_touch35 ENV LIGHT_FONT_LGF
 )
 
+#   200 MHz, the clock the board's vendor runs it at: the camera's XCLK (a PWM output) is a whole
+# fraction of it, and the display's SPI reaches 100 MHz (clk_peri / 2). The core voltage is raised
+# to the vendor's 1.25 V for it -- the RP2350 SDK does not adjust it on its own.
+target_compile_definitions(ui_demo_touch35 PRIVATE
+        SYS_CLK_KHZ=200000
+        # 12 MHz XOSC * 100 = 1200 MHz VCO, / 6 / 1 = 200 MHz
+        PLL_SYS_VCO_FREQ_HZ=1200000000
+        PLL_SYS_POSTDIV1=6
+        PLL_SYS_POSTDIV2=1
+        SYS_CLK_VREG_VOLTAGE_AUTO_ADJUST=1
+        SYS_CLK_VREG_VOLTAGE_MIN=VREG_VOLTAGE_1_25
+)
+
 #   the framework's default look-and-feel for a color board (steel)
 light_add_theme(ui_demo_touch35_theme
         CRATE light_app_ui_demo_touch35 ENV LIGHT_THEME_LTH

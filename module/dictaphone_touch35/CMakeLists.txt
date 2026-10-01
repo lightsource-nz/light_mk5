@@ -16,6 +16,16 @@ target_link_libraries(dictaphone_touch35 PRIVATE
         light_app_dictaphone_touch35
 )
 
+#   200 MHz at 1.25 V, as the board's widget demo runs (see its CMakeLists for why)
+target_compile_definitions(dictaphone_touch35 PRIVATE
+        SYS_CLK_KHZ=200000
+        PLL_SYS_VCO_FREQ_HZ=1200000000
+        PLL_SYS_POSTDIV1=6
+        PLL_SYS_POSTDIV2=1
+        SYS_CLK_VREG_VOLTAGE_AUTO_ADJUST=1
+        SYS_CLK_VREG_VOLTAGE_MIN=VREG_VOLTAGE_1_25
+)
+
 #   the same font as the board's demo: the 3.5" panel's geometry, 16 px
 light_add_font(dictaphone_touch35_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
