@@ -323,6 +323,119 @@ impl FrameLayer {
                 self.regions.clear();
         }
 
+        /// A whole frame on a BANDED display (see
+        /// [`Display::new_banded`](crate::Display::new_banded)), painted and pushed a band at a
+        /// time: there is no frame in RAM, only the panel's own frame memory.
+        ///
+        /// The push list is exactly a whole-frame display's -- what was invalidated this frame and
+        /// last, merged -- and the frame-layer contract holds per band: each band that any of it
+        /// touches is CLEARED and repainted by `paint`, which is handed a canvas over that band
+        /// (whole-panel geometry and orientation, clipped to the band) and the logical rectangle
+        /// worth painting in it; then exactly the dirty part of the band is pushed. One band's
+        /// push overlaps the next band's paint; the last band's push is left in flight, for
+        /// [`poll`](Self::poll) to finish.
+        ///
+        /// `false` means nothing was drawn this pass -- not yet time, or the display is still
+        /// pushing -- exactly as [`frame_begin`](Self::frame_begin) returns `None`.
+        pub fn frame_banded<D: DisplayDriver>(&mut self, display: &mut Display<'_, D>, now_us: u64, mut paint: impl FnMut(&mut Canvas<'_>, LogicalRegion)) -> Result<bool, UpdateError> {
+                let Some(rows) = display.band_rows() else { return Ok(false) };
+                if self.frame_interval_us != 0 && now_us < self.next_frame_us {
+                        return Ok(false);
+                }
+                if self.busy(display) {
+                        if self.frame_interval_us != 0 && now_us >= self.next_frame_us + self.frame_interval_us {
+                                self.next_frame_us += self.frame_interval_us;
+                                self.skipped += 1;
+                        }
+                        return Ok(false);
+                }
+                self.next_frame_us = now_us + self.frame_interval_us;
+                self.frames += 1;
+                let push = self.physical_push();
+                self.carried.clear();
+                for r in self.regions.iter() {
+                        let _ = self.carried.push(*r);
+                }
+                self.regions.clear();
+                let mut y0 = 0u16;
+                while y0 < self.height {
+                        let n = rows.min(self.height - y0);
+                        let band = Region::new(0, y0, self.width - 1, y0 + n - 1);
+                        //   this band's share of the push, and the bounds worth painting
+                        let mut parts: Vec<Region, MAX_REGIONS> = Vec::new();
+                        let mut bounds: Option<Region> = None;
+                        for r in push.iter() {
+                                if r.y1 < band.y0 || r.y0 > band.y1 {
+                                        continue;
+                                }
+                                let part = Region::new(r.x0, r.y0.max(band.y0), r.x1, r.y1.min(band.y1));
+                                bounds = Some(match bounds {
+                                        None => part,
+                                        Some(b) => Region::new(b.x0.min(part.x0), b.y0.min(part.y0), b.x1.max(part.x1), b.y1.max(part.y1)),
+                                });
+                                let _ = parts.push(part);
+                        }
+                        if let Some(bounds) = bounds {
+                                let clip = self.to_logical(bounds);
+                                if let Some(buf) = display.band_mut(y0) {
+                                        let mut c = Canvas::band(buf, self.format, self.width, self.height, y0, n);
+                                        c.set_rotation(self.rotation);
+                                        c.set_flip(self.flip);
+                                        c.bg = self.bg;
+                                        c.fg = if self.format == PixelFormat::Mono1 { 1 } else { 0xFFFF };
+                                        c.clear();
+                                        paint(&mut c, clip);
+                                }
+                                display.present_band()?;
+                                for (i, part) in parts.iter().enumerate() {
+                                        if i > 0 {
+                                                display.wait()?;
+                                        }
+                                        display.update_async(*part)?;
+                                }
+                        }
+                        y0 += n;
+                }
+                Ok(true)
+        }
+
+        /// This frame's push list in panel coordinates: what was invalidated this frame and last,
+        /// merged where it overlaps, collapsing to the whole panel when it will not fit.
+        fn physical_push(&self) -> Vec<Region, MAX_REGIONS> {
+                let (w, h) = self.logical_size();
+                let mut logical: Vec<LogicalRegion, MAX_REGIONS> = Vec::new();
+                let mut fits = true;
+                for r in self.regions.iter().chain(self.carried.iter()) {
+                        if let Some(r) = r.clipped(w, h) {
+                                fits &= add_region(&mut logical, r);
+                        }
+                }
+                let mut out: Vec<Region, MAX_REGIONS> = Vec::new();
+                if !fits {
+                        let _ = out.push(Region::full(self.width, self.height));
+                        return out;
+                }
+                let transform = Transform::for_canvas(self.rotation, self.flip, self.width, self.height);
+                for r in logical.iter() {
+                        let _ = out.push(transform.rect(&Region::new(r.x0 as u16, r.y0 as u16, r.x1 as u16, r.y1 as u16)));
+                }
+                out
+        }
+
+        /// A physical rectangle back into logical coordinates, exactly (the inverse of the
+        /// orientation transform, which maps axis-aligned rectangles to axis-aligned rectangles).
+        fn to_logical(&self, r: Region) -> LogicalRegion {
+                let m = Transform::for_canvas(self.rotation, self.flip, self.width, self.height);
+                let det = m.a * m.d - m.b * m.c;
+                let inv = |px: i32, py: i32| {
+                        let (dx, dy) = (px - m.tx, py - m.ty);
+                        ((m.d * dx - m.b * dy) * det, (m.a * dy - m.c * dx) * det)
+                };
+                let (ax, ay) = inv(i32::from(r.x0), i32::from(r.y0));
+                let (bx, by) = inv(i32::from(r.x1), i32::from(r.y1));
+                LogicalRegion::new(ax.min(bx), ay.min(by), ax.max(bx), ay.max(by))
+        }
+
         /// The physical regions queued but not yet started, for tests and diagnostics.
         pub fn pending(&self) -> &[Region] {
                 &self.pending
@@ -385,6 +498,113 @@ mod tests {
         fn flush(layer: &mut FrameLayer, display: &mut Display<'_, Mock>) -> StdVec<Region> {
                 while layer.poll(display).unwrap() {}
                 core::mem::take(&mut display.driver().pushed)
+        }
+
+        /// A panel with its own frame memory, as a GDDRAM panel has: every pushed window lands in
+        /// it, read from the frame through its PANEL-row helpers, the way a real driver reads.
+        struct Panel {
+                width: u16,
+                mem: StdVec<u8>,
+        }
+        impl DisplayDriver for Panel {
+                fn init(&mut self, _: &mut dyn Clock, _: u16, _: u16) {}
+                fn chunk_count(&self, _: &Region) -> u16 {
+                        1
+                }
+                fn chunks_per_poll(&self, _: &Region) -> u16 {
+                        0
+                }
+                fn kick(&mut self, frame: &Frame<'_>, r: &Region, _: u16) {
+                        for y in r.y0..=r.y1 {
+                                let src = frame.row(r, y);
+                                let at = (usize::from(y) * usize::from(self.width) + usize::from(r.x0)) * 2;
+                                self.mem[at..at + src.len()].copy_from_slice(src);
+                        }
+                }
+                fn chunk_complete(&mut self) -> bool {
+                        true
+                }
+                fn chunk_timeout_ms(&self) -> u32 {
+                        10
+                }
+        }
+
+        /// One frame's content as a function of a step number, painting absolute coordinates and
+        /// invalidating what changed: a box that moves, and a bar that changes colour.
+        fn paint_step(c: &mut Canvas<'_>, step: i32) {
+                c.fg = 0xF800;
+                c.rect(light_draw::Point::new(2 + step * 3, 4), light_draw::Point::new(9 + step * 3, 12), true);
+                c.fg = 0x07E0 + step as u16;
+                c.rect(light_draw::Point::new(0, 30), light_draw::Point::new(13, 33), true);
+        }
+
+        fn invalidate_step(layer: &mut FrameLayer, step: i32) {
+                if step == 0 {
+                        layer.invalidate_all();
+                } else {
+                        layer.invalidate(LogicalRegion::new(2 + step * 3, 4, 9 + step * 3, 12));
+                        layer.invalidate(LogicalRegion::new(0, 30, 13, 33));
+                }
+        }
+
+        #[test]
+        fn a_banded_frame_leaves_the_panel_exactly_as_a_whole_frame_does() {
+                let (w, h) = (24u16, 40u16);
+                let fmt = PixelFormat::Rgb565;
+                let mut frame_buf = std::vec![0u8; fmt.buffer_len(w, h)];
+                let mut whole = Display::new(Panel { width: w, mem: std::vec![0; fmt.buffer_len(w, h)] }, &mut frame_buf, w, h, fmt, now);
+                let mut whole_layer = FrameLayer::new(w, h, fmt);
+                //   seven-row bands: they do not divide the panel, and a box straddles band edges
+                let (mut a, mut b) = (std::vec![0u8; fmt.buffer_len(w, 7)], std::vec![0u8; fmt.buffer_len(w, 7)]);
+                let mut banded = Display::new_banded(Panel { width: w, mem: std::vec![0; fmt.buffer_len(w, h)] }, &mut a, &mut b, w, h, 7, fmt, now);
+                let mut banded_layer = FrameLayer::new(w, h, fmt);
+                for layer in [&mut whole_layer, &mut banded_layer] {
+                        layer.bg = 0x2104;
+                }
+                for step in 0..4 {
+                        if step == 3 {
+                                //   a rotation: everything is relaid out and repainted
+                                whole_layer.set_orientation(Rotation::R90, Flip::None);
+                                banded_layer.set_orientation(Rotation::R90, Flip::None);
+                                whole_layer.invalidate_all();
+                                banded_layer.invalidate_all();
+                        } else {
+                                invalidate_step(&mut whole_layer, step);
+                                invalidate_step(&mut banded_layer, step);
+                        }
+                        let mut c = whole_layer.frame_begin(&mut whole, now()).expect("frame");
+                        paint_step(&mut c, step);
+                        drop(c);
+                        whole_layer.frame_end(&mut whole);
+                        while whole_layer.poll(&mut whole).unwrap() {}
+                        assert!(banded_layer.frame_banded(&mut banded, now(), |c, _| paint_step(c, step)).unwrap());
+                        while banded_layer.poll(&mut banded).unwrap() {}
+                        assert!(whole.driver().mem == banded.driver().mem, "step {step}: the panels differ");
+                }
+        }
+
+        #[test]
+        fn a_banded_frame_paints_and_pushes_only_the_bands_it_touches() {
+                let (w, h) = (16u16, 32u16);
+                let fmt = PixelFormat::Rgb565;
+                let (mut a, mut b) = (std::vec![0u8; fmt.buffer_len(w, 8)], std::vec![0u8; fmt.buffer_len(w, 8)]);
+                let mut display = Display::new_banded(Mock { pushed: StdVec::new() }, &mut a, &mut b, w, h, 8, fmt, now);
+                let mut layer = FrameLayer::new(w, h, fmt);
+                //   a banded display holds no frame: the whole-frame path is unavailable
+                assert!(display.frame_mut().is_none());
+                assert!(!display.is_double_buffered());
+                assert!(!display.region_buffering());
+                //   one small change inside band 1 (rows 8..15) and one spanning bands 2 and 3
+                layer.invalidate(LogicalRegion::new(2, 9, 5, 11));
+                layer.invalidate(LogicalRegion::new(0, 20, 15, 27));
+                let mut painted = StdVec::new();
+                assert!(layer.frame_banded(&mut display, now(), |c, clip| painted.push((c.band_region().y0, clip))).unwrap());
+                while layer.poll(&mut display).unwrap() {}
+                assert_eq!(painted.iter().map(|p| p.0).collect::<StdVec<_>>(), [8, 16, 24], "band 0 is untouched and unpainted");
+                assert_eq!(painted[0].1, LogicalRegion::new(2, 9, 5, 11), "the clip is the band's dirty part");
+                let mut pushed = core::mem::take(&mut display.driver().pushed);
+                pushed.sort_by_key(|r| (r.y0, r.x0));
+                assert_eq!(pushed, [Region::new(2, 9, 5, 11), Region::new(0, 20, 15, 23), Region::new(0, 24, 15, 27)]);
         }
 
         #[test]

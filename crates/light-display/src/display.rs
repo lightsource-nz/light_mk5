@@ -24,14 +24,18 @@ pub struct Frame<'a> {
         pub format: PixelFormat,
         /// Bytes per row.
         pub stride: usize,
+        /// The panel row the buffer's first row is: 0 for a whole frame, the band's first row for
+        /// a band. Rows are always addressed by their PANEL row, so a driver never sees the
+        /// difference.
+        pub origin_y: u16,
 }
 
 impl Frame<'_> {
-        /// The bytes of one row-run inside `region` at row `y` (absolute). Whole-pixel formats
-        /// only: a packed 1 bpp row has no byte-aligned run for an arbitrary x range.
+        /// The bytes of one row-run inside `region` at panel row `y`. Whole-pixel formats only: a
+        /// packed 1 bpp row has no byte-aligned run for an arbitrary x range.
         pub fn row(&self, region: &Region, y: u16) -> &[u8] {
                 debug_assert!(self.format.is_rgb565());
-                let start = y as usize * self.stride + region.x0 as usize * 2;
+                let start = (y - self.origin_y) as usize * self.stride + region.x0 as usize * 2;
                 let len = region.width() as usize * 2;
                 &self.buf[start..start + len]
         }
@@ -40,7 +44,7 @@ impl Frame<'_> {
         /// spans the full width, which is when consecutive rows are adjacent in memory.
         pub fn rows(&self, region: &Region) -> &[u8] {
                 debug_assert!(region.x0 == 0 && region.x1 == self.width - 1);
-                let start = region.y0 as usize * self.stride;
+                let start = (region.y0 - self.origin_y) as usize * self.stride;
                 let len = region.height() as usize * self.stride;
                 &self.buf[start..start + len]
         }
@@ -111,13 +115,58 @@ pub struct Display<'b, D: DisplayDriver> {
         /// captured second frame -- so a big panel keeps its slide without the second-frame RAM. A
         /// no-op unless the board opts in and omits the back buffer; see the toolkit's page step.
         region: bool,
+        /// Band rendering: `buf` and `back` are each `band_rows` full-width rows, not a frame --
+        /// one being pushed while the other is drawn -- and `front_y0`/`back_y0` are the panel
+        /// rows they start at. `None` for a whole-frame display.
+        band_rows: Option<u16>,
+        front_y0: u16,
+        back_y0: u16,
 }
 
 impl<'b, D: DisplayDriver> Display<'b, D> {
         /// `buf` must hold `format.buffer_len(width, height)` bytes.
         pub fn new(driver: D, buf: &'b mut [u8], width: u16, height: u16, format: PixelFormat, now: fn() -> u64) -> Self {
                 assert!(buf.len() >= format.buffer_len(width, height));
-                Self { driver, buf, back: None, frozen: false, width, height, format, update: None, now, timeouts: 0, region: false }
+                Self { driver, buf, back: None, frozen: false, width, height, format, update: None, now, timeouts: 0, region: false, band_rows: None, front_y0: 0, back_y0: 0 }
+        }
+
+        /// A BANDED display: no frame in RAM, only two buffers of `rows` full-width rows each.
+        /// The frame layer paints a frame a band at a time into one while the other is pushed,
+        /// and the panel's own frame memory holds the image. Only for a panel that takes windowed
+        /// pushes and keeps what it was sent -- not one that ignores its window or is scanned
+        /// out of this RAM. See [`FrameLayer::frame_banded`](crate::FrameLayer::frame_banded).
+        #[allow(clippy::too_many_arguments)]
+        pub fn new_banded(driver: D, a: &'b mut [u8], b: &'b mut [u8], width: u16, height: u16, rows: u16, format: PixelFormat, now: fn() -> u64) -> Self {
+                assert!(rows > 0 && rows <= height);
+                assert!(a.len() >= format.buffer_len(width, rows) && b.len() >= format.buffer_len(width, rows));
+                Self { driver, buf: a, back: Some(b), frozen: false, width, height, format, update: None, now, timeouts: 0, region: false, band_rows: Some(rows), front_y0: 0, back_y0: 0 }
+        }
+
+        /// The band height, for a banded display.
+        pub fn band_rows(&self) -> Option<u16> {
+                self.band_rows
+        }
+
+        /// The buffer to draw the band starting at panel row `y0` into: never the one an update
+        /// is reading. Banded displays only.
+        pub fn band_mut(&mut self, y0: u16) -> Option<&mut [u8]> {
+                self.band_rows?;
+                self.back_y0 = y0;
+                self.back.as_deref_mut()
+        }
+
+        /// Make the band just drawn the one updates read: wait out whatever is still being pushed
+        /// from the other buffer, then exchange them. Banded displays only.
+        pub fn present_band(&mut self) -> Result<(), UpdateError> {
+                if self.band_rows.is_none() {
+                        return Ok(());
+                }
+                self.wait()?;
+                if let Some(back) = self.back.as_mut() {
+                        core::mem::swap(&mut self.buf, back);
+                        core::mem::swap(&mut self.front_y0, &mut self.back_y0);
+                }
+                Ok(())
         }
 
         /// Give the display a second buffer. Drawing then goes into the back buffer while an
@@ -139,20 +188,22 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         /// Whether region buffering is enabled and usable here: opted in, single-buffered, and a
         /// format [`Canvas::shift_region`] can scroll (RGB565 or Mono1).
         pub fn region_buffering(&self) -> bool {
-                self.region && self.back.is_none() && (self.format.is_rgb565() || matches!(self.format, PixelFormat::Mono1))
+                self.region && self.back.is_none() && self.band_rows.is_none() && (self.format.is_rgb565() || matches!(self.format, PixelFormat::Mono1))
         }
 
+        /// Whether a whole second FRAME is held -- a banded display's two buffers are bands, not
+        /// frames, so it is not.
         pub fn is_double_buffered(&self) -> bool {
-                self.back.is_some()
+                self.back.is_some() && self.band_rows.is_none()
         }
 
         /// Exchange front and back. Refused while an update is reading the front buffer. A no-op
-        /// while frozen.
+        /// while frozen, and on a banded display (see [`present_band`](Self::present_band)).
         pub fn swap(&mut self) -> Result<(), UpdateError> {
                 if self.update.is_some() {
                         return Err(UpdateError::Busy);
                 }
-                if self.frozen {
+                if self.frozen || self.band_rows.is_some() {
                         return Ok(());
                 }
                 if let Some(back) = self.back.as_mut() {
@@ -167,7 +218,7 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         /// outgoing page, for its duration.
         /// Refused (`false`) while an update is reading the front, or without a back buffer.
         pub fn freeze(&mut self) -> bool {
-                if self.update.is_some() {
+                if self.update.is_some() || self.band_rows.is_some() {
                         return false;
                 }
                 let Some(back) = self.back.as_mut() else { return false };
@@ -184,7 +235,7 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         /// rendered image is what a blit slides over it (a page covering the one beneath).
         /// Refused (`None`) while an update is reading, or without a back buffer.
         pub fn freeze_render(&mut self) -> Option<&mut [u8]> {
-                if self.update.is_some() || self.back.is_none() {
+                if self.update.is_some() || self.back.is_none() || self.band_rows.is_some() {
                         return None;
                 }
                 self.frozen = true;
@@ -236,8 +287,11 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
 
         /// The buffer for drawing: the back buffer under double buffering, always available;
         /// otherwise the one buffer -- unless an update is reading it, in which case `None`.
-        /// Poll or wait first.
+        /// Poll or wait first. Always `None` on a banded display, which holds no frame.
         pub fn frame_mut(&mut self) -> Option<&mut [u8]> {
+                if self.band_rows.is_some() {
+                        return None;
+                }
                 match self.back.as_mut() {
                         Some(back) if !self.frozen => Some(back),
                         _ if self.update.is_some() => None,
@@ -256,13 +310,21 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
                 if self.update.is_some() {
                         return Err(UpdateError::Busy);
                 }
-                let region = region.clamped(self.width, self.height);
+                let mut region = region.clamped(self.width, self.height);
+                if let Some(rows) = self.band_rows {
+                        //   a band can only push the rows it holds
+                        let (b0, b1) = (self.front_y0, self.front_y0 + rows - 1);
+                        if region.y1 < b0 || region.y0 > b1 {
+                                return Ok(());
+                        }
+                        region = Region::new(region.x0, region.y0.max(b0), region.x1, region.y1.min(b1));
+                }
                 let chunk_count = self.driver.chunk_count(&region);
                 if chunk_count == 0 {
                         return Ok(());
                 }
                 let per_poll = self.driver.chunks_per_poll(&region);
-                let frame = Frame { buf: self.buf, width: self.width, height: self.height, format: self.format, stride: self.format.stride(self.width) };
+                let frame = Frame { buf: self.buf, width: self.width, height: self.height, format: self.format, stride: self.format.stride(self.width), origin_y: self.front_y0 };
                 self.driver.kick(&frame, &region, 0);
                 self.update = Some(Update { region, chunk_index: 0, chunk_count, per_poll, chunk_started_us: (self.now)() });
                 Ok(())
@@ -270,9 +332,9 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
 
         /// Advance the update in flight. `Ok(true)` while still busy, `Ok(false)` when idle.
         pub fn poll(&mut self) -> Result<bool, UpdateError> {
-                let Self { driver, buf, width, height, format, update, now, timeouts, .. } = self;
+                let Self { driver, buf, width, height, format, update, now, timeouts, front_y0, .. } = self;
                 let Some(u) = update else { return Ok(false) };
-                let frame = Frame { buf, width: *width, height: *height, format: *format, stride: format.stride(*width) };
+                let frame = Frame { buf, width: *width, height: *height, format: *format, stride: format.stride(*width), origin_y: *front_y0 };
                 let budget = u.per_poll;
                 let mut completed = 0u16;
                 loop {
@@ -462,7 +524,7 @@ mod tests {
                 for (i, b) in buf.iter_mut().enumerate() {
                         *b = i as u8;
                 }
-                let f = Frame { buf: &buf, width: 16, height: 8, format: PixelFormat::Rgb565, stride: 32 };
+                let f = Frame { buf: &buf, width: 16, height: 8, format: PixelFormat::Rgb565, stride: 32, origin_y: 0 };
                 let row = f.row(&Region::new(2, 0, 5, 7), 3);
                 assert_eq!(row.len(), 8);
                 assert_eq!(row[0], ((3 * 16 + 2) * 2) as u8);
