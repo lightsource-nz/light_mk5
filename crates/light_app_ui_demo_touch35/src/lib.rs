@@ -15,7 +15,7 @@ use light_app_ui_demo as demo;
 use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode};
 use light_camera::Ov5640;
 use light_core::hal::CameraBus;
-use light_core::Clock;
+use light_core::{Clock, SpiDisplayBus};
 use light_rp2::camera::PioCamera;
 use light_rp2::pwm::PwmOutput;
 use light_board_touch35::{board, Pmic, Touch35Power};
@@ -80,6 +80,10 @@ enum Ext {
         Fs { op: FsOp, path: FsPath, arg: FsPath },
         /// The camera preview.
         Cam(CamOp),
+        /// Recover the panel controller, for a panel that has stopped showing what it is sent: `true`
+        /// is the full reset and init, `false` only sleep-out and display-on. Which one brings the
+        /// picture back tells a controller that was reset from one that was put to sleep.
+        Panel { full: bool },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -443,6 +447,21 @@ impl BoardHook<St7796<Spi0Display>, Ext> for Hook {
                                 view.ui.invalidate_all();
                         }
                         Ext::Cam(op) => self.camera.command(view, op),
+                        Ext::Panel { full } => {
+                                let _ = view.display.wait();
+                                let t0 = light_rp2::now_us();
+                                if full {
+                                        view.display.init(&mut SysClock);
+                                        view.display.driver().clear(view.ui.theme().bg);
+                                } else {
+                                        let bus = view.display.driver().bus_mut();
+                                        bus.command(light_display::st7796::CMD_SLPOUT);
+                                        SysClock.delay_ms(120);
+                                        bus.command(light_display::st7796::CMD_DISPON);
+                                }
+                                view.ui.invalidate_all();
+                                info!("panel: {} in {} ms; the whole interface repaints", if full { "reset and initialised" } else { "woken (sleep out, display on)" }, (light_rp2::now_us() - t0) / 1000);
+                        }
                         Ext::Pmic | Ext::RtcShow | Ext::RtcSet(_) | Ext::Sd | Ext::Fs { .. } => {}
                 }
         }
@@ -571,7 +590,16 @@ static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Sd)) },
         CliCommand { name: "fs", usage: light_fs::console::USAGE, parse: parse_fs },
         CliCommand { name: "cam", usage: "cam id|on|bars|off|probe|raw", parse: parse_cam },
+        CliCommand { name: "panel", usage: "panel wake|init", parse: parse_panel },
 ];
+
+fn parse_panel(w: &mut Words) -> Parsed<AppEvent> {
+        match w.next() {
+                Some("wake") => Parsed::Event(DemoEvent::Ext(Ext::Panel { full: false })),
+                Some("init") => Parsed::Event(DemoEvent::Ext(Ext::Panel { full: true })),
+                _ => Parsed::Usage,
+        }
+}
 
 fn parse_cam(w: &mut Words) -> Parsed<AppEvent> {
         let op = match w.next() {
