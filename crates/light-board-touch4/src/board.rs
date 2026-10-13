@@ -1,7 +1,7 @@
 //! Board wiring for the Waveshare RP2350-Touch-LCD-4: pins from the board's vendor BSP
-//! (`bsp_st7701.h`, `bsp_gt911.h`, `bsp_battery.h`), which is the closest thing to a
-//! schematic transcription on hand. Every figure below is UNVERIFIED on hardware until
-//! its bring-up ticks it off.
+//! (`bsp_st7701.h`, `bsp_gt911.h`, `bsp_battery.h`), checked against the board's schematic.
+//! Where the two disagree the schematic wins -- the BSP's battery "voltage" pin is the IMU's
+//! interrupt line.
 //!
 //! An RP2350B, and the second board on the upper GPIO bank. The panel has NO GDDRAM: the
 //! 480x480 RGB565 framebuffer lives in SRAM (450 KB of the 520 -- single-buffered, the
@@ -17,7 +17,7 @@ use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
 use light_rp2::pwm::PwmOutput;
 use light_rp2::rgb::{RgbPins, RgbScanout};
-use light_rp2::{adc::Adc, Clocks, SysClock};
+use light_rp2::{Clocks, SysClock};
 
 // The RGB (DPI) interface: DE + syncs + PCLK, then 16 contiguous data pins.
 pub const PIN_LCD_DE: usize = 20;
@@ -64,14 +64,16 @@ pub const TOUCH_MAP: CoordMap = CoordMap { x_max: 479, y_max: 479, invert_x: fal
 /// determinant must stay +1, a proper rotation, as a real mounting must be).
 pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::Y, imu::X, imu::Z], sign: [1, 1, -1] };
 
-// Battery: ADC channel 1 (GPIO 41), with the charger's status pins (low-active).
-pub const PIN_BAT_ADC: usize = 41;
+// The battery charger: a CS8501 (charge plus 5 V boost), charging at ~580 mA (its PROG
+// resistor is 1.2 kΩ), with two open-drain status outputs, low-active, each pulled up on the
+// board. CHRG is low while charging; STDBY ("done") is low once the cell is full.
+//
+// There is NO battery-voltage sense: no divider from the cell reaches any ADC pin. The vendor's
+// own battery code reads GPIO 41, which the schematic puts on the IMU's INT1 -- an interrupt
+// output, so what it reads wanders with nothing to do with the cell. Charge state is all this
+// board can report.
 pub const PIN_BAT_CHRG: usize = 42;
 pub const PIN_BAT_DONE: usize = 43;
-/// MEASURED ÷2: the vendor formula says ÷3, but ÷3 read an impossible 6.6 V on hardware
-/// while ÷2 reads a plausible 4.4 V charged pack. The vendor formula fits their OWN board
-/// revision, not this one.
-pub const BATTERY_DIVIDER: u32 = 2;
 
 /// The scanout's two DMA channels: the frame streamer and its reprogram partner.
 pub const RGB_DMA_DATA_CH: usize = 15;
@@ -95,8 +97,9 @@ pub struct Peripherals {
         pub backlight: PwmOutput,
         pub i2c1: I2c1,
         pub touch_int: Input,
-        pub battery: Adc,
+        /// The charger's status: low while charging.
         pub charging: Input,
+        /// Low once the cell is full.
         pub charge_done: Input,
 }
 
@@ -147,7 +150,6 @@ pub fn take(clocks: &Clocks, fb: *const u16) -> Option<Peripherals> {
                         backlight: PwmOutput::new(PIN_LCD_BL, clocks.sys_hz, BACKLIGHT_CARRIER_HZ, BACKLIGHT_LEVEL_MAX),
                         i2c1: I2c1::new(clocks.sys_hz, PIN_TOUCH_SCL, PIN_TOUCH_SDA, I2C1_HZ),
                         touch_int,
-                        battery: Adc::new(PIN_BAT_ADC),
                         charging: Input::new_pull_up(PIN_BAT_CHRG),
                         charge_done: Input::new_pull_up(PIN_BAT_DONE),
                 })

@@ -1,8 +1,8 @@
 //! This board's [`PowerMechanism`]: just the backlight (inverted, near-linear). The 4" has a
 //! battery and charge-status pins but NO power latch, so it cannot cut its own power; leaving
 //! `on_external_power` at its `true` default correctly keeps the policy from ever trying an
-//! unrecoverable shutdown, and the board just dims and wakes. Battery and charge status stay in the
-//! app's board module for the `stats` readout.
+//! unrecoverable shutdown, and the board just dims and wakes. Charge status stays in the app's
+//! board module for the `stats` readout; there is no battery voltage to report.
 
 use light_power_manager::PowerMechanism;
 use light_rp2::pwm::PwmOutput;

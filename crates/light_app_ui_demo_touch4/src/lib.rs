@@ -2,7 +2,7 @@
 //! RGB (DPI) glass with no GDDRAM, the ST7701S's first bring-up, and the first board fed by
 //! `light_rp2::rgb`'s pure-hardware scanout loop. The application is `light_app_ui_demo`;
 //! this crate is the tangible 4.0: the scanout, the beam-racing render gate, the GT911,
-//! the IMU, the RTC, the battery, the PSRAM probe, the shell ABI and the panic handler.
+//! the IMU, the RTC, the charger, the PSRAM probe, the shell ABI and the panic handler.
 //!
 //! The display architecture is the leg's point: the framebuffer IS the panel. One 450 KB
 //! RGB565 buffer in SRAM (single-buffered, the bring-up decision -- the flip hook exists
@@ -36,7 +36,6 @@ use light_input::touch::Tracker;
 use light_input::{ImuMod, TouchMod};
 use light_rtc::{Datetime, Pcf85063a, RtcMod};
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
-use light_rp2::adc::Adc;
 use light_rp2::gpio::Input;
 use light_rp2::i2c::I2c1;
 use light_rp2::shell::{panic_report, ShellInfo};
@@ -102,12 +101,15 @@ enum Ext {
         RtcSet(Datetime),
         /// Paint the bring-up test pattern straight into the live buffer, UI paused.
         Pattern,
+        /// Watch the charger for a second: each status pin's low time and transitions -- a
+        /// blinking pin is a fault code, which a one-off read cannot see.
+        Charge,
 }
 
 type AppEvent = DemoEvent<Ext>;
 
 //   the framework power module (light_power_manager::PowerMod) reads only the backlight command
-// here; this board's battery/charge/scanout stats are read by the board module below (the mechanism
+// here; this board's charge/scanout stats are read by the board module below (the mechanism
 // has no gauge), so PowerMod is given no stats or busy recognizer.
 fn power_backlight(e: &AppEvent) -> Option<u16> {
         if let DemoEvent::Command(Command::Backlight(level)) = e {
@@ -266,16 +268,65 @@ impl BoardHook<Scanout, Ext> for Hook {
 
 
 
-//   the battery-and-diagnostics module: battery/charge/scanout stats, the scan probe, and the PSRAM
+//   the charger-and-diagnostics module: charge/scanout stats, the scan probe, and the PSRAM
 // memtest -- all board-specific and app-coupled. Power (backlight, the dim lifecycle) is the
-// framework PowerMod now (proposal B unfused the two).
+// framework PowerMod now (proposal B unfused the two). The board has no battery-voltage sense,
+// so the charger's two status pins are all there is to report.
 struct BoardMod {
-        battery: Adc,
         charging: Input,
         charge_done: Input,
         /// Held for the stall diagnostic; the engine otherwise needs nothing.
         scanout: light_rp2::rgb::RgbScanout,
         events: Subscription,
+}
+
+/// How long `charge` watches, and how often it samples the status pins within that.
+const CHARGE_WATCH_US: u64 = 1_000_000;
+const CHARGE_SAMPLE_US: u64 = 100;
+
+impl BoardMod {
+        /// The charger's state from its status pins at this instant.
+        fn charger_state(&self) -> &'static str {
+                if self.charge_done.is_low() {
+                        "charged (cell full)"
+                } else if self.charging.is_low() {
+                        "charging"
+                } else {
+                        "not charging (no USB power, or no cell)"
+                }
+        }
+
+        /// Blocking for a second; a bring-up instrument, not a poll path.
+        fn report_charge(&mut self) {
+                let (mut chrg_low, mut done_low, mut chrg_edges, mut done_edges, mut samples) = (0u32, 0u32, 0u32, 0u32, 0u32);
+                let (mut last_chrg, mut last_done) = (self.charging.is_low(), self.charge_done.is_low());
+                let t0 = light_rp2::now_us();
+                let mut next = t0;
+                while light_rp2::now_us() - t0 < CHARGE_WATCH_US {
+                        if light_rp2::now_us() < next {
+                                continue;
+                        }
+                        next += CHARGE_SAMPLE_US;
+                        let (c, d) = (self.charging.is_low(), self.charge_done.is_low());
+                        chrg_low += u32::from(c);
+                        done_low += u32::from(d);
+                        chrg_edges += u32::from(c != last_chrg);
+                        done_edges += u32::from(d != last_done);
+                        (last_chrg, last_done) = (c, d);
+                        samples += 1;
+                }
+                info!("charge: {}", self.charger_state());
+                info!(
+                        "charge: CHRG low {}/{} ({} edges), DONE low {}/{} ({} edges) over {} ms",
+                        chrg_low,
+                        samples,
+                        chrg_edges,
+                        done_low,
+                        samples,
+                        done_edges,
+                        CHARGE_WATCH_US / 1000
+                );
+        }
 }
 
 impl Module for BoardMod {
@@ -287,16 +338,7 @@ impl Module for BoardMod {
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
                                 AppEvent::Command(Command::Stats) => {
-                                        let raw = u32::from(self.battery.read());
-                                        let mv = raw * 3300 * BATTERY_DIVIDER / 4096;
-                                        let state = if self.charge_done.is_low() {
-                                                "charge done"
-                                        } else if self.charging.is_low() {
-                                                "charging"
-                                        } else {
-                                                "on battery/full"
-                                        };
-                                        info!("battery: {mv} mV (raw {raw}), {state}");
+                                        info!("charger: {}", self.charger_state());
                                         //   the scanout's pulse over 5 ms -- SHORTER than a
                                         // frame, because the progress counter wraps per
                                         // frame and a longer window aliases (the bring-up's
@@ -324,6 +366,10 @@ impl Module for BoardMod {
                                         info!("pio1 padout {:#010x} padoe {:#010x}; pio2 padout {:#010x} padoe {:#010x}", p[0], p[1], p[2], p[3]);
                                         info!("sio gpio_in {:#010x} hi {:#010x}", p[4], p[5]);
                                         info!("pcs: hsync {} vsync {} de {} rgb {}; fstat pio1 {:#010x} pio2 {:#010x}", d[0], d[1], d[2], d[3], d[4], d[5]);
+                                }
+                                AppEvent::Ext(Ext::Charge) => {
+                                        busy = true;
+                                        self.report_charge();
                                 }
                                 AppEvent::Ext(Ext::Psram) => {
                                         busy = true;
@@ -353,7 +399,7 @@ static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "pattern", usage: "pattern", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Pattern)) },
         CliCommand { name: "scan", usage: "scan", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Scan)) },
         CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Psram)) },
-];
+        CliCommand { name: "charge", usage: "charge (a second's watch of the charger)", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Charge)) },];
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
 // --- entry ----------------------------------------------------------------------------------
@@ -388,7 +434,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let imu = Imu::new(Qmi8658::new(i2c1));
 
         let mut power_mod = PowerMod::new(Touch4Power { backlight: p.backlight }, SysClock, &EVENTS, power_backlight, |_| false, |_| None);
-        let mut board_mod = BoardMod { battery: p.battery, charging: p.charging, charge_done: p.charge_done, scanout: p.scanout, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut board_mod = BoardMod { charging: p.charging, charge_done: p.charge_done, scanout: p.scanout, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod::new(imu, &EVENTS, SysClock, IMU_AXIS_MAP);
         let mut rtc_mod = RtcMod::new(Pcf85063a::new(i2c1), &EVENTS, rtc_is_report, rtc_get_set);
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565Le));
