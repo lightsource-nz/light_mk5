@@ -66,7 +66,10 @@ pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::Y, imu::X, imu::Z], si
 
 // The battery charger: a CS8501 (charge plus 5 V boost), charging at ~580 mA (its PROG
 // resistor is 1.2 kΩ), with two open-drain status outputs, low-active, each pulled up on the
-// board. CHRG is low while charging; STDBY ("done") is low once the cell is full.
+// board. CHRG is low whenever USB power is present and the charger is active; STDBY ("done")
+// does not assert while the board runs -- a full cell is held at its float voltage with CHRG
+// still low. Neither low means the board is on battery. A cell with its protection tripped
+// (a reversed connector does this) reads as CHRG low too: the charger cannot tell it from empty.
 //
 // There is NO battery-voltage sense: no divider from the cell reaches any ADC pin. The vendor's
 // own battery code reads GPIO 41, which the schematic puts on the IMU's INT1 -- an interrupt

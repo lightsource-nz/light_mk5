@@ -285,14 +285,18 @@ const CHARGE_WATCH_US: u64 = 1_000_000;
 const CHARGE_SAMPLE_US: u64 = 100;
 
 impl BoardMod {
-        /// The charger's state from its status pins at this instant.
+        /// The power source, from the charger's status pins at this instant. CHRG low means USB
+        /// power is present and the charger is active -- not that the cell is filling: with the
+        /// board running, the charger holds a full cell at its float voltage and never reports
+        /// done (measured: a 4.19 V cell, cool, still CHRG after a day on USB). With no voltage
+        /// sense on this board, there is no charge level to give.
         fn charger_state(&self) -> &'static str {
                 if self.charge_done.is_low() {
-                        "charged (cell full)"
+                        "on USB, charger reports the cell full"
                 } else if self.charging.is_low() {
-                        "charging"
+                        "on USB, charger active (no charge level on this board)"
                 } else {
-                        "not charging (no USB power, or no cell)"
+                        "on battery"
                 }
         }
 
