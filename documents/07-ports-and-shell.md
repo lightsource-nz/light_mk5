@@ -133,8 +133,11 @@ belong to pico-sdk's runtime in the C shell. This crate wants only the register 
   - `usb` — `UsbBus`, the USB device controller as a `usb_device::bus::UsbBus`, polled (below);
   - `uart` — `Uart`, a UART as a console transport (the debug-probe path, and the host role's only
     console);
-  - `usb_host` (feature `usb-host`) — the USB-MIDI host role: the ecosystem's host stack over its
-    controller driver for this chip, behind `light_midi::Host` (below).
+  - `usb_host` (feature `usb-host` or `usb-host-pio`) — the USB-MIDI host role: the ecosystem's
+    host stack behind `light_midi::Host`, over whichever controller the feature names (below);
+  - `usb_pio` and `usb_host_pio` (feature `usb-host-pio`) — a full-speed USB host controller built
+    out of one PIO block, a DMA channel and a hardware alarm, for a board whose native port is
+    committed to the device role (below).
 - `update` (RP2350 only) — `FlashSlot::inactive()`, the application slot that is not running, as a
   `light_core::hal::UpdateTarget`. Writes go through the boot ROM rather than the flash registers,
   for three reasons that are each their own bug otherwise: the ROM checks the write against the
@@ -241,7 +244,8 @@ A board whose native USB port hosts instruments builds the port with `usb-host` 
 `cotton-usb-host`, over its own controller driver for this chip (vendored under `lib/` with the
 framework's fixes and its RP2350 driver; every change is listed in its `LIGHT_PATCHES.md`). The
 stack does enumeration, hub topology and hot-plug; the port owns the MIDI class, the device slots,
-and the way the stack is driven.
+and the way the stack is driven. The controller under the stack is chosen by feature — the native
+one here, or the PIO host of the next section — and the MIDI layer is the same code over either.
 
 - **Polled from the runtime, no executor, no interrupt.** The stack is written for an async
   executor woken from the controller's interrupt, but every one of its futures re-reads the
@@ -268,6 +272,62 @@ and the way the stack is driven.
   from the stack's topology, so a status display can show which socket an instrument is in.
 - **Nothing resets the controller.** Hot-plug, hub-level and per-port, is handled by the stack; the
   application has no root-port workaround to run.
+
+### The same host role on a PIO pair — `usb_pio` and `usb_host_pio` (feature `usb-host-pio`)
+
+A board whose native port is the device — because the product's one connector must carry the
+console and the route into the bootloader — hosts its instruments on a pair of ordinary pins
+instead, and `usb-host-pio` builds the same host role over a full-speed USB host controller made
+of software: one PIO block whole, a DMA channel, a hardware alarm, and two pins. It sits beside
+`usb-console`, which `usb-host` cannot. The stack above it, the hub handling and the MIDI layer are
+unchanged; what it implements is the stack's host-controller seam.
+
+- **The bus is three state machines and fills the block exactly.** A transmitter at address 0
+  whose input is a stream of two-bit instruction addresses — J, K, the end-of-packet and a release
+  symbol — so NRZI and bit stuffing are done once, in the encoder, and the machine only drives what
+  it is told at 48 MHz; a decoder clocked at the system rate and triggered a bit at a time; and an
+  edge detector at 96 MHz that resynchronises the decoder on every edge and flags the start and
+  end of a packet. The programs are the reference implementation's (the Pico-PIO-USB project's,
+  MIT), hand-assembled and relocated the way every program in this crate is, and the packet-level
+  procedure — what to wait for, for how long — follows that project's host, because every wait is
+  a timing the USB specification sets. Both data pins are input-inverted at the pad; every
+  line-state read un-inverts. The encoding and the two CRCs are pure arithmetic and are tested on
+  the host, against the catalogue check value and a bitwise statement of the token CRC, where the
+  host stack itself cannot be built.
+- **The frame engine runs from a one-millisecond timer interrupt, not from the runtime loop.** A
+  full-speed host must begin a frame every millisecond and answer inside a transaction within
+  sixteen bit times; neither can wait for a runtime pass. So the alarm's handler owns the wire —
+  start-of-frame, one transaction for every queued transfer, the attach and detach watch — and
+  the futures the stack polls queue a transfer in a slot, read its outcome and free the slot. One
+  transaction per endpoint per frame, as the reference host does it: a frame's work is bounded
+  with every slot busy, and any endpoint's latency is bounded at a millisecond, which is the
+  interval the native controller polls a MIDI endpoint at anyway. The handler and its helpers
+  are placed in RAM (the SDK's time-critical section), with the CRC tables and the pre-encoded
+  handshakes beside them.
+- **One rule makes the sharing safe: the handler and the futures run on the same core.** The
+  handler is atomic against everything else on that core; the futures touch the engine only inside
+  the port's critical section, which keeps the handler out for a few hundred nanoseconds. Nothing
+  interleaves, so no flag is checked twice and no transfer is started while being cancelled. The
+  controller is therefore constructed on the core that polls the stack, which is where its
+  interrupt is enabled.
+- **An interrupt pipe is a slot the handler re-arms**, polled at its interval with its packets
+  kept in a two-deep ring until the stack collects them, and a lost packet counted rather than
+  silently overwritten. A control transfer is driven stage by stage from the future — setup at
+  DATA0, data and status at DATA1 — so the handler knows transfers and nothing above them.
+- **It is full speed only.** A low-speed device, directly or behind a hub, is reported as present
+  and then refused — a warning, not an attempt — because the instruments this host exists for are
+  a full-speed class and the reference's speed-switching machinery is half the code. A NAK that
+  persists past the five seconds the specification allows a request is a timeout; a transaction
+  with no sound answer three times running fails the transfer; two microseconds of SE0 on an idle
+  bus is a detach, which fails every transfer and tells the detect stream.
+- **The system clock must be a multiple of 12 MHz.** The dividers for 48 and 96 MHz are integers
+  only then, and a fractional divider puts jitter on every bit. The stock 150 MHz is not such a
+  multiple; a board that hosts on PIO chooses 240, 192 or 120 MHz in its build and the firmware
+  says so at start-up if it did not get one.
+- **The commit of a firmware on probation holds interrupts off for tens of milliseconds** (see the
+  update module), during which no frame is sent. The instruments see a bus that went quiet and
+  came back, which is what a hub's upstream does on a cable, and the stack re-enumerates what it
+  must. Once, a few seconds after an update.
 
 ### The wireless part — `wifi` (feature `wifi`)
 
@@ -735,10 +795,11 @@ they leave. The board's `#[panic_handler]` calls `panic_report`.
   workspace, so this property never constrains the host-test build (see
   [10-build-and-release.md](10-build-and-release.md)).
 - **The shell owns the runtime; Rust owns everything above it.** `crt0`, `boot2`/startup, the linker
-  script, the clock tree, multicore launch, PIO assembly and, in the host role, the USB host stack
-  live in C. USB in the device role is Rust's, from the port's controller driver up. Rust is handed
-  the measured clock rates and a tiny callback surface, and runs the application forever from
-  `light_app_main` (and, on a two-core chip, the console forever from `light_app_core1_main`).
+  script, the clock tree, multicore launch and the interrupt vector table live in C. USB in both
+  roles is Rust's, from the port's controller driver up — the native device controller, the
+  native host controller through the vendored stack's driver, or the host built out of PIO. Rust
+  is handed the measured clock rates and a tiny callback surface, and runs the application forever
+  from `light_app_main` (and, on a two-core chip, the console forever from `light_app_core1_main`).
 - **The framework runs single-core or multi-core; the application always occupies one core.** On a
   two-core chip the console and USB live on the second core so a busy render loop cannot stall them
   (and logging is non-blocking end to end so it can never deadlock the loop); on a single-core chip

@@ -27,6 +27,12 @@
 compile_error!("light-rp2: enable exactly one of the `rp2040` and `rp2350` features");
 #[cfg(not(any(feature = "rp2040", feature = "rp2350")))]
 compile_error!("light-rp2: enable one of the `rp2040` and `rp2350` features");
+//   one host controller: the MIDI host layer is built over whichever is chosen
+#[cfg(all(feature = "usb-host", feature = "usb-host-pio"))]
+compile_error!("light-rp2: `usb-host` (the native controller) and `usb-host-pio` (the PIO host) are two homes for one host stack; enable one");
+//   the native controller is one block with one role
+#[cfg(all(feature = "usb-host", feature = "usb-console"))]
+compile_error!("light-rp2: `usb-host` and `usb-console` both want the native USB controller; a board hosting on PIO uses `usb-host-pio` beside `usb-console`");
 
 #[cfg(feature = "rp2040")]
 pub use rp2040_pac as pac;
@@ -58,8 +64,14 @@ pub mod spi_bus;
 pub mod uart;
 #[cfg(feature = "rp2350")]
 pub mod update;
-#[cfg(feature = "usb-host")]
+#[cfg(any(feature = "usb-host", feature = "usb-host-pio"))]
 pub mod usb_host;
+#[cfg(feature = "usb-host-pio")]
+pub mod usb_host_pio;
+//   and under `test` without the feature: the bus's encoding and checks are pure arithmetic,
+// tested on the host, where the host stack itself cannot be built
+#[cfg(any(feature = "usb-host-pio", test))]
+pub mod usb_pio;
 #[cfg(feature = "usb-console")]
 pub mod usb;
 #[cfg(feature = "wifi")]

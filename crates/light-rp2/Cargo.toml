@@ -18,6 +18,12 @@ rp2350 = ["dep:rp235x-pac", "cotton-usb-host?/rp2350"]
 # light_midi::Host in src/usb_host.rs. A board whose native USB port hosts instruments carries
 # it instead of usb-console; the C shell links no USB stack in either role
 usb-host = ["dep:light-midi", "dep:cotton-usb-host", "dep:futures", "dep:defmt"]
+#   THE SAME HOST ROLE ON A PAIR OF ORDINARY PINS: the stack, the hub handling and the MIDI
+# layer above are the ones usb-host builds, over a full-speed host controller made of PIO0, a
+# DMA channel and a hardware alarm (src/usb_pio.rs and src/usb_host_pio.rs) instead of the
+# chip's controller. For a board whose native port is committed to the device role -- so this
+# sits BESIDE usb-console, which usb-host cannot. The two host features exclude each other
+usb-host-pio = ["dep:light-midi", "dep:cotton-usb-host", "dep:futures", "dep:defmt"]
 #   the USB device role: the port's own controller driver (src/usb.rs) with the CDC console on
 # it, run from the core-1 loop in src/shell.rs. Every board whose native USB port is a device
 # carries it; a host-role board (usb-host) leaves it off and its console is the UART alone
@@ -54,6 +60,11 @@ embassy-time-driver = { version = "0.2", features = ["tick-hz-1_000_000"], optio
 # critical-section fallback provides swap/fetch_add there through THIS crate's spinlock
 # section, and compiles to the native instructions everywhere else
 portable-atomic = { version = "1", features = ["critical-section"] }
+
+#   the host tests of the pure parts (the PIO bus's encoding and checks) link the crate's test
+# binary on the host, where nothing supplies the critical section a device's port does
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
 
 [target.'cfg(target_arch = "arm")'.dependencies]
 #   PRIMASK for the critical section; no `critical-section-single-core` feature, because that

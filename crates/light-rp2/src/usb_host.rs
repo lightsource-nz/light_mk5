@@ -1,27 +1,39 @@
-//! The USB-MIDI host role: the ecosystem's host stack (`cotton-usb-host`, over its controller
-//! driver for this chip) behind [`light_midi::Host`], driven from the runtime loop one poll per
-//! pass -- no executor and no interrupt. The stack is written for an async executor woken from the
-//! USB IRQ, but every one of its futures re-reads the controller when polled, so polling them
-//! each pass with a waker that does nothing is a complete driver of it; the IRQ its constructor
-//! unmasks is masked straight back.
+//! The USB-MIDI host role: the ecosystem's host stack (`cotton-usb-host`) behind
+//! [`light_midi::Host`], driven from the runtime loop one poll per pass -- no executor. The
+//! stack is written for an async executor woken from an interrupt, but every one of its futures
+//! re-reads its controller when polled, so polling them each pass with a waker that does nothing
+//! is a complete driver of it.
 //!
-//! What this owns: the stack's statics and the one task future that runs the bus (in `.bss`,
-//! type-erased), the four MIDI device slots, and the packet mailboxes between the async side
-//! and the synchronous [`light_midi::Transport`] the application drives. A MIDI IN endpoint is
-//! read as a hardware-polled pipe rather than a bulk transfer: on this controller a bulk read
+//! THE CONTROLLER UNDERNEATH IS CHOSEN BY FEATURE, and nothing above it changes:
+//!
+//! - `usb-host`: the chip's native controller, through the stack's own driver for it. Its
+//!   interrupt is masked straight back after construction; the interrupt work is done here, one
+//!   call per pass.
+//! - `usb-host-pio`: a full-speed host built out of PIO ([`crate::usb_host_pio`]), for a board
+//!   whose native port is committed to the device role. Its frame engine runs from a timer
+//!   interrupt because the wire's timing leaves no choice; the stack still sees a controller it
+//!   polls.
+//!
+//! What this owns either way: the stack's statics and the one task future that runs the bus (in
+//! `.bss`, type-erased), the four MIDI device slots, and the packet mailboxes between the async
+//! side and the synchronous [`light_midi::Transport`] the application drives. A MIDI IN endpoint
+//! is read as a polled pipe rather than a bulk transfer: on the native controller a bulk read
 //! holds the one general-purpose pipe until data arrives, which would stall every other transfer
-//! on the bus behind a silent instrument; the polled pipes are per endpoint, and the hardware
-//! services them without the CPU.
+//! on the bus behind a silent instrument; the polled pipes are per endpoint, and the controller
+//! services them without the application. The PIO engine polls its pipes the same way, from
+//! its frame tick.
 
 use core::future::{poll_fn, Future};
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-#[cfg(feature = "rp2040")]
+#[cfg(all(feature = "usb-host", feature = "rp2040"))]
 use cotton_usb_host::host::rp2040::{Rp2040HostController as Controller, UsbShared, UsbStatics};
-#[cfg(feature = "rp2350")]
+#[cfg(all(feature = "usb-host", feature = "rp2350"))]
 use cotton_usb_host::host::rp2350::{Rp2350HostController as Controller, UsbShared, UsbStatics};
+#[cfg(feature = "usb-host-pio")]
+use crate::usb_host_pio::PioHostController as Controller;
 use cotton_usb_host::host_controller::{InterruptPacket, TransferType, UsbError};
 use cotton_usb_host::usb_bus::{BulkOut, DeviceEvent, HubState, UsbBus};
 use cotton_usb_host::wire::{DescriptorVisitor, EndpointDescriptor, InterfaceDescriptor};
@@ -29,6 +41,7 @@ use futures::Stream;
 use light_core::{Mailbox, StaticCell};
 use light_midi::{BusInfo, Host, MidiEvent, Mount, Packet, Transport};
 
+#[cfg(feature = "usb-host")]
 use crate::pac;
 
 // --- the stack's silence ------------------------------------------------------------------------
@@ -52,8 +65,10 @@ defmt::timestamp!("{=u32}", 0);
 
 type Bus = UsbBus<Controller>;
 
+#[cfg(feature = "usb-host")]
 static SHARED: UsbShared = UsbShared::new();
 // (not Sync: it holds the pipe pools' cells, so it is placed once rather than declared)
+#[cfg(feature = "usb-host")]
 static STATICS: StaticCell<UsbStatics> = StaticCell::new();
 static BUS: StaticCell<Bus> = StaticCell::new();
 static HUB: StaticCell<HubState<Controller>> = StaticCell::new();
@@ -336,7 +351,24 @@ pub struct UsbMidiHost {
 }
 
 impl UsbMidiHost {
+        /// Bring the host stack up on the PIO host: `pin_dp` and the pin above it are the pair,
+        /// `dma_ch` feeds its transmitter, and `sys_hz` must be a multiple of 12 MHz. Once, on
+        /// the core that polls it -- the frame tick's interrupt lands on this core.
+        ///
+        /// # Safety
+        ///
+        /// PIO0, the channel and the two pins belong to the host from here on.
+        #[cfg(feature = "usb-host-pio")]
+        pub unsafe fn init_pio(pin_dp: usize, dma_ch: usize, sys_hz: u32) -> Self {
+                // SAFETY: the caller's promise, passed on
+                let hc = unsafe { Controller::new(pin_dp, dma_ch, sys_hz) };
+                let bus: &'static Bus = BUS.init(UsbBus::new(hc));
+                let hub: &'static HubState<_> = HUB.init(HubState::default());
+                Self { task: place_task(host_main(bus, hub)) }
+        }
+
         /// Bring the host stack up on this core. Once.
+        #[cfg(feature = "usb-host")]
         pub fn init() -> Self {
                 // SAFETY: the one construction of the controller; the shell touched none of it
                 let mut p = unsafe { pac::Peripherals::steal() };
@@ -369,6 +401,7 @@ impl Host for UsbMidiHost {
                 let waker = noop_waker();
                 let mut cx = Context::from_waker(&waker);
                 // the interrupt work, done here instead: buffer-status bookkeeping and wakes
+                #[cfg(feature = "usb-host")]
                 SHARED.on_irq();
                 let _ = self.task.as_mut().poll(&mut cx);
         }
