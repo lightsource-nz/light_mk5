@@ -11,13 +11,22 @@
 #   pico-sdk does NOT derive PICO_PLATFORM from PICO_BOARD on its own (its own default is
 # unconditionally rp2040 -- see pico-sdk/cmake/pico_pre_load_platform.cmake), which is why
 # this has to exist at all.
+#
+#   The RP2350 boards are the platform's own plus whatever the consuming project names in
+# LIGHT_RP2350_BOARDS before it includes external/light_preinit.cmake: a product's own board,
+# defined by a header in a directory it adds to PICO_BOARD_HEADER_DIRS, is not a board this
+# file can know, and a board it does not know would otherwise be taken for an RP2040.
+set(_light_rp2350_boards
+        pico2 pico2_w
+        waveshare_rp2350_touch_lcd_1.69
+        waveshare_rp2350_touch_lcd_2.8
+        waveshare_rp2350_touch_lcd_3.5
+        waveshare_rp2350_touch_lcd_3.49
+        waveshare_rp2350_touch_lcd_4
+        ${LIGHT_RP2350_BOARDS}
+)
 macro(light_resolve_pico_platform OUT_VAR BOARD ARCH)
-        if("${BOARD}" STREQUAL pico2 OR "${BOARD}" STREQUAL pico2_w
-                        OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_1.69
-                        OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_2.8
-                        OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_3.5
-                        OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_3.49
-                        OR "${BOARD}" STREQUAL waveshare_rp2350_touch_lcd_4)
+        if("${BOARD}" IN_LIST _light_rp2350_boards)
                 if("${ARCH}" STREQUAL riscv32)
                         # the RP2350's Hazard3 cores. pico-sdk's own
                         # cmake/preload/platforms/rp2350-riscv.cmake selects the RISC-V

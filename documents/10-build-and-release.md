@@ -86,6 +86,14 @@ font, or a theme is data: an authored file and one call, no firmware source touc
   (`uf2` over BOOTSEL, or `swd`) and, where the product has one, the target that is its
   **bootloader**; and it names the default target. Several targets can share one board preset and
   build tree (e.g. several apps targeting one board share its preset and build tree).
+- **A product's own board** is a pico-sdk board header, `<name>.h`, in a directory the consuming
+  project appends to `PICO_BOARD_HEADER_DIRS`, with the name appended to `LIGHT_RP2350_BOARDS`
+  when the chip is an RP2350 — both before the project includes `external/light_preinit.cmake`,
+  which is where the name is first resolved to a platform. The preset then names it in
+  `LIGHT_BOARD` over `conf-light-pico-base`, exactly as a platform-known board would be. The
+  header carries only what the SDK consumes (chip variant, flash part and size, default UART,
+  default LED); the pin map is the board-support crate's (see
+  [09-application-model.md](09-application-model.md)).
 
 ## Building and flashing
 
