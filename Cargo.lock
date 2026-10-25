@@ -2013,6 +2013,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-sim"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "light-core",
+ "light-midi",
+]
+
+[[package]]
 name = "light-ui"
 version = "0.1.0"
 dependencies = [

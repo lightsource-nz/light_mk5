@@ -41,6 +41,9 @@ members = [
         "tools/crush",
         "tools/light-host-gui",
         "tools/light-ui-editor",
+        #   the simulated board: the port seams on the host, with no window in it, so it is
+        # tested here like any crate; a project's simulator puts the window around it
+        "tools/light-sim",
 ]
 
 #   freetype-sys 0.23's bundled build compiles libpng with `-I libz-sys/src/zlib`, a path that

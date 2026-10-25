@@ -1,0 +1,14 @@
+[package]
+name = "light-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "a simulated board for the light framework: host implementations of the port seams -- the clock, pins, a display controller that decodes the real driver's commands, a USB-MIDI bus with instruments that plug and unplug, the console and the log -- so a portable application runs on the desktop unchanged. A host library with no window in it; a project's simulator puts one around it"
+
+[dependencies]
+light-core = { path = "../../crates/light-core" }
+light-midi = { path = "../../crates/light-midi" }
+
+[dev-dependencies]
+#   the tests link light-core's log and bus, which want a critical section; the std one on the host
+critical-section = { version = "1.2", features = ["std"] }

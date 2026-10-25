@@ -377,3 +377,57 @@ resolves the same hierarchy the CMake build does, and falls back gracefully when
 repo. The preview font is rasterised at runtime from a bundled TTF through the very same
 `crush-core::render` rasteriser the build runs on device, so the preview's glyphs match the
 firmware's and the editor mirrors none of that logic.
+
+## light-sim: a simulated board
+
+`light-sim` is a **host library** that implements the port seams on the desktop, so a portable
+application runs as a process with no hardware: the same crate the firmware links, instantiated
+over simulated parts instead of a board's. It depends on nothing graphical and is tested like any
+crate; a project's own simulator binary puts the window around it, over `light-host-gui`.
+
+### Responsibility
+
+- Stand behind every seam an application reaches hardware through, with something a person can
+  watch and drive: a clock off the process's monotonic time; pins as shared lines an interface
+  reads (an indicator) or sets (a button); a display controller that **decodes the real driver's
+  commands** into controller RAM and renders what the glass would show; a USB-MIDI bus with a hub
+  whose sockets instruments plug into and play from, behind `light_midi::Host`; the console as a
+  byte feed from a window or standard input; the log as a drain to a view and to standard output.
+- Reproduce the application's logic against its seams — the thing the host tests reproduce one
+  module at a time — with every module running together and a person at the controls. It is not a
+  cycle model of a chip: time is the host's, the loop turns as fast as the host turns it, and the
+  parts answer at once where real ones take microseconds.
+
+### Public surface
+
+- `now_us`, `SimClock` (`Clock`), `SimIdle` (`Idle`: a millisecond's sleep between idle passes).
+- `Line` — one level shared between the application's pin and the interface: `output()` gives an
+  `OutputPin`, `input()` an `InputPin` (`is_low` is the line's level, so a button to ground reads
+  pressed when its line is set low), `is_high`/`set` for the interface.
+- `sh1107::Sh1107Panel` (`SpiDisplayBus`) and its `PanelView`: a 128×128 RAM behind the SH1107
+  command set — column and page addresses, addressing mode, display offset and start line,
+  segment remap and scan direction, inverse, all-on, display on and off; everything else accepted
+  and ignored as the part ignores what changes nothing visible. The panel is told its **glass
+  offset** — the RAM row the glass is bonded at, which the firmware's display offset exists to
+  meet — so the correct configured offset gives the correct picture and a wrong one wraps it as the
+  real panel wraps it. `pixels()` is the picture, row-major.
+- `usb::SimUsbHost` (`Host` + `Transport`) and its `BusHandle`: `plug(port, Instrument)`,
+  `unplug`, `play`, `take_sent`, `sockets`. Mounts are reported with the hub's address and the
+  socket's port, as a port's host stack reports them, and slots are allocated first-free as the
+  real stacks allocate them. Packet helpers (`note_on`, `note_off`, `control_change`) and
+  `describe` for a monitor.
+- `start_log_drain(echo) -> LogView` (lines, and a tick count as the simulated console core's
+  pulse, for an application's probation checks), `start_stdin(push)`, `send_line`.
+
+### Design decisions and constraints
+
+- **The controller is decoded, not bypassed.** The host GUI's null driver renders a UI offscreen
+  for a preview; a simulator wants the driver to run — its addressing, its init sequence, its
+  offset — against RAM kept the way the part keeps it, so a driver bug shows on the simulated
+  glass the way it would on the real one.
+- **No window in the library.** The seams hand out shared handles; what an interface does with
+  them is the project's — a window, a terminal, a script driving the console over standard input.
+- **The hub is always there.** Every board this framework hosts on either hosts through a hub or
+  is an adapter cable from one; an instrument "straight into the root port" is not modelled.
+- **It is excluded from nothing.** Unlike the two GUI tools it carries no windowing dependency,
+  so it stays in the host test run with its own tests.

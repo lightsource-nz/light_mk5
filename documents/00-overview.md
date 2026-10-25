@@ -190,6 +190,8 @@ Host tooling (never linked into firmware):
     tools/crush, tools/crush-core   the asset compiler (fonts → LGF, themes → LTH, designs → LUI)
     tools/light-host-gui            an egui window that renders a light-ui UI offscreen on the desktop
     tools/light-ui-editor           a desktop editor for light-ui designs, over light-host-gui
+    tools/light-sim                 a simulated board: the port seams on the host, for running an
+                                    application as a desktop process (a project puts the window on)
 
 ## Targets
 
