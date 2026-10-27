@@ -18,6 +18,14 @@ against a mocked board. It is hardware-verified across the Waveshare RP2350 touc
 
 MIT — see [LICENSE](LICENSE). Every crate carries `license = "MIT"` from the workspace.
 
+## Documentation
+
+- [guide/](guide/README.md) — the **user guide**: installing the toolchain, building and flashing,
+  how an application is put together, authoring the interface as data, starting a project of your
+  own, and running without hardware. Start here.
+- [documents/](documents/00-overview.md) — the **specification**: normative, every contract and
+  invariant the code implements. The guide is derived from it and from the source.
+
 ## Layout
 
 One cargo workspace, one version for all of it (`[workspace.package].version`, bumped in the

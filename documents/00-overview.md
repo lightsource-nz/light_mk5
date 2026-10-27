@@ -1,8 +1,11 @@
 # Light Framework — Specification
 
-This directory is the specification and user documentation for the **Light Framework** by
-lightsource aotearoa. Every document here is normative: it defines the structure and behaviour that
-the framework's code implements. The documents are the source of truth; the code follows them.
+This directory is the specification of the **Light Framework** by lightsource aotearoa. Every
+document here is normative: it defines the structure and behaviour that the framework's code
+implements. The documents are the source of truth; the code follows them. The user documentation
+— how to install, build, write an application and start a project — is the guide in
+[`guide/`](../guide/README.md), which is derived from these documents and the code and is not
+itself normative.
 
 The specification describes the framework as it is. It states contracts, public surfaces, and
 invariants in the present tense; it does not narrate how the design was arrived at. Where a design
@@ -78,6 +81,11 @@ here as they are established, so the rules live in the repository rather than in
   `&lt;` / `&gt;`.
 - **Present tense, no history.** State what the framework is, not how it came to be. A rule that
   needs its reason carries the reason beside it; a superseded design is not described.
+- **The guide follows the specification.** `guide/` is user documentation derived from these
+  documents and the source: it explains and shows, it defines nothing, and it may name the
+  reference boards and chips a reader builds for. A change to a contract here is carried into the
+  guide in the same change; where the two disagree, the specification is right and the guide has
+  a defect.
 
 ### Normative code conventions
 
