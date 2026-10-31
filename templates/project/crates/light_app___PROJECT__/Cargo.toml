@@ -1,0 +1,16 @@
+[package]
+name = "light_app___PROJECT__"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "__PROJECT__: the application, with no hardware in it -- instantiated by a firmware target per board"
+
+#   framework crates by path, into the light framework checkout. Add the ones you use:
+# light-draw, light-display, light-ui, light-input, light-midi, ...
+[dependencies]
+light-core = { path = "__LIGHT__/crates/light-core" }
+
+#   the host tests need a critical-section implementation: on a device the port supplies one,
+# and in this crate's own test binary nothing does
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }

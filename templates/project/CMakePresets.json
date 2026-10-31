@@ -1,0 +1,33 @@
+{
+    "version": 6,
+    "include": ["__LIGHT__/cmake/light_presets/light_pico_presets.json"],
+    "configurePresets": [
+        {
+            "name": "conf-__PROJECT__-pico2-debug",
+            "description": "__PROJECT__ on a Raspberry Pi Pico 2, the everyday build.",
+            "inherits": ["conf-light-pico2", "conf-light-debug"],
+            "binaryDir": "${sourceDir}/build-pico2",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
+            }
+        },
+        {
+            "name": "conf-__PROJECT__-pico2-release",
+            "description": "The same board built the way it ships: full optimisation and link-time optimisation. Its own tree, so the debug tree stays warm.",
+            "inherits": ["conf-light-pico2", "conf-light-release"],
+            "binaryDir": "${sourceDir}/build-pico2-release",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi"
+            }
+        },
+        {
+            "name": "conf-__PROJECT__-host",
+            "description": "The host tree: the application's tests, run with cargo through one ctest.",
+            "inherits": ["conf-light-host-debug"],
+            "binaryDir": "${sourceDir}/build-host",
+            "generator": "Ninja"
+        }
+    ]
+}

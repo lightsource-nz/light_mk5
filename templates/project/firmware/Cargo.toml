@@ -1,0 +1,30 @@
+#   the FIRMWARE workspace: the per-board crates, each selecting one port. Kept apart from the
+# portable workspace so the host test needs no exclusions and no build ever pulls two ports (two
+# `critical-section` implementations) together. Nothing is built workspace-wide: CMake builds
+# one firmware crate at a time. Each member names this manifest with `workspace = "..."`.
+[workspace]
+resolver = "2"
+members = [
+        "../module/__PROJECT___pico2/rust",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+#   THESE PROFILES ARE NOT OPTIONAL. A profile is read only from the workspace a crate is built
+# in, so the framework's settings do not travel with its crates. Without this section every
+# crate in the image -- the port and the framework included -- builds unoptimised, several times
+# slower on every hot path and twice the size, and it looks like misconfigured hardware.
+[profile.dev]
+panic = "abort"
+opt-level = 1
+debug = true
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+debug = true
+lto = "fat"
+codegen-units = 1

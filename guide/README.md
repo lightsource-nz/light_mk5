@@ -46,4 +46,11 @@ scripts/console.ps1                                 # watch it talk
 scripts/test.ps1                                    # the host tests
 ```
 
-[Chapter 01](01-getting-started.md) explains each of those lines.
+[Chapter 01](01-getting-started.md) explains each of those lines. To start a product of your own
+rather than build the framework's examples:
+
+```
+scripts/light-new-project.ps1 -Name my_device       # a working project beside the framework
+```
+
+[Chapter 05](05-your-own-project.md) explains what it creates.

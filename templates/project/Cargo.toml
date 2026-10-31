@@ -1,0 +1,15 @@
+#   the PORTABLE workspace: the application, which names no hardware and is tested on the host
+# with a plain `cargo test`. Host tools you write (a simulator, a converter) belong here too.
+# The crates that select a port live in the firmware workspace (firmware/Cargo.toml), so nothing
+# here ever pulls a port in.
+[workspace]
+resolver = "2"
+members = [
+        "crates/light_app___PROJECT__",
+]
+
+#   one version across both workspaces: firmware/Cargo.toml carries the same literal
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"

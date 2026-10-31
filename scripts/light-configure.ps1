@@ -63,9 +63,19 @@ cache. Re-run with -Force to wipe and reconfigure.
 }
 
 Write-Host "configuring '$Preset' -> $tree"
-cmake --preset $Preset
-if ($LASTEXITCODE -ne 0) {
-        throw "cmake --preset $Preset failed with exit code $LASTEXITCODE"
+#   FROM THE PROJECT ROOT, which is where CMakePresets.json is: `cmake --preset` reads the presets
+# of the current directory, so run from anywhere else it finds none (or another project's) and
+# fails with nothing to say which. Every wrapper passes -ProjectRoot precisely so the caller's
+# directory does not matter
+Push-Location $config.Root
+try {
+        cmake --preset $Preset
+        $configureExit = $LASTEXITCODE
+} finally {
+        Pop-Location
+}
+if ($configureExit -ne 0) {
+        throw "cmake --preset $Preset failed with exit code $configureExit"
 }
 
 Set-LightTreePreset -Tree $tree -Preset $Preset

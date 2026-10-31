@@ -1,0 +1,20 @@
+[package]
+#   the FIRMWARE workspace, because this crate selects a port
+workspace = "../../../firmware"
+#   always light_app_<target>: the CMake executable and this crate share one target namespace,
+# so they cannot share a name
+name = "light_app___PROJECT___pico2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "__PROJECT__ on a Raspberry Pi Pico 2: the application with the board's wiring around it"
+
+[lib]
+#   what Corrosion hands to CMake for the C shell to link
+crate-type = ["staticlib"]
+
+[dependencies]
+light_app___PROJECT__ = { path = "../../../crates/light_app___PROJECT__" }
+light-core = { path = "__LIGHT__/crates/light-core" }
+#   the chip, and the USB port in its device role with the console on it
+light-rp2 = { path = "__LIGHT__/crates/light-rp2", features = ["rp2350", "usb-console"] }

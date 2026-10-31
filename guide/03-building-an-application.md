@@ -183,8 +183,7 @@ pub extern "C" fn light_app_core1_main(info: &ShellInfo) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         log::set_clock(now_us);
-        // SAFETY: the one construction of this pin's driver
-        let led = unsafe { Output::new(PIN_LED, false) };
+        let led = Output::new(PIN_LED, false);
 
         let mut led_mod = LedMod { led, blinker: Blinker::new(500_000), blinking: true, toggles: 0, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
@@ -214,8 +213,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 Read it top to bottom and it is the whole of [Chapter 02](02-how-an-application-runs.md): a
 vocabulary, a bus, two modules, a command table, and the three entry points. The `unsafe` on the
-peripheral constructors is the port's construct-once contract — nothing else may touch that pin
-while the `Output` lives — and the comment says why this call honours it.
+UART constructor is the port's construct-once contract — a constructor that claims a whole block
+(a UART, an SPI or I2C block, a DMA channel) is `unsafe`, because nothing else may touch that
+block while the driver lives — and the comment says why this call honours it. A single GPIO's
+`Output::new` claims no block and is safe.
 
 ### The executable
 

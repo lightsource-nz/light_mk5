@@ -9,6 +9,36 @@ skeleton of such a project, file by file.
 Specification: [10-build-and-release.md](../documents/10-build-and-release.md) and
 [11-secure-boot-and-update.md](../documents/11-secure-boot-and-update.md).
 
+## Creating one
+
+Do not assemble a project by hand. The framework carries a template, and one script fills it in:
+
+```
+scripts/light-new-project.ps1 -Name my_device                 # creates ../my_device beside the framework
+scripts/light-new-project.ps1 -Name my_device -Path D:/work   # or in another directory on the same volume
+```
+
+The name is lower case letters, digits and underscores, starting with a letter, because it
+becomes crate names, CMake targets and preset names. The new project is a git repository with
+nothing committed, and as created it builds, flashes and passes its tests:
+
+```
+cd ../my_device
+scripts/build.ps1                    # my_device_pico2, a Raspberry Pi Pico 2 firmware
+scripts/flash.ps1                    # over BOOTSEL; hold BOOT while plugging in a blank board
+scripts/console.ps1 -Send "help"
+scripts/test.ps1                     # the application's host tests
+```
+
+It holds a portable application crate (an LED that blinks, the BOOTSEL button starting and
+stopping it, a console that does both, and host tests for all three), one firmware target, both
+cargo workspaces with their profiles, the CMake build and presets, the script wrappers, a CI
+workflow and a README. The paths back to the framework are written relative to each file, so the
+two checkouts can move together, and `LIGHT_PATH` overrides them. The template itself is
+`templates/project/` in the framework; `templates/README.md` lists its placeholders.
+
+The rest of this chapter is what those files are and how to grow them.
+
 ## The layout
 
 ```

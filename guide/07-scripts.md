@@ -39,6 +39,7 @@ has no wrapper for one.
 | `light-console.ps1` | The logic behind `console.ps1`. | as `console.ps1`, plus `-OnOpen <scriptblock>` (what a wrapper's `-FromReset` runs once the port is open) |
 | `light-test.ps1` | The logic behind `test.ps1`. | as `test.ps1`, plus `-ProjectRoot` |
 | `light-edit-ui.ps1` | The logic behind `edit-ui.ps1`. | as `edit-ui.ps1`, plus `-ProjectRoot` |
+| `light-new-project.ps1` | Creates a new project from `templates/project/`: copies it, substitutes the name in contents and paths, writes the paths to the framework relative to each file, and runs `git init` (nothing committed). Refuses a name that is not lower-case-and-underscores, an existing directory, and a directory on another volume. | `-Name <name>`, `-Path <parent directory>` (default: the directory holding the framework, so the project is its sibling), `-NoGit` |
 | `light-configure.ps1` | Configures one preset's tree without building. Refuses a tree that belongs to another preset unless forced. | `-Preset <name>`, `-Force`, `-ProjectRoot` |
 | `light-clean.ps1` | Removes a preset's build tree, or all of them. | `-Preset <name>`, `-All`, `-WhatIf` |
 | `light-version.ps1` | Reports the version a checkout is working toward, derived from its git tags (`1.8.0-dev.5` is five commits past `v1.7.2`). | `-Bump minor\|patch\|major`, `-Json`, `-Path <repo>` |

@@ -225,7 +225,7 @@ differing sizes, and an OLED-panel board.
 | [07-ports-and-shell.md](07-ports-and-shell.md) | The ports (`light-rp2`, `light-stm32h7`, `light-stm32f4`), the C shells, and the shell ABI. |
 | [08-assets-and-tooling.md](08-assets-and-tooling.md) | `crush`/`crush-core`, the LGF/LTH/LUI/LAP blob formats and their versioning, the design `extends` mechanism, embedding an asset or packing it into storage, `light-host-gui`, `light-ui-editor`. |
 | [09-application-model.md](09-application-model.md) | The application model: portable app crates, board-support crates, per-board instantiation crates, the design-as-data workflow, the worked examples. |
-| [10-build-and-release.md](10-build-and-release.md) | The build system: CMake + Corrosion, the presets, the `light-*.ps1` script layer, flashing, host tests, versioning and releases. |
+| [10-build-and-release.md](10-build-and-release.md) | The build system: CMake + Corrosion, the presets, the `light-*.ps1` script layer, creating a project from the template, flashing, host tests, versioning and releases. |
 | [11-secure-boot-and-update.md](11-secure-boot-and-update.md) | Image authenticity and field update: what is signed, what the hardware verifies, the slot and probation model, rollback, the asset partition, and keys. |
 | [12-wireless.md](12-wireless.md) | `light-wireless`: the radio contract — credentials, scan results, join outcomes — the `RadioBus` seam, radio drivers as shared target-only crates, and the controller interface a Bluetooth host stack sits on. |
 | [13-camera.md](13-camera.md) | `light-camera`: image sensor drivers, the `CameraBus` pixel-bus seam, and how a captured frame reaches the panel. |

@@ -1,0 +1,44 @@
+# Builds and tests __PROJECT__ on every push and pull request.
+#
+# The mechanics are the framework's reusable workflows: each checks this repository out beside
+# light_mk5 and pico-sdk -- the same sibling layout a developer has -- and runs this project's
+# own scripts, so CI has no recipe of its own to drift from them. This file says only which
+# presets exist and what each builds.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: host tests
+    uses: lightsource-nz/light_mk5/.github/workflows/project-test.yml@main
+    with:
+      project: __PROJECT__
+
+  firmware:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rp2350 (Pico 2)
+            preset: conf-__PROJECT__-pico2-debug
+            targets: __PROJECT___pico2
+            tree: build-pico2
+    uses: lightsource-nz/light_mk5/.github/workflows/project-build.yml@main
+    with:
+      project: __PROJECT__
+      preset: ${{ matrix.preset }}
+      targets: ${{ matrix.targets }}
+      tree: ${{ matrix.tree }}

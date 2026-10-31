@@ -161,6 +161,26 @@ once, so a workspace-wide build unifies features across the two `critical-sectio
 firmware through the scripts, or a single crate with `cargo build -p <crate> --target …` (which pulls
 in only that firmware's one port) — the shape Corrosion uses.
 
+## Creating a project
+
+- **A new project is created from the framework's template, never assembled by hand.**
+  `templates/project/` holds the files a consuming project needs, already agreeing with each
+  other: the two workspaces and the firmware workspace's profiles, the instantiation-crate naming,
+  presets that include the framework's, the script wrappers and `project.config.ps1`, CI over the
+  reusable workflows, and a portable application crate with host tests behind one firmware target
+  for a reference board. `scripts/light-new-project.ps1 -Name <name> [-Path <dir>]` copies it and
+  replaces three tokens in contents and in file names: `__PROJECT__` (the name), `__LIGHT__` (the
+  framework, relative to the file's own directory) and `__LIGHT_FROM_ROOT__` (relative to the
+  project root, for settings the scripts resolve there). Hand assembly is what drops an agreement
+  silently — a firmware workspace copied without its profiles builds unoptimised and reads as
+  faulty hardware — so the agreements live once, in the template.
+- **The template builds as created.** Its firmware builds in both profiles and its host tests pass
+  with no edits; a change to a contract the template uses is carried into it in the same change,
+  and generating a project and running its `build.ps1` and `test.ps1` is the check.
+- **Paths to the framework are relative**, so a project and the framework move together, and
+  `LIGHT_PATH` overrides them. The script therefore refuses a destination on another volume, where
+  no relative path exists.
+
 ## Host tests
 
 - `scripts/test.ps1` configures a host build tree and runs `cargo test --workspace` over the
