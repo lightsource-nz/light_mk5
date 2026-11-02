@@ -91,6 +91,11 @@ impl Uart {
 
                 gpio::set_function(tx, gpio::FUNC_UART);
                 gpio::set_function(rx, gpio::FUNC_UART);
+                //   A LINE WITH NOTHING ON IT MUST READ AS IDLE. A UART idles high, and the pad's
+                // reset default is a pull-down: with the receive pin left unconnected the line sits
+                // at break and picks up noise, which the console takes for a stream of typed
+                // characters glued onto every real command
+                gpio::set_pull_up(rx);
                 Self { ring: TX.take(), tail: 0, len: 0, inflight: 0, dropped: 0 }
         }
 
@@ -179,12 +184,18 @@ impl Uart {
                 self.dropped
         }
 
-        /// One received byte, or `None` when the receive FIFO is empty.
+        /// One received byte, or `None` when the receive FIFO is empty. Bytes the receiver
+        /// flagged -- framing, parity, break or overrun -- are discarded: they are line noise,
+        /// not input.
         pub fn read(&mut self) -> Option<u8> {
                 let uart = unsafe { &*pac::UART0::ptr() };
-                if uart.uartfr().read().rxfe().bit_is_set() {
-                        return None;
+                while uart.uartfr().read().rxfe().bit_is_clear() {
+                        let dr = uart.uartdr().read();
+                        if dr.fe().bit_is_set() || dr.pe().bit_is_set() || dr.be().bit_is_set() || dr.oe().bit_is_set() {
+                                continue;
+                        }
+                        return Some(dr.data().bits());
                 }
-                Some(uart.uartdr().read().data().bits())
+                None
         }
 }
