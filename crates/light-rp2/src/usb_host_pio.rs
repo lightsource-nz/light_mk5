@@ -179,6 +179,28 @@ pub struct Stats {
         pub errors: u32,
         /// Packets an interrupt pipe lost because nothing collected the ones before.
         pub pipe_dropped: u32,
+        /// Transactions a device answered at all, well-formed or not.
+        pub answered: u32,
+        /// The most recent transaction that went unanswered, as the receiver saw it.
+        pub last_miss: Miss,
+}
+
+/// What the receiver saw on an unanswered transaction: the token that was sent, whether a
+/// reply began inside the turnaround, how many bytes of it arrived, and the first two (SYNC and
+/// PID, when they are sound). This is what tells a silent device from a reply this end could
+/// not decode.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Miss {
+        pub token: u8,
+        pub started: u8,
+        pub bytes: u8,
+        pub first: [u8; 2],
+}
+
+/// Record a miss from the bus's last receive. Before `end_receive`, which forgets the PID.
+#[inline(always)]
+fn note_miss(bus: &PioUsbBus, token: u8, stats: &mut Stats) {
+        stats.last_miss = Miss { token, started: bus.rx_started, bytes: bus.rx_count, first: [bus.rx[0], bus.rx[1]] };
 }
 
 struct Engine {
@@ -203,7 +225,7 @@ static ENGINE: Shared = Shared(UnsafeCell::new(Engine {
         bus: None,
         root: Root { connected: false, low_speed: false, suspended: false, detect_pending: false, frame: 0, sof: [0; usb_pio::encoded_len(4)], sof_len: 0 },
         slots: [EMPTY_SLOT; SLOTS],
-        stats: Stats { frames: 0, worst_frame_us: 0, errors: 0, pipe_dropped: 0 },
+        stats: Stats { frames: 0, worst_frame_us: 0, errors: 0, pipe_dropped: 0, answered: 0, last_miss: Miss { token: 0, started: 0, bytes: 0, first: [0; 2] } },
         alarm_target: 0,
 }));
 
@@ -454,6 +476,7 @@ fn in_transaction(bus: &mut PioUsbBus, slot: &mut Slot, stats: &mut Stats) {
                         } else if pid == PID_STALL {
                                 complete(slot, Outcome::Stalled, stats);
                         } else {
+                                note_miss(bus, PID_IN, stats);
                                 sound = false;
                                 slot.failed += 1;
                                 if slot.failed >= MAX_RETRIES {
@@ -464,6 +487,7 @@ fn in_transaction(bus: &mut PioUsbBus, slot: &mut Slot, stats: &mut Stats) {
         }
         if sound {
                 slot.failed = 0;
+                stats.answered = stats.answered.wrapping_add(1);
         }
         bus.end_receive();
 }
@@ -477,7 +501,6 @@ fn out_transaction(bus: &mut PioUsbBus, slot: &mut Slot, stats: &mut Stats) {
         bus.send(&slot.encoded[..usize::from(slot.encoded_len)]);
         bus.start_receive();
         let handshake = bus.wait_handshake();
-        bus.end_receive();
         let mut sound = true;
         if handshake == PID_ACK {
                 advance(slot, n, stats);
@@ -486,6 +509,7 @@ fn out_transaction(bus: &mut PioUsbBus, slot: &mut Slot, stats: &mut Stats) {
         } else if handshake == PID_STALL {
                 complete(slot, Outcome::Stalled, stats);
         } else {
+                note_miss(bus, PID_OUT, stats);
                 sound = false;
                 slot.failed += 1;
                 if slot.failed >= MAX_RETRIES {
@@ -494,7 +518,9 @@ fn out_transaction(bus: &mut PioUsbBus, slot: &mut Slot, stats: &mut Stats) {
         }
         if sound {
                 slot.failed = 0;
+                stats.answered = stats.answered.wrapping_add(1);
         }
+        bus.end_receive();
 }
 
 #[unsafe(link_section = ".time_critical.light_usb_pio_setup")]
@@ -505,18 +531,20 @@ fn setup_transaction(bus: &mut PioUsbBus, slot: &mut Slot, stats: &mut Stats) {
         bus.send(&slot.encoded[..usize::from(slot.encoded_len)]);
         bus.start_receive();
         let handshake = bus.wait_handshake();
-        bus.end_receive();
         if handshake == PID_ACK {
                 slot.actual = 8;
                 slot.failed = 0;
+                stats.answered = stats.answered.wrapping_add(1);
                 complete(slot, Outcome::Complete, stats);
         } else {
                 // a setup is never NAKed: anything but an ACK is a retry
+                note_miss(bus, PID_SETUP, stats);
                 slot.failed += 1;
                 if slot.failed >= MAX_RETRIES {
                         complete(slot, Outcome::Error, stats);
                 }
         }
+        bus.end_receive();
 }
 
 #[inline(always)]
@@ -782,15 +810,20 @@ impl HostController for PioHostController {
                 let max = u16::from(packet_size).clamp(8, MAX_PACKET as u16);
                 let mut setup_bytes = [setup.bmRequestType, setup.bRequest, (setup.wValue & 0xFF) as u8, (setup.wValue >> 8) as u8, (setup.wIndex & 0xFF) as u8, (setup.wIndex >> 8) as u8, (setup.wLength & 0xFF) as u8, (setup.wLength >> 8) as u8];
                 Transfer::new(Request { token: Token::Setup, address, endpoint: 0, max_packet: 8, data_id: 0, buf: setup_bytes.as_mut_ptr(), len: 8, zlp: false }).await?;
+                //   the data stage is as long as the SETUP says, and no longer than the buffer. NOT
+                // the buffer's length: the stack reuses one buffer for requests of different
+                // sizes, and asking for more than wLength is an IN the device has nothing for --
+                // it stalls it, and the request fails after its data arrived
+                let requested = usize::from(setup.wLength);
                 // the data stage and the status stage both begin at DATA1
                 let (moved, status_in) = match data_phase {
                         DataPhase::In(buf) => {
-                                let len = buf.len().min(u16::MAX as usize) as u16;
+                                let len = buf.len().min(requested) as u16;
                                 let (n, _) = Transfer::new(Request { token: Token::In, address, endpoint: 0, max_packet: max, data_id: 1, buf: buf.as_mut_ptr(), len, zlp: false }).await?;
                                 (n, false)
                         }
                         DataPhase::Out(buf) => {
-                                let len = buf.len().min(u16::MAX as usize) as u16;
+                                let len = buf.len().min(requested) as u16;
                                 let (n, _) = Transfer::new(Request { token: Token::Out, address, endpoint: 0, max_packet: max, data_id: 1, buf: buf.as_ptr() as *mut u8, len, zlp: false }).await?;
                                 (n, true)
                         }

@@ -93,11 +93,22 @@ pub const ENCODED_MAX: usize = (MAX_PACKET + 4) * 8 * 7 / 6 / 4 + 4;
 pub const RX_BUFFER: usize = 128;
 
 /// The two-bit symbols the encoder emits: each is the address of the transmitter instruction
-/// that produces it.
+/// that produces it, and named for what that instruction puts ON THE WIRE -- instruction 1
+/// side-sets D+ high, a J, and instruction 3 D- high, a K.
+///
+///   THE REFERENCE NAMES THESE THE OTHER WAY ROUND (its K is 1) and is right anyway, because its
+/// encoder starts from a state it calls K as well; the two inversions cancel. Taking its names
+/// with an encoder that starts from J sent every packet with the line inverted: SYNC went out as
+/// JKJKJKJJ, whose first bit is no transition out of idle at all, and no device ever answered.
+/// The test `the_symbols_are_what_the_transmitter_drives` holds these to the program.
 const SYM_SE0: u8 = 0;
-const SYM_K: u8 = 1;
+const SYM_J: u8 = 1;
 const SYM_COMP: u8 = 2;
-const SYM_J: u8 = 3;
+const SYM_K: u8 = 3;
+
+/// The transmitter, `usb_tx_dpdm`: see the module's note. Its side-set is the top two bits of
+/// the delay/side-set field, D+ in the low bit.
+const TX_PROGRAM: [u16; 5] = [0xC700, 0x6BA2, 0xEB80, 0x73A2, 0xE883];
 
 /// The transmitter's instruction for "start a packet": `jmp 4` with the side-set holding J.
 /// Executed by hand before every packet; the program then wraps into its symbol loop.
@@ -149,6 +160,10 @@ pub struct PioUsbBus {
         e9_workaround: u8,
         /// The packet most recently received, SYNC and PID first.
         pub rx: [u8; RX_BUFFER],
+        /// Whether the most recent receive saw a packet start inside the turnaround, and how
+        /// many bytes of it arrived. Bytes, not a bool, for the same reason as `e9_workaround`.
+        pub rx_started: u8,
+        pub rx_count: u8,
 }
 
 impl PioUsbBus {
@@ -170,8 +185,8 @@ impl PioUsbBus {
                 crate::reset_cycle(false, |w| w, |w| w.pio0().clear_bit(), |r| r.pio0().bit_is_set());
 
                 // --- the programs ---------------------------------------------------------
-                let tx: [u16; 5] = [0xC700, 0x6BA2, 0xEB80, 0x73A2, 0xE883];
-                let r = |target: u16| RX_ORIGIN + target;
+                let tx = TX_PROGRAM;
+                let r =|target: u16| RX_ORIGIN + target;
                 let rx: [u16; 10] = [0xE046, 0x20C4, jmp(0x0066, r(6)), jmp(0x00C7, r(7)), jmp(0x0028, r(8)), 0x4061, 0xA029, jmp(0x0025, r(5)), 0x40E1, jmp(0x0081, r(1))];
                 let e = |target: u16| EOP_ORIGIN + target;
                 let eop: [u16; 17] = [
@@ -259,7 +274,7 @@ impl PioUsbBus {
                 let sysinfo = unsafe { &*pac::SYSINFO::ptr() };
                 let e9_workaround = u8::from(sysinfo.chip_id().read().revision().bits() <= 2);
 
-                Self { pin_dp, pin_dm, dma_ch, e9_workaround, rx: [0; RX_BUFFER] }
+                Self { pin_dp, pin_dm, dma_ch, e9_workaround, rx: [0; RX_BUFFER], rx_started: 0, rx_count: 0 }
         }
 
         /// The state of the two wires right now.
@@ -333,7 +348,10 @@ impl PioUsbBus {
                 self.send(&encoded[..n]);
         }
 
-        /// Ready the decoder for a packet: FIFO cleared, program restarted, enabled.
+        /// Ready the decoder for a packet: FIFO cleared, program restarted -- and left STOPPED.
+        /// It is started by [`Self::start_receive`], after this end's own packet has gone: running
+        /// through a transmission it decodes that packet into its FIFO, and the reply is read
+        /// from behind it.
         #[unsafe(link_section = ".time_critical.light_usb_pio_prepare")]
         #[inline(never)]
         pub fn prepare_receive(&self) {
@@ -345,14 +363,14 @@ impl PioUsbBus {
                 pio.ctrl().modify(|_, w| unsafe { w.sm_restart().bits(1 << SM_RX) });
                 pio.sm(SM_RX).sm_instr().write(|w| unsafe { w.bits(RX_RESET) });
                 pio.sm(SM_RX).sm_instr().write(|w| unsafe { w.bits(RX_RESET_X) });
-                sm_enable(pio, SM_RX, true);
         }
 
-        /// Arm the receive flags: cleared, and confirmed clear, so the next packet's start is
-        /// the first thing seen.
+        /// Start the decoder and arm the receive flags: cleared, and confirmed clear, so the next
+        /// packet's start is the first thing seen.
         #[inline(always)]
         pub fn start_receive(&self) {
                 let pio = unsafe { &*pac::PIO0::ptr() };
+                sm_enable(pio, SM_RX, true);
                 pio.irq().write(|w| unsafe { w.bits(IRQ_RX_ALL) });
                 while pio.irq().read().bits() & IRQ_RX_ALL != 0 {}
         }
@@ -387,7 +405,9 @@ impl PioUsbBus {
         #[unsafe(link_section = ".time_critical.light_usb_pio_handshake")]
         #[inline(never)]
         pub fn wait_handshake(&mut self) -> u8 {
-                if !self.wait_for_start() {
+                self.rx_count = 0;
+                self.rx_started = u8::from(self.wait_for_start());
+                if self.rx_started == 0 {
                         return 0;
                 }
                 let pio = unsafe { &*pac::PIO0::ptr() };
@@ -404,6 +424,7 @@ impl PioUsbBus {
                                 break;
                         }
                 }
+                self.rx_count = idx as u8;
                 if idx != 2 || self.rx[0] != SYNC {
                         return 0;
                 }
@@ -417,7 +438,9 @@ impl PioUsbBus {
         #[unsafe(link_section = ".time_critical.light_usb_pio_receive")]
         #[inline(never)]
         pub fn receive_packet_and_handshake(&mut self, handshake: u8) -> Option<usize> {
-                if !self.wait_for_start() {
+                self.rx_count = 0;
+                self.rx_started = u8::from(self.wait_for_start());
+                if self.rx_started == 0 {
                         return None;
                 }
                 let pio = unsafe { &*pac::PIO0::ptr() };
@@ -445,6 +468,7 @@ impl PioUsbBus {
                                         crc_match = (crc_receive ^ 0xFFFF) == crc_prev2;
                                 }
                                 idx += 1;
+                                self.rx_count = idx.min(255) as u8;
                         } else if pio.irq().read().bits() & IRQ_RX_EOP != 0 {
                                 //   the handshake must follow within the turnaround: no
                                 // waiting, no logging, nothing between the EOP and the send
@@ -512,8 +536,9 @@ fn micros() -> u32 {
 // --- encoding and checks ----------------------------------------------------------------------------
 
 /// Encode a packet for the transmitter: NRZI with bit stuffing, each bit a two-bit instruction
-/// address packed four to a byte, then the EOP, the completion symbol, and K symbols to the end
-/// of the byte (they fall on a released bus). Returns the encoded length. The data goes down
+/// address packed four to a byte, then the EOP, the completion symbol, and J symbols to the end
+/// of the byte (they fall on a released bus, and leave the stalled transmitter side-setting the
+/// idle state, as the reference does). Returns the encoded length. The data goes down
 /// the wire LSB first, as USB sends it.
 #[unsafe(link_section = ".time_critical.light_usb_pio_encode")]
 #[inline(never)]
@@ -548,7 +573,7 @@ pub fn encode(data: &[u8], out: &mut [u8]) -> usize {
         put(out, &mut bit_idx, SYM_SE0);
         put(out, &mut bit_idx, SYM_COMP);
         while bit_idx & 3 != 0 {
-                put(out, &mut bit_idx, SYM_K);
+                put(out, &mut bit_idx, SYM_J);
         }
         bit_idx >> 2
 }
@@ -596,7 +621,7 @@ pub fn crc16(data: &[u8]) -> u16 {
 }
 
 /// The three handshakes, pre-encoded: SYNC and PID are two bytes with no stuffing possible, so
-/// each is four symbols a byte for sixteen bits, then EOP, COMP and two K -- five bytes.
+/// each is four symbols a byte for sixteen bits, then EOP, COMP and two J -- five bytes.
 #[unsafe(link_section = ".time_critical.light_usb_pio_ack")]
 static ACK_ENCODED: [u8; 5] = encode_const([SYNC, PID_ACK]);
 #[unsafe(link_section = ".time_critical.light_usb_pio_nak")]
@@ -643,7 +668,7 @@ const fn encode_const(data: [u8; 2]) -> [u8; 5] {
         out[bit_idx >> 2] = (out[bit_idx >> 2] << 2) | SYM_COMP;
         bit_idx += 1;
         while bit_idx & 3 != 0 {
-                out[bit_idx >> 2] = (out[bit_idx >> 2] << 2) | SYM_K;
+                out[bit_idx >> 2] = (out[bit_idx >> 2] << 2) | SYM_J;
                 bit_idx += 1;
         }
         out
@@ -721,7 +746,31 @@ mod tests {
                 let syms = symbols(&out[..n]);
                 let eop = syms.iter().position(|&s| s == SYM_SE0).expect("an EOP");
                 assert_eq!(syms[eop + 1], SYM_COMP, "the completion symbol follows the EOP");
-                assert!(syms[eop + 2..].iter().all(|&s| s == SYM_K), "padding is K");
+                assert!(syms[eop + 2..].iter().all(|&s| s == SYM_J), "padding is J");
+        }
+
+        /// The side-set an instruction drives: the top two bits of its delay/side-set field.
+        fn side(instruction: u16) -> u16 {
+                (instruction >> 11) & 3
+        }
+
+        #[test]
+        fn the_symbols_are_what_the_transmitter_drives() {
+                //   the encoder's names against the program, not against each other: D+ high
+                // (side-set 0b01) is J, D- high (0b10) is K, neither is SE0
+                assert_eq!(side(TX_PROGRAM[usize::from(SYM_J)]), 0b01, "SYM_J's instruction drives D+ high");
+                assert_eq!(side(TX_PROGRAM[usize::from(SYM_K)]), 0b10, "SYM_K's instruction drives D- high");
+                assert_eq!(side(TX_PROGRAM[usize::from(SYM_SE0)]), 0b00, "SYM_SE0's instruction drives both low");
+        }
+
+        #[test]
+        fn a_packet_leaves_idle_with_a_transition() {
+                //   the bus idles J, and SYNC's first bit is a 0: the first symbol on the wire
+                // must be a K, or the device never sees the packet begin
+                let mut out = [0u8; 8];
+                encode(&[SYNC, PID_ACK], &mut out);
+                let syms = symbols(&out);
+                assert_eq!(&syms[..8], &[SYM_K, SYM_J, SYM_K, SYM_J, SYM_K, SYM_J, SYM_K, SYM_K], "SYNC is KJKJKJKK");
         }
 
         #[test]
