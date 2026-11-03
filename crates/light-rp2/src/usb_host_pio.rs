@@ -58,6 +58,9 @@ const PIPE_RING: usize = 2;
 /// this is the one below it.
 const ALARM: usize = 2;
 const FRAME_US: u32 = 1_000;
+/// How early the frame alarm fires, for the handler to wait out to the exact microsecond: more
+/// than the interrupt latency the application's critical sections cause. See `frame_irq`.
+const SOF_LEAD_US: u32 = 30;
 
 unsafe extern "C" {
         //   the SDK owns the RAM vector table; the handler is installed through it
@@ -175,7 +178,11 @@ pub struct Stats {
         pub frames: u32,
         /// The longest a frame handler has run, in microseconds.
         pub worst_frame_us: u32,
-        /// Transfers that failed for want of an answer.
+        /// The furthest behind its due time a SOF has gone out, in microseconds: nonzero only
+        /// when the frame interrupt was taken later than its lead.
+        pub worst_late_us: u32,
+        /// Transfers that failed for want of an answer, and runs of an interrupt pipe's polls
+        /// that went unanswered (the pipe carries on).
         pub errors: u32,
         /// Packets an interrupt pipe lost because nothing collected the ones before.
         pub pipe_dropped: u32,
@@ -225,7 +232,7 @@ static ENGINE: Shared = Shared(UnsafeCell::new(Engine {
         bus: None,
         root: Root { connected: false, low_speed: false, suspended: false, detect_pending: false, frame: 0, sof: [0; usb_pio::encoded_len(4)], sof_len: 0 },
         slots: [EMPTY_SLOT; SLOTS],
-        stats: Stats { frames: 0, worst_frame_us: 0, errors: 0, pipe_dropped: 0, answered: 0, last_miss: Miss { token: 0, started: 0, bytes: 0, first: [0; 2] } },
+        stats: Stats { frames: 0, worst_frame_us: 0, worst_late_us: 0, errors: 0, pipe_dropped: 0, answered: 0, last_miss: Miss { token: 0, started: 0, bytes: 0, first: [0; 2] } },
         alarm_target: 0,
 }));
 
@@ -269,9 +276,25 @@ extern "C" fn frame_irq() {
         let e = unsafe { &mut *ENGINE.0.get() };
         let timer = unsafe { &*pac::TIMER0::ptr() };
         timer.intr().write(|w| w.alarm_2().clear_bit_by_one());
-        e.alarm_target = e.alarm_target.wrapping_add(FRAME_US);
-        timer.alarm2().write(|w| unsafe { w.bits(e.alarm_target) });
+        //   THE SOF GOES OUT ON THE MICROSECOND, not whenever the interrupt is taken. A hub times
+        // each frame's end from the SOFs it has seen, and a frame that starts late followed by
+        // one on time is a SHORT frame to the hub: its end-of-frame point lands a few
+        // microseconds into the next frame, where a device behind it is answering -- and a
+        // device still transmitting at that point is babble, for which the hub disables its
+        // port. On a core that also runs the application the interrupt is taken 2 to 18 us
+        // late, varying frame to frame, and an instrument behind the board's hub lost its port
+        // within a second. So the alarm fires SOF_LEAD_US early and the handler waits out the
+        // rest; latency inside the lead no longer reaches the wire
+        while (e.alarm_target.wrapping_sub(micros()) as i32) > 0 {}
         let began = micros();
+        //   how far behind its due time the SOF still goes: zero unless the interrupt was
+        // taken later than the lead
+        let late = began.wrapping_sub(e.alarm_target);
+        if late < 0x8000_0000 && late > e.stats.worst_late_us {
+                e.stats.worst_late_us = late;
+        }
+        e.alarm_target = e.alarm_target.wrapping_add(FRAME_US);
+        timer.alarm2().write(|w| unsafe { w.bits(e.alarm_target.wrapping_sub(SOF_LEAD_US)) });
         frame(e);
         let took = micros().wrapping_sub(began);
         if took > e.stats.worst_frame_us {
@@ -480,7 +503,20 @@ fn in_transaction(bus: &mut PioUsbBus, slot: &mut Slot, stats: &mut Stats) {
                                 sound = false;
                                 slot.failed += 1;
                                 if slot.failed >= MAX_RETRIES {
-                                        complete(slot, Outcome::Error, stats);
+                                        if slot.periodic {
+                                                //   A PIPE OUTLIVES ITS MISSES. Nobody is waiting on
+                                                // an interrupt pipe's outcome, and nothing re-arms one
+                                                // that completes: ending it here stopped an
+                                                // instrument's input for good after three silent
+                                                // polls, and every note after that was never asked
+                                                // for. Counted, and polled again at its interval; a
+                                                // device that has really gone is the detach's
+                                                // business, which drops the pipe
+                                                slot.failed = 0;
+                                                stats.errors = stats.errors.wrapping_add(1);
+                                        } else {
+                                                complete(slot, Outcome::Error, stats);
+                                        }
                                 }
                         }
                 }
@@ -739,7 +775,7 @@ impl PioHostController {
                 with(|e| {
                         e.bus = Some(bus);
                         e.alarm_target = micros().wrapping_add(FRAME_US);
-                        timer.alarm2().write(|w| unsafe { w.bits(e.alarm_target) });
+                        timer.alarm2().write(|w| unsafe { w.bits(e.alarm_target.wrapping_sub(SOF_LEAD_US)) });
                 });
                 timer.inte().modify(|_, w| w.alarm_2().set_bit());
                 // SAFETY: our handler on the SDK's vector table, our alarm's line

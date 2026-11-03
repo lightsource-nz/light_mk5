@@ -287,7 +287,9 @@ async fn host_main(bus: &'static Bus, hub: &'static HubState<Controller>) -> cor
                                 let out = configured.open_out_endpoint(ep_out).ok();
                                 pipes[idx] = Some(open_pipe(&configured, ep_in, cfg.in_max_packet));
                                 slots[idx] = Some(Slot { daddr, out });
-                                light_core::info!("usb: device {} ({:04x}:{:04x}): MIDI interface {}, in ep {} ({} cables, {} bytes), out ep {} ({} cables), {} endpoints seen", daddr, info.vid, info.pid, cfg.interface.unwrap_or(0), ep_in, cfg.rx_cables, cfg.in_max_packet, ep_out, cfg.tx_cables, cfg.endpoints_seen);
+                                //   two lines, each inside the log's message capacity
+                                light_core::info!("usb: device {} ({:04x}:{:04x}): configuration {}, MIDI interface {}, {} endpoints seen", daddr, info.vid, info.pid, cfg.config_value, cfg.interface.unwrap_or(0), cfg.endpoints_seen);
+                                light_core::info!("usb: device {}: in ep {} ({} cables, {} bytes), out ep {} ({} cables)", daddr, ep_in, cfg.rx_cables, cfg.in_max_packet, ep_out, cfg.tx_cables);
                                 let mount = Mount { daddr, rx_cables: cfg.rx_cables.max(1), tx_cables: cfg.tx_cables.max(1) };
                                 // where it sits: the hub in front of it and that hub's port, for the display
                                 let position = hub.topology().parent_of(daddr).map(|(hub_addr, hub_port)| BusInfo { hub_addr, hub_port });
