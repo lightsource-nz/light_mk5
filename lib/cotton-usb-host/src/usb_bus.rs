@@ -1272,35 +1272,80 @@ impl<HC: HostController> UsbBus<HC> {
 
                     if (state & 2) != 0 {
                         // port is now ENABLED i.e. operational
-
-                        // USB 2.0 table 11-21
-                        let speed = match state & 0x600 {
-                            0 => UsbSpeed::Full12,
-                            0x400 => UsbSpeed::High480,
-                            _ => UsbSpeed::Low1_5,
-                        };
-
-                        let (device, info) = self.new_device(speed).await?;
-                        let is_hub = info.class == HUB_CLASSCODE;
-                        let address = hub_state
-                            .topology
-                            .borrow_mut()
-                            .device_connect(packet.address, port, is_hub)
-                            .ok_or(UsbError::TooManyDevices)?;
-                        let device = self.set_address(device, address).await?;
-                        if is_hub {
-                            debug::println!("It's a hub");
-                            return Ok(DeviceEvent::HubConnect(
-                                self.new_hub(hub_state, device).await?,
-                            ));
-                        }
-
-                        return Ok(DeviceEvent::Connect(device, info));
+                        return self
+                            .enumerate_port(hub_state, packet.address, port, state)
+                            .await;
                     }
+                } else if bit == 1 && (state & 3) == 1 {
+                    // light_mk5: C_PORT_ENABLE on a port still CONNECTED but no longer
+                    // ENABLED -- the hub disabled it for an error of the device's (babble
+                    // past the end of a frame, say; USB 2.0 s11.8.1). Nothing reaches the
+                    // device any more and nothing will say so: it does not disconnect, so
+                    // left alone it stays "present" and silent for good. Say it has gone,
+                    // and reset the port; the hub reports the reset's completion, and the
+                    // C_PORT_RESET branch below enumerates what comes back.
+                    let mask = hub_state
+                        .topology
+                        .borrow_mut()
+                        .device_disconnect(packet.address, port);
+                    self.set_port_feature(packet.address, port, PORT_RESET)
+                        .await?;
+                    return Ok(DeviceEvent::Disconnect(mask));
+                } else if bit == 4
+                    && (state & 3) == 3
+                    && hub_state
+                        .topology
+                        .borrow()
+                        .child_at(packet.address, port)
+                        .is_none()
+                {
+                    // light_mk5: a reset completed on a port with a device on it and nothing
+                    // recorded there -- the recovery above, not the reset a connection makes
+                    // (that one has its device recorded before this report is read). Allow
+                    // the reset recovery time (USB 2.0 s7.1.7.3) and enumerate it afresh.
+                    delay_ms(10).await;
+                    return self
+                        .enumerate_port(hub_state, packet.address, port, state)
+                        .await;
                 }
             }
         }
         Ok(DeviceEvent::None)
+    }
+
+    /// Enumerate the device on a hub port that has just come out of reset ENABLED: address
+    /// it, record it, and if it is itself a hub, bring that up too. `state` is the port
+    /// status read after the reset, which carries the device's speed.
+    async fn enumerate_port(
+        &self,
+        hub_state: &HubState<HC>,
+        hub_address: u8,
+        port: u8,
+        state: u16,
+    ) -> Result<DeviceEvent, UsbError> {
+        // USB 2.0 table 11-21
+        let speed = match state & 0x600 {
+            0 => UsbSpeed::Full12,
+            0x400 => UsbSpeed::High480,
+            _ => UsbSpeed::Low1_5,
+        };
+
+        let (device, info) = self.new_device(speed).await?;
+        let is_hub = info.class == HUB_CLASSCODE;
+        let address = hub_state
+            .topology
+            .borrow_mut()
+            .device_connect(hub_address, port, is_hub)
+            .ok_or(UsbError::TooManyDevices)?;
+        let device = self.set_address(device, address).await?;
+        if is_hub {
+            debug::println!("It's a hub");
+            return Ok(DeviceEvent::HubConnect(
+                self.new_hub(hub_state, device).await?,
+            ));
+        }
+
+        Ok(DeviceEvent::Connect(device, info))
     }
 }
 

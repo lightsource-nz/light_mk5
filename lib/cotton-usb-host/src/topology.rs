@@ -115,6 +115,21 @@ impl Topology {
         }
     }
 
+    /// light_mk5: the device address recorded on `(parent_hub, parent_port)`, if any. A hub
+    /// port that comes back from a reset nobody enumerated it for -- a port the hub disabled,
+    /// reset to recover the device on it -- is told apart by there being nothing here.
+    pub fn child_at(&self, parent_hub: u8, parent_port: u8) -> Option<u8> {
+        if parent_hub >= MAX_HUBS || parent_port >= MAX_PORTS {
+            return None;
+        }
+        let entry = (parent_port << 4) + parent_hub;
+        self.parent
+            .iter()
+            .skip(1)
+            .position(|e| *e == entry)
+            .map(|i| (i + 1) as u8)
+    }
+
     /// A new USB device has been connected
     ///
     /// # Parameters

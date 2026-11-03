@@ -2154,6 +2154,130 @@ fn handle_hub_packet_disconnection() {
     );
 }
 
+fn device_31_on_hub_5_port_1(f: &Fixture) {
+    let mut b = f.hub_state.topology.borrow_mut();
+    b.device_connect(0, 1, true); // 1
+    b.device_connect(1, 1, true); // 2
+    b.device_connect(1, 2, true); // 3
+    b.device_connect(1, 3, true); // 4
+    b.device_connect(1, 4, true); // 5
+    b.device_connect(5, 1, false); // 31
+}
+
+fn port_1_of_hub_5() -> InterruptPacket {
+    let mut p = InterruptPacket::new();
+    p.address = 5;
+    p.size = 1;
+    p.data[0] = 0b10; // bit 1 set => port 1 needs attention
+    p
+}
+
+#[test]
+fn handle_hub_packet_port_disabled() {
+    do_test(
+        |hc| {
+            hc.expect_multi_interrupt_pipe_ignored();
+            hc.expect_get_port_status::<1, 0x101, 2>(); // CONNECTION, C_PORT_ENABLE
+            hc.expect_clear_port_feature::<1, 17>(); // C_PORT_ENABLE
+            hc.expect_set_port_feature::<1, 4>(); // PORT_RESET
+        },
+        |f| {
+            device_31_on_hub_5_port_1(&f);
+            let p = port_1_of_hub_5();
+            let fut =
+                pin!(f.bus.handle_hub_packet(&f.hub_state, &p, no_delay));
+            let poll = fut.poll(f.c);
+            let result = unwrap_poll(poll).unwrap();
+            assert_eq!(
+                result,
+                Ok(DeviceEvent::Disconnect(BitSet(0x8000_0000)))
+            );
+            assert_eq!(f.hub_state.topology.borrow().child_at(5, 1), None);
+        },
+    );
+}
+
+#[test]
+fn handle_hub_packet_port_disabled_and_gone() {
+    do_test(
+        |hc| {
+            hc.expect_multi_interrupt_pipe_ignored();
+            // C_PORT_ENABLE with nothing connected: the C_PORT_CONNECTION that
+            // goes with it is what reports the departure
+            hc.expect_get_port_status::<1, 0x100, 2>();
+            hc.expect_clear_port_feature::<1, 17>(); // C_PORT_ENABLE
+        },
+        |f| {
+            device_31_on_hub_5_port_1(&f);
+            let p = port_1_of_hub_5();
+            let fut =
+                pin!(f.bus.handle_hub_packet(&f.hub_state, &p, no_delay));
+            let poll = fut.poll(f.c);
+            let result = unwrap_poll(poll).unwrap();
+            assert_eq!(result, Ok(DeviceEvent::None));
+        },
+    );
+}
+
+#[test]
+fn handle_hub_packet_recovery_reset_enumerates() {
+    do_test(
+        |hc| {
+            hc.expect_multi_interrupt_pipe_ignored();
+            hc.expect_get_port_status::<1, 0x103, 0x10>(); // ENABLED, C_PORT_RESET
+            hc.expect_clear_port_feature::<1, 20>(); // C_PORT_RESET
+            hc.expect_get_device_descriptor_prefix();
+            hc.expect_get_device_descriptor();
+            hc.expect_set_address::<31>();
+        },
+        |f| {
+            let p = port_1_of_hub_5();
+            let fut =
+                pin!(f.bus.handle_hub_packet(&f.hub_state, &p, no_delay));
+            let poll = fut.poll(f.c);
+            let result = unwrap_poll(poll).unwrap();
+            assert_eq!(
+                result,
+                Ok(DeviceEvent::Connect(
+                    UnconfiguredDevice {
+                        usb_address: 31,
+                        usb_speed: UsbSpeed::Full12,
+                        packet_size_ep0: 8
+                    },
+                    DeviceInfo {
+                        vid: 0x1234,
+                        pid: 0x5678,
+                        class: 0,
+                        subclass: 0
+                    }
+                ))
+            );
+            assert_eq!(f.hub_state.topology.borrow().child_at(5, 1), Some(31));
+        },
+    );
+}
+
+#[test]
+fn handle_hub_packet_connection_reset_completes_quietly() {
+    do_test(
+        |hc| {
+            hc.expect_multi_interrupt_pipe_ignored();
+            // the reset a connection made, its device already recorded
+            hc.expect_get_port_status::<1, 0x103, 0x10>();
+            hc.expect_clear_port_feature::<1, 20>(); // C_PORT_RESET
+        },
+        |f| {
+            device_31_on_hub_5_port_1(&f);
+            let p = port_1_of_hub_5();
+            let fut =
+                pin!(f.bus.handle_hub_packet(&f.hub_state, &p, no_delay));
+            let poll = fut.poll(f.c);
+            let result = unwrap_poll(poll).unwrap();
+            assert_eq!(result, Ok(DeviceEvent::None));
+        },
+    );
+}
+
 // A bit unlikely as we only have FS hardware, but the protocol
 // allows for it
 #[test]
