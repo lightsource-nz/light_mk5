@@ -5,6 +5,10 @@ RP2 port's host role runs on, behind `light_midi::Host` in `light_rp2::usb_host`
 carry the changes below; every change is marked `light_mk5:` in the source. `Cargo.toml` is the
 crate's own manifest, unchanged.
 
+The crate is a member of the portable workspace, so its own test suite runs with the
+framework's: `scripts/test.ps1`, or `cargo test -p cotton-usb-host` from the repository root.
+A change here is tested there like any crate's.
+
 ## Changes
 
 - **The control endpoint's pending path no longer clears the completion flags**

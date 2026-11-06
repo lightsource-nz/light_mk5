@@ -44,6 +44,11 @@ members = [
         #   the simulated board: the port seams on the host, with no window in it, so it is
         # tested here like any crate; a project's simulator puts the window around it
         "tools/light-sim",
+        #   vendored third-party code the framework carries changes to (see its LIGHT_PATCHES.md):
+        # a member so its own suite runs in the same `cargo test`, under its default `std` feature
+        # -- the critical-section impl every crate here already tests with. Its manifest is its
+        # own, so it keeps its edition and version rather than the workspace's
+        "lib/cotton-usb-host",
 ]
 
 #   freetype-sys 0.23's bundled build compiles libpng with `-I libz-sys/src/zlib`, a path that
