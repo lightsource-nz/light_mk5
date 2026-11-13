@@ -61,6 +61,9 @@ const FRAME_US: u32 = 1_000;
 /// How early the frame alarm fires, for the handler to wait out to the exact microsecond: more
 /// than the interrupt latency the application's critical sections cause. See `frame_irq`.
 const SOF_LEAD_US: u32 = 30;
+/// How far ahead of the clock a newly set alarm must be to be sure of being reached: the write
+/// itself takes time, and a target the counter passes before it lands is one it never meets.
+const ALARM_MARGIN_US: i32 = 5;
 
 unsafe extern "C" {
         //   the SDK owns the RAM vector table; the handler is installed through it
@@ -294,6 +297,17 @@ extern "C" fn frame_irq() {
                 e.stats.worst_late_us = late;
         }
         e.alarm_target = e.alarm_target.wrapping_add(FRAME_US);
+        //   A TARGET ALREADY IN THE PAST IS NEVER REACHED. The alarm fires on its counter becoming
+        // EQUAL to the target, so one that is set behind the time waits for the 32-bit microsecond
+        // count to come round again -- seventy-one minutes in which no frame is sent and the bus is
+        // dead. That is where a long interrupts-off window leaves this tick: the boot ROM's commit
+        // of an image on approval holds core 0 for tens of milliseconds, and the host never sent
+        // another frame afterwards. So the frames that window swallowed are skipped, whole frames
+        // at a time to keep the phase, until the target is ahead of the clock again. The devices
+        // saw a bus that went quiet and comes back, which a cable can do too
+        while (e.alarm_target.wrapping_sub(SOF_LEAD_US).wrapping_sub(micros()) as i32) < ALARM_MARGIN_US {
+                e.alarm_target = e.alarm_target.wrapping_add(FRAME_US);
+        }
         timer.alarm2().write(|w| unsafe { w.bits(e.alarm_target.wrapping_sub(SOF_LEAD_US)) });
         frame(e);
         let took = micros().wrapping_sub(began);

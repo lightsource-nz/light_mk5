@@ -29,6 +29,8 @@
 
 pub use light_core::hal::{UpdateError, UpdateTarget};
 
+pub mod wire;
+
 /// The unit a slot is written in. Storage is programmed a page at a time, and 256 bytes is the
 /// page every part this runs on agrees to; a part with a finer granularity takes a whole one
 /// happily, and the last page of an image is padded out with the value erased storage already

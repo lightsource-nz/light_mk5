@@ -364,6 +364,11 @@ fall back to the previous image uses three more things, all RP2350-only:
 - `light-update`, the portable crate that stages a new image into the slot that is *not*
   running, over the port's `UpdateTarget`; and a **probation** policy in the application, which
   commits a new image only once it has proved it works, so a bad update reverts at the next reset.
+- `light_update::wire`, the wired route: a line format and a `Receiver` that take an image over
+  the console. Give your console two commands that feed it — crossfire's `receive` and `rx` are the
+  example — size the console's byte buffer and line reader to hold one whole line (about 150
+  characters), and wrap `light-update.ps1` as `scripts/update.ps1`. The board then takes new
+  firmware over its own cable while it runs.
 
 The contract — what is signed, when it is verified, how probation ends — is
 [11-secure-boot-and-update.md](../documents/11-secure-boot-and-update.md).

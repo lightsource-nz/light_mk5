@@ -327,7 +327,11 @@ unchanged; what it implements is the stack's host-controller seam.
 - **The commit of a firmware on probation holds interrupts off for tens of milliseconds** (see the
   update module), during which no frame is sent. The instruments see a bus that went quiet and
   came back, which is what a hub's upstream does on a cable, and the stack re-enumerates what it
-  must. Once, a few seconds after an update.
+  must. Once, a few seconds after an update. **The frame tick then skips the frames it missed**:
+  the alarm it runs on fires when its counter becomes *equal* to the target, so a next frame
+  scheduled one millisecond after a frame that was due tens of milliseconds ago is a target
+  already passed, reached only when the 32-bit microsecond count wraps some seventy minutes later.
+  Before this rule the host sent no frame again after the first commit on the production board.
 
 ### The wireless part — `wifi` (feature `wifi`)
 

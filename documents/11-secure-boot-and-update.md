@@ -177,6 +177,24 @@ between them.
   collapses is sustained throughput, not reachability. This is why a fetch that runs out of time
   reports **how many bytes of how many** it managed -- "too slow" alone cannot tell a link that
   carried almost everything from one that carried nothing, and those want opposite responses.
+- **The wired transport is the console, a line at a time, each line answered** (mk5,
+  `light_update::wire` with `light-update.ps1` as the sender). A board with a console but no radio
+  is given an image over the cable it is already plugged in by: the length and a CRC-32 announce
+  it, and each line then carries an offset and up to 96 bytes in base64. Three properties of a
+  console decide the shape. **It is not flow-controlled**: the device reads whatever arrives into a
+  small buffer and drops what does not fit, and reads nothing at all while storage is being
+  written, so the sender waits for each line's answer and only one line is ever in flight, which
+  is what the application's console buffers are sized for. **Lines and answers can be lost**, and
+  the cure for both is the same: every piece says where it goes, every answer says where the next
+  is wanted from, a piece already taken is acknowledged again rather than written twice, and a
+  sender that hears nothing asks where the receiver is and carries on from there. **It is text on
+  every transport a board has**, a UART as much as USB, which base64 rides unchanged. The CRC
+  guards the transfer, not the image's authenticity, and it is checked before the last part page
+  is written, so an image that does not match never exists whole in storage; a cryptographic
+  digest would add nothing the signature does not already give, and on the reference part the hash
+  block is shared with the boot ROM, which staging calls between every page. Measured on the
+  reference part over USB: a 161 KiB image at about 50 KiB/s, staged, read back and started in 15
+  seconds, of which the erase is most.
 - **Making a device secure is irreversible and belongs to manufacture.** Writing the key hash and
   enabling verification cannot be undone; a development board is either left open or given the
   development key, and no bench procedure writes one-time memory.
