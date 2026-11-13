@@ -82,27 +82,11 @@ if ($ports.Count -gt 1) {
 # and the object would be flattened into one)
 $chosen = $ports[0]
 
-$sp = New-Object System.IO.Ports.SerialPort $chosen.Device, 115200, None, 8, one
-$sp.DtrEnable = $true          # see the header -- without this the board never boots
-$sp.ReadTimeout = 50
-$sp.ReadBufferSize = 131072
-$sp.Open()
-$sp.DtrEnable = $true          # again after Open(), as some drivers reset it on open
-
-#   the port is open, so nothing the board says from here on can be missed -- which is the whole
-# point of doing this here rather than before. Whatever it prints while this runs is already being
-# buffered by the driver and is read by the loops below.
-if ($OnOpen) {
-        if (-not $Quiet) { Write-Host "resetting the board with the console already open" }
-        & $OnOpen
-}
-
 $sb = New-Object System.Text.StringBuilder
 $matched = $false
 #   why the port stopped answering, when it did: set by Read-Chunk, reported at the end
 $gone = $null
-#   one writer for the whole run, flushed per chunk -- see the header
-$writer = if ($Out) { [System.IO.StreamWriter]::new($Out, $false) } else { $null }
+$writer = $null
 
 #   every read goes through here: a device that disappears returns nothing and records why,
 # so the loops end on their own terms with the transcript intact
@@ -116,7 +100,32 @@ function Read-Chunk {
         }
 }
 
+$sp = New-Object System.IO.Ports.SerialPort $chosen.Device, 115200, None, 8, one
+$sp.DtrEnable = $true          # see the header -- without this the board never boots
+$sp.ReadTimeout = 50
+$sp.ReadBufferSize = 131072
+$sp.Open()
+
+#   FROM HERE ON EVERY WAY OUT CLOSES THE PORT. This script runs in the caller's own process, so
+# a port left open on the way out of it stays open for as long as that shell does, and every
+# later attempt to open it -- this script's, the flash script's 1200-baud reset, anyone's -- is
+# refused with "access denied" by a port nothing visibly holds. Everything that can throw once
+# the port is open, a failed -OnOpen reset and an -Out file that cannot be created among them,
+# is inside the try below for that reason.
 try {
+        $sp.DtrEnable = $true          # again after Open(), as some drivers reset it on open
+
+        #   the port is open, so nothing the board says from here on can be missed -- which is the
+        # whole point of doing this here rather than before. Whatever it prints while this runs is
+        # already being buffered by the driver and is read by the loops below.
+        if ($OnOpen) {
+                if (-not $Quiet) { Write-Host "resetting the board with the console already open" }
+                & $OnOpen
+        }
+
+        #   one writer for the whole run, flushed per chunk -- see the header
+        if ($Out) { $writer = [System.IO.StreamWriter]::new($Out, $false) }
+
         if ($Send) {
                 if (-not $Quiet) { Write-Host "driving $($chosen.Device): $($Send.Count) command(s) (DTR asserted)" }
                 #   let the board settle and its boot output land, then drain it so the transcript
@@ -192,7 +201,7 @@ try {
         #   the writer first: whatever was captured reaches the file even if the loop above left
         # by an exception, which is the whole point of streaming it
         if ($writer) { try { $writer.Flush(); $writer.Dispose() } catch { } }
-        try { $sp.Close() } catch { }
+        try { $sp.Dispose() } catch { }
 }
 
 $text = $sb.ToString()
