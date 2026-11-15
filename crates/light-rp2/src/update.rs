@@ -24,6 +24,11 @@ unsafe extern "C" {
 
 /// A block's first word, which is how an image says it is one.
 const BLOCK_MAGIC: [u8; 4] = [0xd3, 0xde, 0xff, 0xff];
+/// A block's last word. The word before it is the block's link: where the next block in the
+/// image's loop of blocks begins, in bytes from the start of this one.
+const BLOCK_END: [u8; 4] = [0x79, 0x35, 0x12, 0xab];
+/// The unit storage is written in, and the alignment a write starts at.
+const PAGE: u32 = 256;
 /// How far into an image the first block may begin. The hardware looks no further than this
 /// either, so an image whose block is past it is one this device could not boot.
 const BLOCK_WINDOW: usize = 4096;
@@ -33,14 +38,89 @@ const ITEM_IMAGE_TYPE: u8 = 0x42;
 /// Within that item's upper halfword: run this image once, on approval.
 const IMAGE_TYPE_ON_APPROVAL: u32 = 0x8000_0000;
 
+/// Marks an image to run on approval as its pages go by: the image-type item of the block the
+/// boot ROM will run, and no other.
+///
+/// ONLY THAT BLOCK, BECAUSE MARKING ANY OTHER BREAKS THE SIGNATURE. A sealed image carries more
+/// than one block: the one the build put near its start, and the signed one sealing adds at its
+/// end, linked into a loop. The ROM runs the last block in the loop, and leaves that block's own
+/// mark out of the hash it checks -- but the earlier block lies inside the signed range like any
+/// other bytes, so a mark there changes what was signed. With secure boot off nothing checks, and
+/// an image marked in every block boots; with it on, the hardware refuses it.
+///
+///   WHICH BLOCK IS LAST IS KNOWN ONLY AT ITS END, from its link: a block that links forward has
+/// another after it, and the last one links back to the first (or to itself, when it is the only
+/// one). The mark, though, has to be in a page before that page is written -- it is a bit left
+/// set, and storage only takes bits the other way -- and a block may begin in one page and end in
+/// the next. So every image-type item is marked as it passes, and the mark is withdrawn once its
+/// block turns out to link forward: in the page in hand when the whole block is in it, or by
+/// clearing the bit in the page already written, which storage does take without an erase.
+#[derive(Default)]
+struct Marker {
+        /// The previous page ended on a block magic, so its item is this page's first word.
+        item_carries: bool,
+        /// Where the item of the block now open was marked, as an offset into the slot.
+        open: Option<u32>,
+        /// The previous page's last word: the link, when this page begins with a block's end.
+        previous: [u8; 4],
+}
+
+impl Marker {
+        /// Mark this page, which goes at `offset` in the slot. Returns where an item in an
+        /// EARLIER page has to have its mark withdrawn -- at most one, since blocks do not nest.
+        fn mark(&mut self, offset: u32, page: &mut [u8]) -> Option<u32> {
+                let mut earlier = None;
+                for word in 0..page.len() / 4 {
+                        let at = word * 4;
+                        if core::mem::take(&mut self.item_carries) && page[at] == ITEM_IMAGE_TYPE {
+                                set_mark(&mut page[at..at + 4], true);
+                                self.open = Some(offset + at as u32);
+                        }
+                        if page[at..at + 4] == BLOCK_MAGIC {
+                                self.open = None;
+                                match page.get(at + 4..at + 8) {
+                                        Some(next) if next[0] == ITEM_IMAGE_TYPE => {
+                                                set_mark(&mut page[at + 4..at + 8], true);
+                                                self.open = Some(offset + at as u32 + 4);
+                                        }
+                                        //   the magic ended the page: the item is the next page's first word
+                                        None => self.item_carries = true,
+                                        _ => {}
+                                }
+                        } else if page[at..at + 4] == BLOCK_END {
+                                let link = if at >= 4 { [page[at - 4], page[at - 3], page[at - 2], page[at - 1]] } else { self.previous };
+                                let item = self.open.take();
+                                match item {
+                                        Some(item) if i32::from_le_bytes(link) > 0 && item >= offset => {
+                                                let i = (item - offset) as usize;
+                                                set_mark(&mut page[i..i + 4], false);
+                                        }
+                                        Some(item) if i32::from_le_bytes(link) > 0 => earlier = Some(item),
+                                        _ => {}
+                                }
+                        }
+                }
+                if let Some(last) = page.len().checked_sub(4) {
+                        self.previous = [page[last], page[last + 1], page[last + 2], page[last + 3]];
+                }
+                earlier
+        }
+}
+
+/// Set or clear the on-approval mark in an image-type item, in place.
+fn set_mark(item: &mut [u8], on: bool) {
+        let word = u32::from_le_bytes([item[0], item[1], item[2], item[3]]);
+        let word = if on { word | IMAGE_TYPE_ON_APPROVAL } else { word & !IMAGE_TYPE_ON_APPROVAL };
+        item.copy_from_slice(&word.to_le_bytes());
+}
+
 /// The application slot that is not running.
 pub struct FlashSlot {
         offset: u32,
         size: u32,
-        /// Whether to mark the image as it is written, and whether the previous page ended on a
-        /// block magic -- in which case the item to mark is the first word of the next one.
+        /// Whether to mark the image as it is written, and where the marking has got to.
         on_approval: bool,
-        item_carries: bool,
+        marker: Marker,
 }
 
 impl FlashSlot {
@@ -53,37 +133,25 @@ impl FlashSlot {
                 if !unsafe { light_shell_update_slot(&mut offset, &mut size) } {
                         return Err(UpdateError::NoSlot);
                 }
-                Ok(Self { offset, size, on_approval: false, item_carries: false })
+                Ok(Self { offset, size, on_approval: false, marker: Marker::default() })
         }
 
-        //   Mark every image-type item in this page, if the image is to run on approval.
-        //
-        //   HERE, AND NOT AFTERWARDS, because the mark is a bit going from clear to set and
-        // storage only takes bits the other way: putting it in after the page is written would
-        // mean erasing what was just written. The page is still in memory, so it costs a scan.
-        //
-        //   Blocks are word-aligned, which is what makes the boundary case one line: a magic can
-        // be the last word of a page, and then the item to mark is the first word of the next.
-        fn mark(&mut self, page: &mut [u8]) {
-                for word in 0..page.len() / 4 {
-                        let at = word * 4;
-                        if core::mem::take(&mut self.item_carries) && page[at] == ITEM_IMAGE_TYPE {
-                                let item = u32::from_le_bytes([page[at], page[at + 1], page[at + 2], page[at + 3]]);
-                                page[at..at + 4].copy_from_slice(&(item | IMAGE_TYPE_ON_APPROVAL).to_le_bytes());
-                        }
-                        if page[at..at + 4] != BLOCK_MAGIC {
-                                continue;
-                        }
-                        match page.get(at + 4..at + 8) {
-                                Some(next) if next[0] == ITEM_IMAGE_TYPE => {
-                                        let item = u32::from_le_bytes([next[0], next[1], next[2], next[3]]);
-                                        page[at + 4..at + 8].copy_from_slice(&(item | IMAGE_TYPE_ON_APPROVAL).to_le_bytes());
-                                }
-                                //   the magic ended the page: the item is the next page's first word
-                                None => self.item_carries = true,
-                                _ => {}
-                        }
-                }
+        //   Withdraw the mark from an item in a page already written: write that page again, all
+        // of it erased-value except the item without its mark. Writing the erased value changes
+        // nothing, and the item loses only the bit -- the one direction storage goes without an
+        // erase. Then read the item back, as every other write here is.
+        fn withdraw(&mut self, item: u32) -> Result<(), UpdateError> {
+                let mut word = [0u8; 4];
+                self.read(item, &mut word)?;
+                set_mark(&mut word, false);
+                let page_at = item & !(PAGE - 1);
+                let mut buf = [0xffu8; PAGE as usize];
+                let i = (item - page_at) as usize;
+                buf[i..i + 4].copy_from_slice(&word);
+                Self::rom(unsafe { light_shell_flash_program(self.offset + page_at, buf.as_ptr(), PAGE) })?;
+                let mut back = [0u8; 4];
+                self.read(item, &mut back)?;
+                if back != word { Err(UpdateError::Corrupt) } else { Ok(()) }
         }
 
         fn rom(rc: i32) -> Result<(), UpdateError> {
@@ -102,7 +170,7 @@ impl UpdateTarget for FlashSlot {
 
         fn set_on_approval(&mut self, on: bool) -> Result<(), UpdateError> {
                 self.on_approval = on;
-                self.item_carries = false;
+                self.marker = Marker::default();
                 Ok(())
         }
 
@@ -110,12 +178,14 @@ impl UpdateTarget for FlashSlot {
                 if offset + page.len() as u32 > self.size {
                         return Err(UpdateError::TooLarge);
                 }
-                if self.on_approval {
-                        //   in the caller's buffer, which is the contract: what is left there is
-                        // what the storage now holds, so the read-back still means something
-                        self.mark(page);
+                //   in the caller's buffer, which is the contract: what is left there is what the
+                // storage now holds, so the read-back still means something
+                let earlier = if self.on_approval { self.marker.mark(offset, page) } else { None };
+                Self::rom(unsafe { light_shell_flash_program(self.offset + offset, page.as_ptr(), page.len() as u32) })?;
+                match earlier {
+                        Some(item) => self.withdraw(item),
+                        None => Ok(()),
                 }
-                Self::rom(unsafe { light_shell_flash_program(self.offset + offset, page.as_ptr(), page.len() as u32) })
         }
 
         fn read(&mut self, offset: u32, out: &mut [u8]) -> Result<(), UpdateError> {
@@ -205,4 +275,101 @@ pub fn commit(scratch: &mut [u32]) -> Result<(), UpdateError> {
         // only one of them is observable from here
         light_core::debug!("commit: the boot facility answered {rc}");
         FlashSlot::rom(rc)
+}
+
+#[cfg(test)]
+mod tests {
+        use super::*;
+        extern crate std;
+        use std::vec::Vec;
+
+        /// The image-type item a build writes: an executable for this chip, not on approval.
+        const ITEM: u32 = 0x1021_0142;
+
+        /// A block at `at` in `image`, `len_words` long, linking `link` bytes on. The words
+        /// between the item and the last item are filler the marker has no reason to read.
+        fn block(image: &mut [u8], at: usize, len_words: usize, link: i32) {
+                let mut words = std::vec![u32::from_le_bytes(BLOCK_MAGIC), ITEM];
+                while words.len() < len_words - 3 {
+                        words.push(0x0000_0248);
+                }
+                words.extend([0x0000_03ff, link as u32, u32::from_le_bytes(BLOCK_END)]);
+                for (i, w) in words.iter().enumerate() {
+                        image[at + i * 4..at + i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+                }
+        }
+
+        /// Write `image` a page at a time, as the slot does, withdrawing marks in pages already
+        /// written as the slot does too. Returns what storage would hold.
+        fn write(image: &[u8]) -> Vec<u8> {
+                let mut marker = Marker::default();
+                let mut storage = Vec::new();
+                for (n, chunk) in image.chunks(PAGE as usize).enumerate() {
+                        let mut page = chunk.to_vec();
+                        let earlier = marker.mark(n as u32 * PAGE, &mut page);
+                        storage.extend_from_slice(&page);
+                        if let Some(item) = earlier {
+                                assert!(item < n as u32 * PAGE, "a withdrawal names a page already written");
+                                set_mark(&mut storage[item as usize..item as usize + 4], false);
+                        }
+                }
+                storage
+        }
+
+        fn marked(storage: &[u8], item: usize) -> bool {
+                u32::from_le_bytes(storage[item..item + 4].try_into().unwrap()) & IMAGE_TYPE_ON_APPROVAL != 0
+        }
+
+        #[test]
+        fn a_block_alone_is_marked() {
+                let mut image = std::vec![0u8; 1024];
+                block(&mut image, 0x138, 7, 0);
+                assert!(marked(&write(&image), 0x13c));
+        }
+
+        #[test]
+        fn a_sealed_image_marks_only_its_last_block() {
+                //   the layout a sealed build has: the build's block near the start linking forward,
+                // the signed block at the end linking back -- and that one across a page boundary
+                let mut image = std::vec![0u8; 0x800];
+                block(&mut image, 0x138, 7, 0x6c0 - 0x138);
+                block(&mut image, 0x6c0, 54, 0x138 - 0x6c0);
+                let storage = write(&image);
+                assert!(!marked(&storage, 0x13c), "the block inside the signed range");
+                assert!(marked(&storage, 0x6c4), "the block the ROM runs");
+                let mut expected = image.clone();
+                set_mark(&mut expected[0x6c4..0x6c8], true);
+                assert_eq!(storage, expected, "nothing but the one bit changes");
+        }
+
+        #[test]
+        fn a_forward_block_across_a_page_boundary_is_withdrawn_from_the_page_before() {
+                let mut image = std::vec![0u8; 0x800];
+                block(&mut image, 0xe0, 20, 0x600 - 0xe0);
+                block(&mut image, 0x600, 7, 0xe0 - 0x600);
+                let storage = write(&image);
+                assert!(!marked(&storage, 0xe4));
+                assert!(marked(&storage, 0x604));
+        }
+
+        #[test]
+        fn a_magic_ending_a_page_carries_its_item_into_the_next() {
+                let mut image = std::vec![0u8; 0x800];
+                block(&mut image, 0xfc, 7, 0x500 - 0xfc);
+                block(&mut image, 0x4fc, 7, 0xfc - 0x4fc);
+                let storage = write(&image);
+                assert!(!marked(&storage, 0x100));
+                assert!(marked(&storage, 0x500));
+        }
+
+        #[test]
+        fn an_end_beginning_a_page_takes_its_link_from_the_page_before() {
+                let mut image = std::vec![0u8; 0x800];
+                //   seven words from 0xe8 put the end magic at 0x100, the link at 0xfc
+                block(&mut image, 0xe8, 7, 0x400 - 0xe8);
+                block(&mut image, 0x400, 7, 0xe8 - 0x400);
+                let storage = write(&image);
+                assert!(!marked(&storage, 0xec));
+                assert!(marked(&storage, 0x404));
+        }
 }

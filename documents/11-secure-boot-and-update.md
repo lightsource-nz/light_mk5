@@ -143,6 +143,16 @@ between them.
   That is what makes it the updater's business: the port sets it page by page as the image is
   written, which is also the only moment it can, because storage takes a bit one way only and
   putting it in afterwards would mean erasing what was just written.
+- **Only the header the hardware runs is marked.** A signed image carries more than one header:
+  the one the build put near its start, and the signed one sealing adds at its end, linked in a
+  loop that the hardware follows to its last. The mark is left out of the hash in *that* header
+  only; every earlier one lies inside the signed range, so marking it changes what was signed, and
+  a device that enforces signatures refuses the image. Which header is last shows only at its
+  end, where its link points back rather than on, and a header can run from one page into the
+  next — so the port marks each header as it passes and withdraws the mark from one that links
+  on, in the page in hand or by clearing the bit in the page already written (the direction
+  storage goes without an erase). With signatures not enforced, an image marked in every header
+  boots, which is how the mistake went unnoticed until a device enforced them.
 - **A hand-over into a probationary image must say that it IS the update boot.** Such an image is
   only allowed to run as part of the boot that installed it, so the bootloader signals that by
   **negating the window base** it chains into when that window is the one the update went to.
