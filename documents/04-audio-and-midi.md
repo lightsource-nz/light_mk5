@@ -278,6 +278,11 @@ every *other* mounted device that has a cable C.
 - **Padding is dropped.** Code index numbers below 2 (a bulk transfer zero-fills unused 4-byte
   slots; CIN 0/1 never carry data) are not forwarded — otherwise up to 15 of every 16 bytes on the
   SPI link would be nothing. A cable number past `MAX_CABLES` (4) is counted in `dropped`.
+- **A `Host` writes no more to an instrument at once than its OUT endpoint takes in one packet**
+  (its `wMaxPacketSize`, in whole event packets). Events written while a write is in flight leave
+  together in the next one, and a device given a packet longer than its endpoint keeps what fits and
+  loses the rest, acknowledging it all the same. The events that queue up are the ones that arrive
+  together, such as the note-offs of a released chord, so the loss showed as notes that never stopped.
 - **Hub mode is position.** The host stack's mount index says nothing about which socket a cable is
   in and is not stable across a reconnect, so a device also records the 1-based hub port it arrived
   on — the physical identity a status display shows. The hub address is learned from the first

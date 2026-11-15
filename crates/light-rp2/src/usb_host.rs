@@ -165,6 +165,8 @@ struct MidiConfig {
         ep_out: Option<u8>,
         /// The IN endpoint's wMaxPacketSize: the pipe is opened at exactly that, not a guess.
         in_max_packet: u16,
+        /// The OUT endpoint's wMaxPacketSize: the most one write to it may carry.
+        out_max_packet: u16,
         rx_cables: u8,
         tx_cables: u8,
         last_ep_in: bool,
@@ -199,6 +201,9 @@ impl DescriptorVisitor for MidiConfig {
                         }
                         self.ep_in.get_or_insert(e.bEndpointAddress & 0x0F);
                 } else {
+                        if self.ep_out.is_none() {
+                                self.out_max_packet = u16::from_le_bytes(e.wMaxPacketSize);
+                        }
                         self.ep_out.get_or_insert(e.bEndpointAddress & 0x0F);
                 }
         }
@@ -223,6 +228,9 @@ fn no_pipes<S>(_open: &impl Fn(&cotton_usb_host::usb_bus::UsbDevice, u8, u16) ->
 struct Slot {
         daddr: u8,
         out: Option<BulkOut>,
+        /// How many bytes of event packets one write to it may carry: its OUT endpoint's
+        /// wMaxPacketSize, in whole four-byte events.
+        out_batch: usize,
 }
 
 /// What one pass of the bus task found to do.
@@ -286,10 +294,17 @@ async fn host_main(bus: &'static Bus, hub: &'static HubState<Controller>) -> cor
                                 };
                                 let out = configured.open_out_endpoint(ep_out).ok();
                                 pipes[idx] = Some(open_pipe(&configured, ep_in, cfg.in_max_packet));
-                                slots[idx] = Some(Slot { daddr, out });
+                                //   NO MORE THAN THE ENDPOINT TAKES IN ONE PACKET. Events written while
+                                // a write is in flight go out together in the next one, and the stack
+                                // sends a write as packets of 64 bytes whatever the endpoint declared.
+                                // An instrument with a 4-byte endpoint kept the first event of such a
+                                // packet and lost the rest -- the note-offs of a released chord, which
+                                // arrive a millisecond apart, and so notes that never stopped
+                                let out_batch = (usize::from(cfg.out_max_packet).clamp(4, out_buf.len())) & !3;
+                                slots[idx] = Some(Slot { daddr, out, out_batch });
                                 //   two lines, each inside the log's message capacity
                                 light_core::info!("usb: device {} ({:04x}:{:04x}): configuration {}, MIDI interface {}, {} endpoints seen", daddr, info.vid, info.pid, cfg.config_value, cfg.interface.unwrap_or(0), cfg.endpoints_seen);
-                                light_core::info!("usb: device {}: in ep {} ({} cables, {} bytes), out ep {} ({} cables)", daddr, ep_in, cfg.rx_cables, cfg.in_max_packet, ep_out, cfg.tx_cables);
+                                light_core::info!("usb: device {}: in ep {} ({} cables, {} bytes), out ep {} ({} cables, {} bytes)", daddr, ep_in, cfg.rx_cables, cfg.in_max_packet, ep_out, cfg.tx_cables, cfg.out_max_packet);
                                 let mount = Mount { daddr, rx_cables: cfg.rx_cables.max(1), tx_cables: cfg.tx_cables.max(1) };
                                 // where it sits: the hub in front of it and that hub's port, for the display
                                 let position = hub.topology().parent_of(daddr).map(|(hub_addr, hub_port)| BusInfo { hub_addr, hub_port });
@@ -322,9 +337,9 @@ async fn host_main(bus: &'static Bus, hub: &'static HubState<Controller>) -> cor
                         Step::Idle => {
                                 // what the application wrote, a burst per slot, then let the pass end
                                 for (i, slot) in slots.iter().enumerate() {
-                                        let Some(out) = slot.as_ref().and_then(|s| s.out.as_ref()) else { continue };
+                                        let Some((out, batch)) = slot.as_ref().and_then(|s| Some((s.out.as_ref()?, s.out_batch))) else { continue };
                                         let mut n = 0;
-                                        while n + 4 <= out_buf.len() {
+                                        while n + 4 <= batch {
                                                 match TX[i].pop() {
                                                         Some(p) => {
                                                                 out_buf[n..n + 4].copy_from_slice(&p);
