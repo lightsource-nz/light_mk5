@@ -311,8 +311,11 @@ unchanged; what it implements is the stack's host-controller seam.
   controller is therefore constructed on the core that polls the stack, which is where its
   interrupt is enabled.
 - **An interrupt pipe is a slot the handler re-arms**, polled at its interval with its packets
-  kept in a two-deep ring until the stack collects them, and a lost packet counted rather than
-  silently overwritten. A control transfer is driven stage by stage from the future — setup at
+  kept in a ring until the stack collects them. The ring holds four packets, a runtime pass that
+  writes to four instruments a frame each. **A pipe whose ring is full is not polled**: a packet
+  received then would be acknowledged, and so dropped by the device, with nowhere to keep it.
+  Left unasked, the device keeps it and offers it again, so a slow pass delays an instrument's
+  input and never loses it. A control transfer is driven stage by stage from the future — setup at
   DATA0, data and status at DATA1 — so the handler knows transfers and nothing above them.
 - **It is full speed only.** A low-speed device, directly or behind a hub, is reported as present
   and then refused — a warning, not an attempt — because the instruments this host exists for are

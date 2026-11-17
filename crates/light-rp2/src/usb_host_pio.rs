@@ -50,9 +50,12 @@ const NAK_TIMEOUT_FRAMES: u16 = 5_000;
 /// Transactions in a row with no sound answer before a transfer fails: the reference host's
 /// number.
 const MAX_RETRIES: u8 = 3;
-/// Packets an interrupt pipe holds between the frame that received them and the poll that
-/// collects them: two frames of slack for a runtime pass.
-const PIPE_RING: usize = 2;
+/// The ring an interrupt pipe keeps its packets in between the frame that received them and the
+/// poll that collects them. It holds one fewer than its length -- head meeting tail is empty --
+/// so four: a runtime pass that writes to four instruments, a frame each, before it reads again.
+/// A full ring is not polled (see `frame`), so a slow pass delays an instrument's input rather
+/// than losing it.
+const PIPE_RING: usize = 5;
 
 /// The hardware alarm the frame tick runs on. The SDK's own alarm pool takes the last one;
 /// this is the one below it.
@@ -154,7 +157,7 @@ const EMPTY_SLOT: Slot = Slot {
         packet: [0; MAX_PACKET + 4],
         encoded: [0; ENCODED_MAX],
         encoded_len: 0,
-        ring: [InterruptPacket::new(), InterruptPacket::new()],
+        ring: [const { InterruptPacket::new() }; PIPE_RING],
         ring_head: 0,
         ring_tail: 0,
         ring_dropped: 0,
@@ -336,6 +339,15 @@ fn frame(e: &mut Engine) {
                                                 slot.countdown -= 1;
                                                 continue;
                                         }
+                                        //   A FULL RING IS NOT POLLED. A packet received now would
+                                        // be acknowledged -- the device drops its copy -- and then
+                                        // have nowhere to go: every other packet from an instrument
+                                        // sending each frame was lost that way while the runtime
+                                        // was busy writing. Left unasked, the device keeps it and
+                                        // offers it again at the next poll
+                                        if ring_full(slot) {
+                                                continue;
+                                        }
                                         slot.countdown = slot.interval.saturating_sub(1);
                                 }
                                 match slot.token {
@@ -456,6 +468,12 @@ fn advance(slot: &mut Slot, n: u16, stats: &mut Stats) {
         }
 }
 
+/// No room for another packet: the entry at the head would be the tail's.
+#[inline(always)]
+fn ring_full(slot: &Slot) -> bool {
+        (usize::from(slot.ring_head) + 1) % PIPE_RING == usize::from(slot.ring_tail)
+}
+
 /// An interrupt pipe received a packet into the ring's head entry: hand it over and re-arm.
 #[inline(always)]
 fn publish_pipe_packet(slot: &mut Slot, stats: &mut Stats) {
@@ -465,7 +483,7 @@ fn publish_pipe_packet(slot: &mut Slot, stats: &mut Stats) {
         slot.ring[head].endpoint = slot.endpoint;
         let next = ((head + 1) % PIPE_RING) as u8;
         if next == slot.ring_tail {
-                // nobody collected the last one: this one is lost, counted
+                //   never, now that a full ring is not polled; counted should it ever happen
                 slot.ring_dropped = slot.ring_dropped.wrapping_add(1);
                 stats.pipe_dropped = stats.pipe_dropped.wrapping_add(1);
         } else {
