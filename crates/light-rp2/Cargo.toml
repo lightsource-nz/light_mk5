@@ -24,10 +24,14 @@ usb-host = ["dep:light-midi", "dep:cotton-usb-host", "dep:futures", "dep:defmt"]
 # chip's controller. For a board whose native port is committed to the device role -- so this
 # sits BESIDE usb-console, which usb-host cannot. The two host features exclude each other
 usb-host-pio = ["dep:light-midi", "dep:cotton-usb-host", "dep:futures", "dep:defmt"]
+#   the USB device role's controller driver alone (src/usb.rs), as a `usb_device` bus with
+# nothing on it: for a firmware that builds its own device with its own classes and polls it
+# itself. The console stays on the UART
+usb-device = ["dep:usb-device"]
 #   the USB device role: the port's own controller driver (src/usb.rs) with the CDC console on
 # it, run from the core-1 loop in src/shell.rs. Every board whose native USB port is a device
 # carries it; a host-role board (usb-host) leaves it off and its console is the UART alone
-usb-console = ["dep:usb-device", "dep:usbd-serial"]
+usb-console = ["usb-device", "dep:usbd-serial"]
 #   THE TWO THINGS A RADIO WANTS FROM THIS CHIP, and no more: the half-duplex bus, built out of PIO
 # because no SPI peripheral turns a data line around mid-transfer, and the microsecond tick a radio
 # stack asks the application to supply. The DRIVER is not here -- it belongs to the part rather than

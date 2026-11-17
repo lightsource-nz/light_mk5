@@ -600,7 +600,10 @@ it.** Core 1 is a Rust loop; the C shell only launches it.
   hands it to the loop, or hands `None`, and the loop is the same either way; a board that gives up
   the UART keeps the CDC console and its reflash path. The USB device stack is a feature of the port
   crate (`usb-console`), on for every device-role board and off for the host role, which then carries
-  no device stack at all.
+  no device stack at all. `usb-console` is built on `usb-device`, which is the device controller's
+  driver alone, a `usb_device` bus with nothing on it. A firmware that is itself a USB device of
+  another kind, such as a MIDI instrument, takes `usb-device` without the console. It builds its own
+  device and classes on the bus and polls them from its own loop, and its console is the UART.
 
 #### The two stacks, and why core 0 gets both scratch banks
 
