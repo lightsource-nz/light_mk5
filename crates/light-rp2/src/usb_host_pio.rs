@@ -16,7 +16,9 @@
 //! One transaction per endpoint per frame, as the reference host does it. That bounds a frame's
 //! work to a few hundred microseconds with every slot busy, and bounds the latency of any
 //! endpoint to a millisecond -- which is the interval the native controller polls a MIDI
-//! endpoint at anyway.
+//! endpoint at anyway. The one exception is a bulk OUT's first packet, which goes the moment it
+//! is queued if the frame has room for it (see `send_now`), so a forwarded message does not
+//! wait for the next frame.
 //!
 //! What the two sides share is in one static, and the rule is simple because the handler and
 //! the futures run on the SAME core: the handler is atomic against everything else on that
@@ -67,6 +69,10 @@ const SOF_LEAD_US: u32 = 30;
 /// How far ahead of the clock a newly set alarm must be to be sure of being reached: the write
 /// itself takes time, and a target the counter passes before it lands is one it never meets.
 const ALARM_MARGIN_US: i32 = 5;
+/// How long before the frame alarm a bulk OUT may still be sent the moment it is queued (see
+/// `send_now`): a full 64-byte packet with its token and handshake is about 60 us on the wire,
+/// and the bus must be quiet, with interrupts back on, when the alarm fires.
+const SEND_NOW_US: i32 = 120;
 
 unsafe extern "C" {
         //   the SDK owns the RAM vector table; the handler is installed through it
@@ -650,8 +656,35 @@ fn submit(r: Request) -> Option<usize> {
                 if matches!(r.token, Token::Out | Token::Setup) {
                         prepare_tx_data(slot);
                 }
+                if r.token == Token::Out && r.endpoint != 0 {
+                        send_now(e, idx);
+                }
                 Some(idx)
         })
+}
+
+/// A bulk OUT's first packet, sent the moment it is queued rather than at the next frame, when
+/// there is time before the alarm.
+///
+///   WAITING FOR THE TICK COST A MILLISECOND ON EVERY MESSAGE FORWARDED. A message read from
+/// one instrument in a frame's poll reaches the runtime within that frame, but the write to the
+/// next instrument then waited for the following frame. A transaction may go anywhere in a frame
+/// that leaves it finished before the next SOF, and here the bus is free: this runs inside the
+/// critical section, so the frame handler is not mid-transaction and cannot start one. Whatever
+/// is not finished here -- a NAK, the packets after the first -- carries on at the frame ticks
+/// as before. Control transfers and the interrupt pipes stay on the tick.
+#[inline(always)]
+fn send_now(e: &mut Engine, idx: usize) {
+        let Engine { bus, root, slots, stats, alarm_target } = e;
+        let Some(bus) = bus.as_mut() else { return };
+        if !root.connected || root.suspended || root.low_speed {
+                return;
+        }
+        let before_alarm = alarm_target.wrapping_sub(SOF_LEAD_US).wrapping_sub(micros()) as i32;
+        if before_alarm < SEND_NOW_US {
+                return;
+        }
+        out_transaction(bus, &mut slots[idx], stats);
 }
 
 /// A transfer in flight: resolves to the bytes moved and the data toggle after it. Dropping

@@ -301,7 +301,12 @@ unchanged; what it implements is the stack's host-controller seam.
   the futures the stack polls queue a transfer in a slot, read its outcome and free the slot. One
   transaction per endpoint per frame, as the reference host does it: a frame's work is bounded
   with every slot busy, and any endpoint's latency is bounded at a millisecond, which is the
-  interval the native controller polls a MIDI endpoint at anyway. The handler and its helpers
+  interval the native controller polls a MIDI endpoint at anyway. **The exception is a bulk OUT's
+  first packet, which is sent the moment it is queued** when the frame has room left before the
+  alarm. That is safe because queueing happens inside the critical section, where the handler
+  cannot be using the bus. Without it, a message forwarded from one instrument to another waited
+  a millisecond for the next frame. A NAK or the packets after the first carry on at the frame
+  ticks, and control transfers and interrupt pipes never leave them. The handler and its helpers
   are placed in RAM (the SDK's time-critical section), with the CRC tables and the pre-encoded
   handshakes beside them.
 - **One rule makes the sharing safe: the handler and the futures run on the same core.** The
